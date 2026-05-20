@@ -1,0 +1,50 @@
+server:
+  host: 127.0.0.1
+  port: 8888
+  idle_shutdown_seconds: 3600 # 0 means never
+
+workspace:
+  root: .
+  allow_delete: true
+  max_upload_size_mb: 500
+  max_read_size_mb: 5
+
+scheduler:
+  type: slurm
+  refresh_interval: 10
+
+viewer:
+  default_style: stick
+  max_file_size_mb: 50
+  ase:
+    enabled: true
+    prefer_binary: true
+    json_round_digits: 6
+    max_atoms: 200000
+    max_frames: 2000
+    max_points_json: 200000
+    binary_chunk_frames: 64
+    cache_ttl_minutes: 30
+
+security:
+  enable_token: false
+  token: change-me
+
+logs:
+  default_tail_lines: 20
+  max_tail_lines: 100
+  max_tail_bytes_mb: 5
+
+terminal:
+  enabled: true
+  shell:
+  max_sessions: 4
+  default_rows: 30
+  default_cols: 120
+  idle_timeout_seconds: 3600
+  allow_sync_cwd: true
+
+compression:
+  brotli:
+    enabled: on
+    level: 1

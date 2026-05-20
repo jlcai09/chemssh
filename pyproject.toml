@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chemweb"
+dynamic = ["version"]
+description = "计算催化与计算化学场景的文件、作业和结构可视化 Web 工作台。"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "chemweb contributors" }]
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "pydantic>=2.8",
+  "PyYAML>=6.0",
+  "Brotli>=1.1",
+  "python-multipart>=0.0.9",
+  "aiofiles>=24.1",
+  "ase>=3.23",
+  "numpy>=1.26,<2",
+  "ptyprocess>=0.7",
+  "pywinpty>=3.0; platform_system == 'Windows'"
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28",
+  "pytest>=8.3"
+]
+
+[project.scripts]
+chemweb = "backend.app.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "backend.app.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
