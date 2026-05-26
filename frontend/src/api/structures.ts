@@ -1,6 +1,6 @@
 import { request } from './http'
 import { API_BASE, ApiError } from './http'
-import type { AseFrame, AseFrameChunk, AsePreviewResponse, BinaryArraySpec } from '../types/structure'
+import type { AseFrame, AseFrameChunk, AseFrameJsonChunk, AsePreviewResponse, BinaryArraySpec } from '../types/structure'
 
 function aseQuery(path: string, format?: string | null, force = false) {
   const params = new URLSearchParams({ path })
@@ -17,6 +17,13 @@ export function readAseFrame(path: string, index: number, format?: string | null
   const params = aseQuery(path, format, force)
   params.set('index', String(index))
   return request<AseFrame>(`/api/structures/ase/frame?${params.toString()}`)
+}
+
+export function readAseFrameJsonChunk(path: string, start: number, count: number, format?: string | null, force = false) {
+  const params = aseQuery(path, format, force)
+  params.set('start', String(start))
+  params.set('count', String(count))
+  return request<AseFrameJsonChunk>(`/api/structures/ase/frames?${params.toString()}`)
 }
 
 export async function readAseFrameChunk(path: string, start: number, count: number, format?: string | null, force = false): Promise<AseFrameChunk> {

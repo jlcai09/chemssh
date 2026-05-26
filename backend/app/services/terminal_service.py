@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from backend.app.core.config import Settings
@@ -11,6 +11,9 @@ from backend.app.core.security import WorkspaceSecurity
 from backend.app.models.terminal import TerminalSessionResponse
 from backend.app.providers.terminal.base import TerminalProvider
 from backend.app.providers.terminal.local_pty import LocalPtyTerminalProvider
+
+
+CWD_MARKER_PREFIX = "\x1b]633;P;Cwd="
 
 
 def utc_now() -> datetime:
@@ -27,6 +30,8 @@ class TerminalSession:
     security: WorkspaceSecurity
     allow_sync_cwd: bool
     clients: int = 0
+    _pending_cwd: str | None = field(default=None, init=False, repr=False)
+    _cwd_marker_buffer: str = field(default="", init=False, repr=False)
 
     @property
     def shell(self) -> str:
@@ -36,7 +41,8 @@ class TerminalSession:
         data = self.provider.read(size)
         if data:
             self.touch()
-        return data
+            return self._extract_cwd_markers(data)
+        return self._extract_cwd_markers("")
 
     def write(self, data: str) -> None:
         self.provider.write(data)
@@ -56,6 +62,55 @@ class TerminalSession:
 
         self.provider.write_control(self.provider.build_cd_command(str(path)))
         self.cwd = str(path)
+        self.touch()
+
+    def consume_cwd_update(self) -> str | None:
+        cwd = self._pending_cwd
+        self._pending_cwd = None
+        return cwd
+
+    def _extract_cwd_markers(self, data: str) -> str:
+        if not data and not self._cwd_marker_buffer:
+            return ""
+
+        text = self._cwd_marker_buffer + data
+        self._cwd_marker_buffer = ""
+        parts: list[str] = []
+        index = 0
+        while index < len(text):
+            start = text.find(CWD_MARKER_PREFIX, index)
+            if start < 0:
+                remaining, pending = _split_possible_marker_prefix(text[index:])
+                parts.append(remaining)
+                self._cwd_marker_buffer = pending
+                break
+
+            parts.append(text[index:start])
+            value_start = start + len(CWD_MARKER_PREFIX)
+            bel_end = text.find("\x07", value_start)
+            st_end = text.find("\x1b\\", value_start)
+            end, terminator_length = _first_marker_end(bel_end, st_end)
+            if end < 0:
+                self._cwd_marker_buffer = text[start:]
+                break
+
+            self._accept_cwd_marker(text[value_start:end])
+            index = end + terminator_length
+
+        return "".join(parts)
+
+    def _accept_cwd_marker(self, raw_path: str) -> None:
+        try:
+            path = self.security.resolve_path(raw_path)
+        except AppError:
+            return
+        if not path.exists() or not path.is_dir():
+            return
+        normalized = str(path)
+        if normalized == self.cwd:
+            return
+        self.cwd = normalized
+        self._pending_cwd = normalized
         self.touch()
 
     def close(self) -> None:
@@ -193,3 +248,21 @@ class TerminalManager:
 
 
 terminal_manager = TerminalManager()
+
+
+def _first_marker_end(bel_end: int, st_end: int) -> tuple[int, int]:
+    candidates: list[tuple[int, int]] = []
+    if bel_end >= 0:
+        candidates.append((bel_end, 1))
+    if st_end >= 0:
+        candidates.append((st_end, 2))
+    return min(candidates, default=(-1, 0), key=lambda item: item[0])
+
+
+def _split_possible_marker_prefix(text: str) -> tuple[str, str]:
+    max_length = min(len(CWD_MARKER_PREFIX) - 1, len(text))
+    for length in range(max_length, 0, -1):
+        suffix = text[-length:]
+        if CWD_MARKER_PREFIX.startswith(suffix):
+            return text[:-length], suffix
+    return text, ""

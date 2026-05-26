@@ -16,7 +16,7 @@ class SchedulerProvider(ABC):
     scheduler_name: str
 
     @abstractmethod
-    def list_jobs(self) -> QueueResponse:
+    def list_jobs(self, current_user_only: bool = False) -> QueueResponse:
         raise NotImplementedError
 
     @abstractmethod

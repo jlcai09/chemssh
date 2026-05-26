@@ -61,3 +61,9 @@ export interface AseFrameChunk {
   energy?: Float32Array
   fmax?: Float32Array
 }
+
+export interface AseFrameJsonChunk {
+  start: number
+  count: number
+  frames: AseFrame[]
+}

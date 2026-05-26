@@ -14,7 +14,7 @@ from ase.io import iread, read
 from backend.app.core.config import Settings
 from backend.app.core.errors import AppError
 from backend.app.core.security import WorkspaceSecurity
-from backend.app.models.structure import AseFrame, AsePreviewResponse
+from backend.app.models.structure import AseFrame, AseFrameChunkResponse, AsePreviewResponse
 
 
 STRUCTURE_BINARY_MEDIA_TYPE = "application/vnd.chemweb.structure+bin"
@@ -67,6 +67,32 @@ class StructureService:
         path = self._resolve_structure_file(raw_path, force=force)
         atoms = self._read_frame(path, index, fmt)
         return self._frame_from_atoms(atoms, index)
+
+    def read_frame_chunk_json(
+        self,
+        raw_path: str,
+        start: int,
+        count: int,
+        fmt: str | None = None,
+        *,
+        force: bool = False,
+    ) -> AseFrameChunkResponse:
+        if start < 0:
+            raise AppError("INVALID_FRAME_RANGE", "Chunk start must be greater than or equal to 0", 400)
+        if count <= 0:
+            raise AppError("INVALID_FRAME_RANGE", "Chunk count must be greater than 0", 400)
+
+        path = self._resolve_structure_file(raw_path, force=force)
+        safe_count = min(count, self.settings.viewer.ase.binary_chunk_frames)
+        atoms_frames = self._read_frame_range(path, start, safe_count, fmt)
+        if not atoms_frames:
+            raise AppError("FRAME_INDEX_OUT_OF_RANGE", f"Frame start is outside range: {start}", 404)
+
+        frames = [
+            self._frame_from_atoms(atoms, start + offset)
+            for offset, atoms in enumerate(atoms_frames)
+        ]
+        return AseFrameChunkResponse(start=start, count=len(frames), frames=frames)
 
     def read_frame_chunk_binary(self, raw_path: str, start: int, count: int, fmt: str | None = None, *, force: bool = False) -> bytes:
         if start < 0:
@@ -371,8 +397,22 @@ def _extract_energy_fmax(atoms: Atoms) -> tuple[float | None, float | None]:
         return energy, None
 
     force_array = np.asarray(forces, dtype=np.float32)
-    if force_array.ndim != 2 or force_array.shape[1] != 3 or force_array.size == 0:
+    if (
+        force_array.ndim != 2
+        or force_array.shape[1] != 3
+        or force_array.shape[0] != len(atoms)
+        or force_array.size == 0
+    ):
         return energy, None
+
+    fixed_indices = _extract_fixed_indices(atoms)
+    if fixed_indices:
+        movable_mask = np.ones(force_array.shape[0], dtype=bool)
+        movable_mask[fixed_indices] = False
+        force_array = force_array[movable_mask]
+        if force_array.size == 0:
+            return energy, None
+
     fmax = float(np.max(np.linalg.norm(force_array, axis=1)))
     if not math.isfinite(fmax):
         return energy, None

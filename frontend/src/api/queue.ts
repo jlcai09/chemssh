@@ -37,8 +37,9 @@ export interface QueueJobActionResponse {
   message: string
 }
 
-export function listQueue() {
-  return request<QueueResponse>('/api/queue/list')
+export function listQueue(options: { currentUserOnly?: boolean } = {}) {
+  const query = options.currentUserOnly ? '?current_user_only=true' : ''
+  return request<QueueResponse>(`/api/queue/list${query}`)
 }
 
 export function cancelJob(jobId: string) {

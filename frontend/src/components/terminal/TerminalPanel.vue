@@ -22,16 +22,22 @@
       >
         <span class="terminal-tab-label">{{ tabTitle(tab) }}</span>
         <span class="terminal-tab-actions" @click.stop>
-          <el-tooltip :content="t('terminal.syncCwd')" placement="top">
+          <el-tooltip :content="syncModeLabel(tab.syncMode)" placement="top">
             <button
               class="terminal-tab-icon terminal-tab-sync"
-              :class="{ 'is-active': tab.syncCwd }"
+              :class="`is-${tab.syncMode}`"
               type="button"
-              :aria-pressed="tab.syncCwd"
-              :aria-label="t('terminal.syncCwd')"
+              :aria-pressed="tab.syncMode !== 'off'"
+              :aria-label="syncModeLabel(tab.syncMode)"
               @click="toggleTabSync(tab)"
             >
-              <el-icon><Connection /></el-icon>
+              <svg class="terminal-sync-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path class="sync-device sync-device-files" d="M3.5 8.5h4.4l1.2 1.7h3.4v5.9h-9z" />
+                <path class="sync-device sync-device-terminal" d="M16 7h4.5v10H16z" />
+                <path class="sync-arrow sync-arrow-forward" d="M10.4 10.2h4.3m-1.6-1.7 1.8 1.7-1.8 1.7" />
+                <path class="sync-arrow sync-arrow-back" d="M13.6 14.8H9.3m1.6-1.7-1.8 1.7 1.8 1.7" />
+                <path class="sync-slash" d="M4.8 19.2 19.2 4.8" />
+              </svg>
             </button>
           </el-tooltip>
           <el-tooltip :content="t('terminal.close')" placement="top">
@@ -50,6 +56,46 @@
       <button class="terminal-tab-new" type="button" :aria-label="t('terminal.newTab')" @click="createTab()">
         <el-icon><Plus /></el-icon>
       </button>
+      <el-popover trigger="click" placement="top-end" :width="280" popper-class="terminal-settings-popper">
+        <template #reference>
+          <button class="terminal-tab-settings" type="button" :aria-label="t('terminal.settings')">
+            <el-icon><Setting /></el-icon>
+          </button>
+        </template>
+        <div class="terminal-settings-panel">
+          <div class="terminal-settings-title">{{ t('terminal.settings') }}</div>
+          <div class="terminal-settings-node">
+            <span>{{ t('terminal.font') }}</span>
+            <el-icon><ArrowRight /></el-icon>
+          </div>
+          <div class="terminal-settings-submenu">
+            <div class="terminal-font-size-header">
+              <span>{{ t('terminal.fontSize') }}</span>
+              <strong>{{ terminalFontSize }}px</strong>
+            </div>
+            <div class="terminal-font-size-controls">
+              <el-slider
+                v-model="terminalFontSizeModel"
+                class="terminal-font-size-slider"
+                :min="TERMINAL_FONT_SIZE_MIN"
+                :max="TERMINAL_FONT_SIZE_MAX"
+                :step="1"
+                :show-tooltip="false"
+                size="small"
+              />
+              <el-input-number
+                v-model="terminalFontSizeModel"
+                class="terminal-font-size-input"
+                :min="TERMINAL_FONT_SIZE_MIN"
+                :max="TERMINAL_FONT_SIZE_MAX"
+                :step="1"
+                controls-position="right"
+                size="small"
+              />
+            </div>
+          </div>
+        </div>
+      </el-popover>
     </div>
 
     <div class="terminal-shell">
@@ -67,7 +113,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Close, Connection, Plus } from '@element-plus/icons-vue'
+import { ArrowRight, Close, Plus, Setting } from '@element-plus/icons-vue'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal, type IDisposable } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
@@ -82,14 +128,17 @@ import { t } from '../../i18n'
 
 type TerminalMessage =
   | { type: 'output'; data: string }
+  | { type: 'cwd'; path: string }
   | { type: 'error'; code?: string; message?: string }
   | { type: 'exit'; code?: number | null }
+
+type TerminalSyncMode = 'off' | 'follow' | 'bidirectional'
 
 type TerminalTab = {
   localId: string
   sessionId: string | null
   cwd: string
-  syncCwd: boolean
+  syncMode: TerminalSyncMode
   connected: boolean
   interactiveReady: boolean
   awaitingVisibleShellOutput: boolean
@@ -102,16 +151,30 @@ type TerminalTab = {
   fitFrame: number
 }
 
+const TERMINAL_FONT_SIZE_STORAGE_KEY = 'chemweb.terminal.fontSize'
+const DEFAULT_TERMINAL_FONT_SIZE = 13
+const TERMINAL_FONT_SIZE_MIN = 10
+const TERMINAL_FONT_SIZE_MAX = 24
+
 const props = defineProps<{
   initialCwd?: string | null
   currentFileManagerPath?: string | null
   layoutVersion?: number
 }>()
 
+const emit = defineEmits<{
+  'cwd-change': [path: string]
+}>()
+
 const tabs = ref<TerminalTab[]>([])
 const activeTabId = ref<string | null>(null)
 const tabsRef = ref<HTMLElement | null>(null)
 const tabsOverflowing = ref(false)
+const terminalFontSize = ref(readStoredTerminalFontSize())
+const terminalFontSizeModel = computed({
+  get: () => terminalFontSize.value,
+  set: (value: number | undefined) => setTerminalFontSize(value)
+})
 const terminalHosts = new Map<string, HTMLElement>()
 let tabsResizeObserver: ResizeObserver | null = null
 let tabSerial = 0
@@ -149,7 +212,7 @@ watch(
   path => {
     if (!path) return
     for (const tab of tabs.value) {
-      if (tab.syncCwd) sendTabSyncCwd(tab, path)
+      if (isTabFollowingFileManager(tab) && tab.cwd !== path) sendTabSyncCwd(tab, path)
     }
   }
 )
@@ -178,13 +241,22 @@ watch(
   }
 )
 
+watch(terminalFontSize, size => {
+  storeTerminalFontSize(size)
+  for (const tab of tabs.value) {
+    if (!tab.terminal) continue
+    tab.terminal.options.fontSize = size
+    void requestTabFit(tab)
+  }
+})
+
 function createEmptyTab(cwd?: string): TerminalTab {
   tabSerial += 1
   return {
     localId: `terminal_tab_${tabSerial}`,
     sessionId: null,
     cwd: cwd ?? preferredCwd.value ?? '',
-    syncCwd: false,
+    syncMode: 'off',
     connected: false,
     interactiveReady: false,
     awaitingVisibleShellOutput: false,
@@ -235,7 +307,7 @@ async function initializeTabTerminal(tab: TerminalTab) {
   const terminal = new Terminal({
     cursorBlink: true,
     fontFamily: '"JetBrains Mono", Consolas, "Liberation Mono", monospace',
-    fontSize: 13,
+    fontSize: terminalFontSize.value,
     lineHeight: 1.15,
     scrollback: 3000,
     theme: {
@@ -314,7 +386,9 @@ function connectTabSocket(tab: TerminalTab, id: string) {
     tab.connected = true
     markTabInteractive(tab)
     void requestTabFit(tab)
-    if (tab.syncCwd && props.currentFileManagerPath) sendTabSyncCwd(tab, props.currentFileManagerPath)
+    if (isTabFollowingFileManager(tab) && props.currentFileManagerPath && tab.cwd !== props.currentFileManagerPath) {
+      sendTabSyncCwd(tab, props.currentFileManagerPath)
+    }
   }
 
   ws.onmessage = event => {
@@ -345,6 +419,8 @@ function handleTabSocketMessage(tab: TerminalTab, raw: string) {
   if (message.type === 'output') {
     tab.terminal.write(message.data)
     if (!tab.interactiveReady && hasVisibleTerminalContent(message.data)) markTabInteractive(tab)
+  } else if (message.type === 'cwd') {
+    applyTabCwd(tab, message.path)
   } else if (message.type === 'error') {
     tab.awaitingVisibleShellOutput = false
     tab.terminal.writeln(`\r\n[${message.code ?? 'ERROR'}] ${message.message ?? ''}`)
@@ -409,10 +485,39 @@ function closeTabSocket(tab: TerminalTab) {
 }
 
 function toggleTabSync(tab: TerminalTab) {
-  tab.syncCwd = !tab.syncCwd
-  if (tab.syncCwd && props.currentFileManagerPath) {
+  const nextMode = nextSyncMode(tab.syncMode)
+  tab.syncMode = nextMode
+  if (nextMode === 'follow' && props.currentFileManagerPath) {
     sendTabSyncCwd(tab, props.currentFileManagerPath)
+    return
   }
+  if (nextMode === 'bidirectional' && tab.cwd && tab.cwd !== props.currentFileManagerPath) {
+    emit('cwd-change', tab.cwd)
+  }
+}
+
+function nextSyncMode(mode: TerminalSyncMode): TerminalSyncMode {
+  if (mode === 'off') return 'follow'
+  if (mode === 'follow') return 'bidirectional'
+  return 'off'
+}
+
+function syncModeLabel(mode: TerminalSyncMode) {
+  if (mode === 'follow') return t('terminal.syncCwdFollow')
+  if (mode === 'bidirectional') return t('terminal.syncCwdBidirectional')
+  return t('terminal.syncCwdOff')
+}
+
+function isTabFollowingFileManager(tab: TerminalTab) {
+  return tab.syncMode === 'follow' || tab.syncMode === 'bidirectional'
+}
+
+function applyTabCwd(tab: TerminalTab, path: string) {
+  if (!path) return
+  tab.cwd = path
+  if (tab.syncMode !== 'bidirectional') return
+  if (path === props.currentFileManagerPath) return
+  emit('cwd-change', path)
 }
 
 function markTabInteractive(tab: TerminalTab) {
@@ -500,6 +605,35 @@ function fitTabTerminal(tab: TerminalTab) {
   } catch {
     // Fit can fail while the tab is mounting or temporarily hidden.
   }
+}
+
+function setTerminalFontSize(value: number | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return
+  terminalFontSize.value = clampTerminalFontSize(value)
+}
+
+function readStoredTerminalFontSize() {
+  if (typeof window === 'undefined') return DEFAULT_TERMINAL_FONT_SIZE
+  try {
+    const stored = window.localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)
+    if (stored === null) return DEFAULT_TERMINAL_FONT_SIZE
+    return clampTerminalFontSize(Number(stored))
+  } catch {
+    return DEFAULT_TERMINAL_FONT_SIZE
+  }
+}
+
+function storeTerminalFontSize(value: number) {
+  try {
+    window.localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(value))
+  } catch {
+    // Font size persistence is a convenience; the live terminal still updates.
+  }
+}
+
+function clampTerminalFontSize(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_TERMINAL_FONT_SIZE
+  return Math.min(TERMINAL_FONT_SIZE_MAX, Math.max(TERMINAL_FONT_SIZE_MIN, Math.round(value)))
 }
 
 function tabTitle(tab: TerminalTab) {

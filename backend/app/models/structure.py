@@ -30,3 +30,9 @@ class AsePreviewResponse(BaseModel):
     topology_stable: bool = True
     size_limit_overridden: bool = False
     frame: AseFrame
+
+
+class AseFrameChunkResponse(BaseModel):
+    start: int
+    count: int
+    frames: list[AseFrame]

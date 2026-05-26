@@ -26,7 +26,7 @@ class PbsProvider(SchedulerProvider):
     def _missing(self, command: str) -> bool:
         return shutil.which(command) is None
 
-    def list_jobs(self) -> QueueResponse:
+    def list_jobs(self, current_user_only: bool = False) -> QueueResponse:
         if self._missing("qstat"):
             return QueueResponse(
                 scheduler=self.scheduler_name,
@@ -35,16 +35,13 @@ class PbsProvider(SchedulerProvider):
                 items=[],
             )
 
-        full_response = self._list_jobs_full()
+        full_response = self._list_jobs_full(current_user_only)
         if full_response is not None:
             return full_response
-        return self._list_jobs_summary()
+        return self._list_jobs_summary(current_user_only)
 
-    def _list_jobs_full(self) -> QueueResponse | None:
-        commands = [
-            ["qstat", "-f", "-u", getpass.getuser()],
-            ["qstat", "-u", getpass.getuser(), "-f"],
-        ]
+    def _list_jobs_full(self, current_user_only: bool) -> QueueResponse | None:
+        commands = _qstat_full_commands(current_user_only)
         for command in commands:
             try:
                 result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
@@ -59,8 +56,10 @@ class PbsProvider(SchedulerProvider):
 
         return None
 
-    def _list_jobs_summary(self) -> QueueResponse:
-        command = ["qstat", "-u", getpass.getuser()]
+    def _list_jobs_summary(self, current_user_only: bool) -> QueueResponse:
+        command = ["qstat"]
+        if current_user_only:
+            command.extend(["-u", getpass.getuser()])
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=8, check=False)
         except subprocess.TimeoutExpired as exc:
@@ -215,6 +214,16 @@ def _parse_qstat_full(text: str) -> list[tuple[str, dict[str, str]]]:
 
     save_current()
     return records
+
+
+def _qstat_full_commands(current_user_only: bool) -> list[list[str]]:
+    if not current_user_only:
+        return [["qstat", "-f"]]
+    user = getpass.getuser()
+    return [
+        ["qstat", "-f", "-u", user],
+        ["qstat", "-u", user, "-f"],
+    ]
 
 
 def _queue_item_from_pbs_fields(job_id: str, fields: dict[str, str]) -> QueueItem:

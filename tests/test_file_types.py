@@ -8,6 +8,7 @@ def test_detect_structure_types() -> None:
     assert detect_preview(Path("protein.pdb")) == ("structure", "pdb")
     assert detect_preview(Path("movie.traj")) == ("structure", "traj")
     assert detect_preview(Path("movie.extxyz")) == ("structure", "extxyz")
+    assert detect_preview(Path("structures.db")) == ("structure", "db")
 
 
 def test_detect_forced_vasp_structure_names() -> None:

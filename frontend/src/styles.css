@@ -705,6 +705,48 @@ p {
   gap: 6px;
 }
 
+.supercell-settings-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.supercell-settings-header,
+.supercell-settings-actions,
+.supercell-axis-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.supercell-settings-header {
+  justify-content: space-between;
+  color: #26323f;
+  font-size: 12px;
+}
+
+.supercell-settings-header strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.supercell-axis-row {
+  justify-content: space-between;
+}
+
+.supercell-axis-label {
+  width: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.supercell-axis-input {
+  width: 132px;
+}
+
+.supercell-settings-actions {
+  justify-content: flex-end;
+}
+
 .viewer-stage {
   position: relative;
   min-height: 0;
@@ -741,6 +783,19 @@ p {
   color: var(--accent);
   border-color: rgba(23, 107, 135, 0.42);
   background: #ffffff;
+}
+
+.viewer-floating-tools .el-button.is-active {
+  color: #ffffff;
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.viewer-floating-tools .el-button.is-active:hover,
+.viewer-floating-tools .el-button.is-active:focus-visible {
+  color: #ffffff;
+  border-color: #12566c;
+  background: #12566c;
 }
 
 .viewer-canvas {
@@ -910,7 +965,7 @@ button.context-menu-item {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-rows: 54px 42px auto minmax(0, 1fr);
+  grid-template-rows: 54px auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -930,21 +985,73 @@ button.context-menu-item {
   width: 104px;
 }
 
-.queue-controls {
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--panel-border);
-  background: var(--soft-bg);
+.queue-icon-button.el-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 7px;
+}
+
+.queue-icon-button.is-active.el-button {
+  color: #ffffff;
+  border-color: #168a45;
+  background: #168a45;
+}
+
+.queue-icon-button.is-active.el-button:hover,
+.queue-icon-button.is-active.el-button:focus-visible {
+  color: #ffffff;
+  border-color: #12753b;
+  background: #12753b;
+}
+
+.queue-settings-popper {
+  padding: 0 !important;
+}
+
+.queue-menu-panel {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+}
+
+.queue-menu-title {
+  color: #26323f;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.queue-menu-panel .el-checkbox {
+  height: 24px;
+  margin-right: 0;
+}
+
+.queue-menu-panel .el-checkbox.is-checked .el-checkbox__label {
+  color: #168a45;
+}
+
+.queue-refresh-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 82px;
+  align-items: center;
+  gap: 10px;
+  color: #3a4654;
+  font-size: 12px;
+}
+
+.queue-refresh-input {
+  width: 82px;
 }
 
 .queue-alert {
-  grid-row: 3;
+  grid-row: 2;
   border-radius: 0;
   border-left: 0;
   border-right: 0;
 }
 
 .queue-table-wrap {
-  grid-row: 4;
+  grid-row: 3;
   min-height: 0;
   overflow: hidden;
 }
@@ -1254,7 +1361,8 @@ button.context-menu-item {
 }
 
 .terminal-tab-icon,
-.terminal-tab-new {
+.terminal-tab-new,
+.terminal-tab-settings {
   display: inline-grid;
   place-items: center;
   border: 1px solid transparent;
@@ -1277,8 +1385,70 @@ button.context-menu-item {
   outline: 0;
 }
 
-.terminal-tab-sync.is-active {
-  color: #7bd88f;
+.terminal-sync-icon {
+  width: 17px;
+  height: 17px;
+  overflow: visible;
+}
+
+.terminal-sync-icon path {
+  vector-effect: non-scaling-stroke;
+}
+
+.sync-device,
+.sync-arrow,
+.sync-slash {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition:
+    opacity 0.14s ease,
+    stroke 0.14s ease;
+}
+
+.sync-device {
+  stroke: #8fa3b8;
+  stroke-width: 1.55;
+}
+
+.sync-arrow {
+  opacity: 0;
+  stroke: #7bd88f;
+  stroke-width: 2.05;
+}
+
+.sync-slash {
+  opacity: 0.88;
+  stroke: #ff6b6b;
+  stroke-width: 2.1;
+}
+
+.terminal-tab-sync.is-follow {
+  background: rgba(123, 216, 143, 0.1);
+}
+
+.terminal-tab-sync.is-bidirectional {
+  background: rgba(123, 216, 143, 0.16);
+}
+
+.terminal-tab-sync.is-follow .sync-device-files,
+.terminal-tab-sync.is-follow .sync-arrow-forward,
+.terminal-tab-sync.is-bidirectional .sync-device,
+.terminal-tab-sync.is-bidirectional .sync-arrow {
+  opacity: 1;
+  stroke: #7bd88f;
+}
+
+.terminal-tab-sync.is-follow .sync-slash,
+.terminal-tab-sync.is-bidirectional .sync-slash {
+  opacity: 0;
+}
+
+.terminal-tab-sync.is-bidirectional:hover,
+.terminal-tab-sync.is-bidirectional:focus-visible,
+.terminal-tab-sync.is-follow:hover,
+.terminal-tab-sync.is-follow:focus-visible {
+  background: rgba(123, 216, 143, 0.22);
 }
 
 .terminal-tab-close {
@@ -1302,12 +1472,97 @@ button.context-menu-item {
   align-self: flex-start;
 }
 
+.terminal-tabs .el-popover__reference-wrapper {
+  display: inline-grid;
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+.terminal-tab-settings {
+  width: 30px;
+  height: 28px;
+  color: #d7e1ea;
+  background: #17212b;
+  border-color: #2c3b49;
+}
+
 .terminal-tab-new:hover,
-.terminal-tab-new:focus-visible {
+.terminal-tab-new:focus-visible,
+.terminal-tab-settings:hover,
+.terminal-tab-settings:focus-visible {
   color: #ffffff;
   border-color: var(--accent);
   background: #1d2a35;
   outline: 0;
+}
+
+.terminal-settings-popper {
+  padding: 0 !important;
+}
+
+.terminal-settings-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.terminal-settings-title {
+  color: #26323f;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.terminal-settings-node {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid #dbe3eb;
+  border-radius: 6px;
+  color: #26323f;
+  background: #f7fafc;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.terminal-settings-submenu {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid #dbe3eb;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.terminal-font-size-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #3a4654;
+  font-size: 12px;
+}
+
+.terminal-font-size-header strong {
+  color: #26323f;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-font-size-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  align-items: center;
+  gap: 10px;
+}
+
+.terminal-font-size-slider {
+  min-width: 0;
+}
+
+.terminal-font-size-input {
+  width: 104px;
 }
 
 .terminal-toolbar {

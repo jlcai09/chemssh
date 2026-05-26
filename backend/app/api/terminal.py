@@ -84,6 +84,9 @@ async def _terminal_reader(websocket: WebSocket, session: TerminalSession, send_
     try:
         while session.is_alive():
             data = await asyncio.to_thread(session.read, 4096)
+            cwd = session.consume_cwd_update()
+            if cwd:
+                await _send_json(websocket, send_lock, {"type": "cwd", "path": cwd})
             if data:
                 await _send_json(websocket, send_lock, {"type": "output", "data": data})
         await _send_json(websocket, send_lock, {"type": "exit", "code": session.provider.exit_code()})

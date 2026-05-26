@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 
 from backend.app.dependencies import get_structure_service
-from backend.app.models.structure import AseFrame, AsePreviewResponse
+from backend.app.models.structure import AseFrame, AseFrameChunkResponse, AsePreviewResponse
 from backend.app.services.structure_service import STRUCTURE_BINARY_MEDIA_TYPE, StructureService
 
 
@@ -32,6 +32,18 @@ def read_ase_frame(
     service: StructureService = Depends(get_structure_service),
 ) -> AseFrame:
     return service.read_frame(path, index, format, force=force)
+
+
+@router.get("/ase/frames", response_model=AseFrameChunkResponse)
+def read_ase_frame_chunk_json(
+    path: str,
+    start: int = Query(ge=0),
+    count: int = Query(gt=0),
+    format: Optional[str] = Query(default=None),
+    force: bool = Query(default=False),
+    service: StructureService = Depends(get_structure_service),
+) -> AseFrameChunkResponse:
+    return service.read_frame_chunk_json(path, start, count, format, force=force)
 
 
 @router.get("/ase/frames.bin")

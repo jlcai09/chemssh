@@ -68,6 +68,7 @@
         :initial-cwd="terminalInitialPath"
         :current-file-manager-path="currentPath"
         :layout-version="terminalLayoutVersion"
+        @cwd-change="openDirectoryFromTerminal"
       />
     </section>
 
@@ -101,7 +102,7 @@
           <QueueStatus
             v-else
             class="side-queue"
-            :initial-interval="10"
+            :initial-interval="5"
             :workspace-root="props.systemInfo?.workspace_root"
             @open-workdir="openQueueWorkdir"
           />
@@ -454,6 +455,11 @@ async function openDirectory(path?: string | null) {
 }
 
 async function openQueueWorkdir(path: string) {
+  await openDirectory(path)
+}
+
+async function openDirectoryFromTerminal(path: string) {
+  if (!path || path === currentPath.value) return
   await openDirectory(path)
 }
 

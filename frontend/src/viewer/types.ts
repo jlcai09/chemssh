@@ -20,11 +20,23 @@ export interface FixedAtomOptions {
   color?: string
 }
 
+export interface SupercellOptions {
+  x?: number
+  y?: number
+  z?: number
+}
+
+export interface StructureDisplayOptions {
+  supercell?: SupercellOptions
+  wrap?: boolean
+}
+
 export interface ViewerOptions {
   backgroundColor?: string
   style?: ViewerStyle
   labelOptions?: LabelOptions
   fixedAtomOptions?: FixedAtomOptions
+  displayOptions?: StructureDisplayOptions
 }
 
 export interface SetStructureOptions {

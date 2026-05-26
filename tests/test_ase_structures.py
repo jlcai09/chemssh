@@ -8,7 +8,9 @@ from zipfile import ZipFile
 
 import numpy as np
 from ase import Atoms
+from ase.calculators.singlepoint import SinglePointCalculator
 from ase.constraints import FixAtoms
+from ase.db import connect
 from ase.io import write
 from fastapi.testclient import TestClient
 
@@ -72,6 +74,8 @@ def test_ase_preview_returns_last_trajectory_frame_and_fixed_indices(tmp_path: P
     frame1 = Atoms("H2", positions=[[0, 0, 0], [0, 0, 2]])
     for atoms in (frame0, frame1):
         atoms.set_constraint(FixAtoms(indices=[1]))
+    frame0.calc = SinglePointCalculator(frame0, energy=-1.0, forces=np.array([[1, 0, 0], [0, 0, 50]]))
+    frame1.calc = SinglePointCalculator(frame1, energy=-2.0, forces=np.array([[0, 2, 0], [0, 0, 99]]))
     write(sample, [frame0, frame1])
 
     response = client.get("/api/structures/ase/preview", params={"path": str(sample)})
@@ -84,6 +88,8 @@ def test_ase_preview_returns_last_trajectory_frame_and_fixed_indices(tmp_path: P
     assert payload["initial_frame_index"] == 1
     assert payload["frame"]["positions"][1] == [0.0, 0.0, 2.0]
     assert payload["frame"]["fixed_indices"] == [1]
+    assert payload["frame"]["energy"] == -2.0
+    assert payload["frame"]["fmax"] == 2.0
 
 
 def test_ase_frame_reads_requested_index(tmp_path: Path) -> None:
@@ -101,6 +107,31 @@ def test_ase_frame_reads_requested_index(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["frame_index"] == 1
     assert payload["positions"] == [[1.0, 0.0, 0.0]]
+
+
+def test_ase_preview_and_json_chunk_support_variable_topology_db(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    sample = tmp_path / "mixed.db"
+    database = connect(sample)
+    database.write(Atoms("H", positions=[[0, 0, 0]]))
+    database.write(Atoms("H2", positions=[[0, 0, 0], [0, 0, 1]]))
+    database.write(Atoms("O", positions=[[1, 0, 0]]))
+
+    preview = client.get("/api/structures/ase/preview", params={"path": str(sample)})
+    chunk = client.get("/api/structures/ase/frames", params={"path": str(sample), "start": 0, "count": 3})
+
+    assert preview.status_code == 200
+    preview_payload = preview.json()
+    assert preview_payload["is_trajectory"] is True
+    assert preview_payload["topology_stable"] is False
+    assert preview_payload["transport"] == "json"
+    assert preview_payload["n_frames"] == 3
+
+    assert chunk.status_code == 200
+    chunk_payload = chunk.json()
+    assert chunk_payload["start"] == 0
+    assert chunk_payload["count"] == 3
+    assert [frame["symbols"] for frame in chunk_payload["frames"]] == [["H"], ["H", "H"], ["O"]]
 
 
 def test_ase_preview_blocks_path_traversal(tmp_path: Path) -> None:

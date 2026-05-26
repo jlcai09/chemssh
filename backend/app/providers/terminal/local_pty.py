@@ -160,6 +160,13 @@ class LocalPtyTerminalProvider(TerminalProvider):
         env.setdefault("COLORTERM", "truecolor")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
+        shell_name = Path(self._shell).name.lower()
+        if os.name == "nt" and "powershell" not in shell_name and not shell_name.startswith("pwsh"):
+            env["PROMPT"] = f"$E]633;P;Cwd=$P$E\\{env.get('PROMPT', '$P$G')}"
+        elif "bash" in shell_name:
+            cwd_marker = r'printf "\033]633;P;Cwd=%s\007" "$PWD"'
+            existing = env.get("PROMPT_COMMAND", "")
+            env["PROMPT_COMMAND"] = f"{cwd_marker}; {existing}" if existing else cwd_marker
         return env
 
     def _shell_args(self) -> list[str]:
@@ -172,7 +179,13 @@ class LocalPtyTerminalProvider(TerminalProvider):
             "[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false); "
             "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
             "$OutputEncoding=[Console]::OutputEncoding; "
-            "try { Set-PSReadLineOption -HistorySaveStyle SaveNothing } catch {}"
+            "try { Set-PSReadLineOption -HistorySaveStyle SaveNothing } catch {}; "
+            "$global:__chemweb_original_prompt=(Get-Command prompt -CommandType Function -ErrorAction SilentlyContinue).ScriptBlock; "
+            "function global:prompt { "
+            "[Console]::Write(\"$([char]27)]633;P;Cwd=$((Get-Location).ProviderPath)$([char]7)\"); "
+            "if ($global:__chemweb_original_prompt) { & $global:__chemweb_original_prompt } "
+            "else { \"PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) \" } "
+            "}"
         )
         return [
             self._shell,

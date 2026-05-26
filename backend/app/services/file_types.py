@@ -16,6 +16,7 @@ STRUCTURE_EXTENSIONS = {
     ".xsf": "xsf",
     ".cube": "cube",
     ".gen": "gen",
+    ".db": "db",
     ".lammps": "lammps",
     ".dump": "lammps-dump-text",
     ".xml": "xml",

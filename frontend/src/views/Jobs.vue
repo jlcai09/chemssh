@@ -2,7 +2,7 @@
   <div class="jobs-view">
     <QueueStatus
       class="jobs-queue"
-      :initial-interval="10"
+      :initial-interval="5"
       :workspace-root="systemInfo?.workspace_root"
       @open-workdir="handleOpenWorkdir"
     />

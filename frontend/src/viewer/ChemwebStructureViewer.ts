@@ -4,6 +4,7 @@ import type {
   LabelOptions,
   SetStructureOptions,
   SetTrajectoryOptions,
+  StructureDisplayOptions,
   StructureFrame,
   TrajectoryStore,
   ViewerOptions,
@@ -72,6 +73,17 @@ const DEFAULT_FIXED: Required<FixedAtomOptions> = {
   show: true,
   color: '#26323f'
 }
+
+const DEFAULT_DISPLAY_OPTIONS = {
+  supercell: {
+    x: 1,
+    y: 1,
+    z: 1
+  },
+  wrap: false
+}
+
+const MAX_DISPLAY_ATOMS = 120000
 
 const ELEMENT_COLORS: Record<string, string> = {
   H: '#f8fafc',
@@ -367,6 +379,8 @@ export class ChemwebStructureViewer {
   private style: Required<ViewerStyle>
   private labelOptions: Required<LabelOptions>
   private fixedOptions: Required<FixedAtomOptions>
+  private displayOptions = cloneDisplayOptions(DEFAULT_DISPLAY_OPTIONS)
+  private sourceFrame: InternalFrame | null = null
   private frame: InternalFrame | null = null
   private trajectory: TrajectoryStore | null = null
   private bonds: Bond[] = []
@@ -397,6 +411,7 @@ export class ChemwebStructureViewer {
     this.style = { ...DEFAULT_STYLE, ...options.style, backgroundColor: options.backgroundColor ?? options.style?.backgroundColor ?? DEFAULT_STYLE.backgroundColor }
     this.labelOptions = { ...DEFAULT_LABELS, ...options.labelOptions }
     this.fixedOptions = { ...DEFAULT_FIXED, ...options.fixedAtomOptions }
+    this.displayOptions = normalizeDisplayOptions(options.displayOptions)
 
     this.root = document.createElement('div')
     this.root.className = 'chemweb-viewer-root'
@@ -433,12 +448,10 @@ export class ChemwebStructureViewer {
 
   setStructure(frame: StructureFrame, options: SetStructureOptions = {}) {
     this.trajectory = null
-    this.frame = normalizeFrame(frame)
-    this.bonds = estimateBonds(this.frame, this.style.bondScale)
-    this.updateBounds()
-    if (!options.keepView) this.resetCamera()
-    this.syncSelectionForFrame(Boolean(options.keepView))
-    this.requestRender()
+    this.useSourceFrame(normalizeFrame(frame), {
+      keepView: Boolean(options.keepView),
+      updateBounds: true
+    })
   }
 
   setTrajectory(trajectory: TrajectoryStore, options: SetTrajectoryOptions = {}) {
@@ -446,22 +459,20 @@ export class ChemwebStructureViewer {
     const preferredIndex = options.initialFrameIndex ?? trajectory.initialFrameIndex ?? 0
     const frame = frameFromTrajectoryStore(trajectory, preferredIndex) ?? firstAvailableFrame(trajectory)
     if (!frame) return
-    this.frame = normalizeFrame(frame)
-    this.bonds = estimateBonds(this.frame, this.style.bondScale)
-    this.updateBounds()
-    if (!options.keepView) this.resetCamera()
-    this.syncSelectionForFrame(Boolean(options.keepView))
-    this.requestRender()
+    this.useSourceFrame(normalizeFrame(frame), {
+      keepView: Boolean(options.keepView),
+      updateBounds: true
+    })
   }
 
   setFrame(index: number) {
     if (!this.trajectory) return
     const frame = frameFromTrajectoryStore(this.trajectory, index)
     if (!frame) return
-    this.frame = normalizeFrame(frame)
-    this.bonds = estimateBonds(this.frame, this.style.bondScale)
-    this.syncSelectionForFrame(true)
-    this.requestRender()
+    this.useSourceFrame(normalizeFrame(frame), {
+      keepView: true,
+      updateBounds: false
+    })
   }
 
   setStyle(style: ViewerStyle) {
@@ -481,6 +492,25 @@ export class ChemwebStructureViewer {
 
   setFixedAtomOptions(options: FixedAtomOptions) {
     this.fixedOptions = { ...this.fixedOptions, ...options }
+    this.requestRender()
+  }
+
+  setDisplayOptions(options: StructureDisplayOptions) {
+    const nextOptions = normalizeDisplayOptions({
+      ...this.displayOptions,
+      ...options,
+      supercell: {
+        ...this.displayOptions.supercell,
+        ...options.supercell
+      }
+    })
+    if (displayOptionsEqual(this.displayOptions, nextOptions)) return
+    this.displayOptions = nextOptions
+    if (!this.sourceFrame) return
+    this.frame = buildDisplayFrame(this.sourceFrame, this.displayOptions)
+    this.bonds = estimateBonds(this.frame, this.style.bondScale)
+    this.updateBounds()
+    this.syncSelectionForFrame(true)
     this.requestRender()
   }
 
@@ -509,6 +539,7 @@ export class ChemwebStructureViewer {
     if (this.rafHandle) window.cancelAnimationFrame(this.rafHandle)
     this.rafHandle = 0
     this.container.innerHTML = ''
+    this.sourceFrame = null
     this.frame = null
     this.trajectory = null
     this.projectedAtoms = []
@@ -525,6 +556,16 @@ export class ChemwebStructureViewer {
     context.drawImage(this.sceneCanvas, 0, 0)
     context.drawImage(this.overlayCanvas, 0, 0)
     return output.toDataURL('image/png')
+  }
+
+  private useSourceFrame(frame: InternalFrame, options: { keepView: boolean; updateBounds: boolean }) {
+    this.sourceFrame = frame
+    this.frame = buildDisplayFrame(frame, this.displayOptions)
+    this.bonds = estimateBonds(this.frame, this.style.bondScale)
+    if (options.updateBounds) this.updateBounds()
+    if (!options.keepView) this.resetCamera()
+    this.syncSelectionForFrame(options.keepView)
+    this.requestRender()
   }
 
   private installEvents() {
@@ -892,48 +933,44 @@ export class ChemwebStructureViewer {
   }
 
   private drawCell(context: CanvasRenderingContext2D) {
-    if (!this.frame?.cell || !hasCell(this.frame.cell)) return
-    const cell = this.frame.cell
+    const source = this.sourceFrame ?? this.frame
+    const cell = source?.cell && hasCell(source.cell) ? source.cell : undefined
+    if (!cell || !source) return
+    const copies = displaySupercellCopies(source, this.displayOptions)
     const a: Vec3 = [cell[0] ?? 0, cell[1] ?? 0, cell[2] ?? 0]
     const b: Vec3 = [cell[3] ?? 0, cell[4] ?? 0, cell[5] ?? 0]
     const c: Vec3 = [cell[6] ?? 0, cell[7] ?? 0, cell[8] ?? 0]
-    const vertices: Vec3[] = [
-      [0, 0, 0],
-      a,
-      b,
-      c,
-      addVec(a, b),
-      addVec(a, c),
-      addVec(b, c),
-      addVec(addVec(a, b), c)
-    ]
-    const edges = [
-      [0, 1],
-      [0, 2],
-      [0, 3],
-      [1, 4],
-      [1, 5],
-      [2, 4],
-      [2, 6],
-      [3, 5],
-      [3, 6],
-      [4, 7],
-      [5, 7],
-      [6, 7]
-    ]
     context.save()
     context.strokeStyle = 'rgba(89, 101, 121, 0.7)'
     context.lineWidth = 1
     context.setLineDash([5, 4])
     context.beginPath()
-    for (const [start, end] of edges) {
-      const left = this.projectPoint(vertices[start])
-      const right = this.projectPoint(vertices[end])
-      context.moveTo(left.x, left.y)
-      context.lineTo(right.x, right.y)
+
+    for (let iy = 0; iy <= copies.y; iy += 1) {
+      for (let iz = 0; iz <= copies.z; iz += 1) {
+        this.drawProjectedSegment(context, latticePoint(a, b, c, 0, iy, iz), latticePoint(a, b, c, copies.x, iy, iz))
+      }
     }
+    for (let ix = 0; ix <= copies.x; ix += 1) {
+      for (let iz = 0; iz <= copies.z; iz += 1) {
+        this.drawProjectedSegment(context, latticePoint(a, b, c, ix, 0, iz), latticePoint(a, b, c, ix, copies.y, iz))
+      }
+    }
+    for (let ix = 0; ix <= copies.x; ix += 1) {
+      for (let iy = 0; iy <= copies.y; iy += 1) {
+        this.drawProjectedSegment(context, latticePoint(a, b, c, ix, iy, 0), latticePoint(a, b, c, ix, iy, copies.z))
+      }
+    }
+
     context.stroke()
     context.restore()
+  }
+
+  private drawProjectedSegment(context: CanvasRenderingContext2D, start: Vec3, end: Vec3) {
+    const left = this.projectPoint(start)
+    const right = this.projectPoint(end)
+    context.moveTo(left.x, left.y)
+    context.lineTo(right.x, right.y)
   }
 
   private drawBonds(context: CanvasRenderingContext2D, atoms: ProjectedAtom[]) {
@@ -1526,6 +1563,115 @@ function normalizeFrame(frame: StructureFrame): InternalFrame {
   }
 }
 
+function cloneDisplayOptions(options: typeof DEFAULT_DISPLAY_OPTIONS) {
+  return {
+    supercell: { ...options.supercell },
+    wrap: options.wrap
+  }
+}
+
+function normalizeDisplayOptions(options?: StructureDisplayOptions) {
+  return {
+    supercell: {
+      x: normalizeSupercellMultiplier(options?.supercell?.x ?? DEFAULT_DISPLAY_OPTIONS.supercell.x),
+      y: normalizeSupercellMultiplier(options?.supercell?.y ?? DEFAULT_DISPLAY_OPTIONS.supercell.y),
+      z: normalizeSupercellMultiplier(options?.supercell?.z ?? DEFAULT_DISPLAY_OPTIONS.supercell.z)
+    },
+    wrap: Boolean(options?.wrap ?? DEFAULT_DISPLAY_OPTIONS.wrap)
+  }
+}
+
+function normalizeSupercellMultiplier(value: number | undefined) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 1
+  return Math.min(12, Math.max(1, Math.round(numeric)))
+}
+
+function displayOptionsEqual(left: ReturnType<typeof normalizeDisplayOptions>, right: ReturnType<typeof normalizeDisplayOptions>) {
+  return (
+    left.wrap === right.wrap &&
+    left.supercell.x === right.supercell.x &&
+    left.supercell.y === right.supercell.y &&
+    left.supercell.z === right.supercell.z
+  )
+}
+
+function buildDisplayFrame(source: InternalFrame, options: ReturnType<typeof normalizeDisplayOptions>): InternalFrame {
+  const cell = source.cell && hasCell(source.cell) ? source.cell : undefined
+  const inverse = cell ? invertCell(cell) : null
+  const wrap = options.wrap && Boolean(cell && inverse)
+  const { x: copiesX, y: copiesY, z: copiesZ } = displaySupercellCopies(source, options)
+  const copyCount = copiesX * copiesY * copiesZ
+  if (!wrap && copyCount === 1) return source
+
+  const nAtoms = source.nAtoms
+  const totalAtoms = nAtoms * copyCount
+  const positions = new Float32Array(totalAtoms * 3)
+  const tags = source.tags ? new Int32Array(totalAtoms) : undefined
+  const fixedMask = source.fixedMask ? new Uint8Array(totalAtoms) : undefined
+  const symbols = new Array<string>(totalAtoms)
+  const numbers = new Array<number>(totalAtoms)
+  const a = cellVector(cell, 0)
+  const b = cellVector(cell, 1)
+  const c = cellVector(cell, 2)
+  let outputIndex = 0
+
+  for (let ix = 0; ix < copiesX; ix += 1) {
+    for (let iy = 0; iy < copiesY; iy += 1) {
+      for (let iz = 0; iz < copiesZ; iz += 1) {
+        const tx = ix * a[0] + iy * b[0] + iz * c[0]
+        const ty = ix * a[1] + iy * b[1] + iz * c[1]
+        const tz = ix * a[2] + iy * b[2] + iz * c[2]
+        for (let atomIndex = 0; atomIndex < nAtoms; atomIndex += 1) {
+          const sourceOffset = atomIndex * 3
+          const outputOffset = outputIndex * 3
+          let x = source.positions[sourceOffset] ?? 0
+          let y = source.positions[sourceOffset + 1] ?? 0
+          let z = source.positions[sourceOffset + 2] ?? 0
+          if (wrap && cell && inverse) {
+            const wrapped = wrapToCell(x, y, z, cell, inverse)
+            x = wrapped[0]
+            y = wrapped[1]
+            z = wrapped[2]
+          }
+          positions[outputOffset] = x + tx
+          positions[outputOffset + 1] = y + ty
+          positions[outputOffset + 2] = z + tz
+          symbols[outputIndex] = source.symbols[atomIndex] ?? 'X'
+          numbers[outputIndex] = source.numbers[atomIndex] ?? 0
+          if (tags) tags[outputIndex] = source.tags?.[atomIndex] ?? 0
+          if (fixedMask) fixedMask[outputIndex] = source.fixedMask?.[atomIndex] ?? 0
+          outputIndex += 1
+        }
+      }
+    }
+  }
+
+  return {
+    ...source,
+    nAtoms: totalAtoms,
+    symbols,
+    numbers,
+    positions,
+    cell: cell ? scaleCell(cell, copiesX, copiesY, copiesZ) : source.cell,
+    tags,
+    fixedMask
+  }
+}
+
+function displaySupercellCopies(source: InternalFrame, options: ReturnType<typeof normalizeDisplayOptions>) {
+  const cell = source.cell && hasCell(source.cell) ? source.cell : undefined
+  let x = cell ? options.supercell.x : 1
+  let y = cell ? options.supercell.y : 1
+  let z = cell ? options.supercell.z : 1
+  if (source.nAtoms * x * y * z > MAX_DISPLAY_ATOMS) {
+    x = 1
+    y = 1
+    z = 1
+  }
+  return { x, y, z }
+}
+
 function inferAtomCount(frame: StructureFrame) {
   if (frame.symbols.length) return frame.symbols.length
   if (frame.numbers.length) return frame.numbers.length
@@ -1557,6 +1703,77 @@ function normalizeCell(cell?: Float32Array | number[][]) {
     output[offset + 2] = values[2] ?? 0
   }
   return output
+}
+
+function cellVector(cell: Float32Array | undefined, row: number): Vec3 {
+  if (!cell) return [0, 0, 0]
+  const offset = row * 3
+  return [cell[offset] ?? 0, cell[offset + 1] ?? 0, cell[offset + 2] ?? 0]
+}
+
+function scaleCell(cell: Float32Array, x: number, y: number, z: number) {
+  const output = new Float32Array(9)
+  output[0] = (cell[0] ?? 0) * x
+  output[1] = (cell[1] ?? 0) * x
+  output[2] = (cell[2] ?? 0) * x
+  output[3] = (cell[3] ?? 0) * y
+  output[4] = (cell[4] ?? 0) * y
+  output[5] = (cell[5] ?? 0) * y
+  output[6] = (cell[6] ?? 0) * z
+  output[7] = (cell[7] ?? 0) * z
+  output[8] = (cell[8] ?? 0) * z
+  return output
+}
+
+function latticePoint(a: Vec3, b: Vec3, c: Vec3, x: number, y: number, z: number): Vec3 {
+  return [
+    x * a[0] + y * b[0] + z * c[0],
+    x * a[1] + y * b[1] + z * c[1],
+    x * a[2] + y * b[2] + z * c[2]
+  ]
+}
+
+function invertCell(cell: Float32Array) {
+  const a = cell[0] ?? 0
+  const b = cell[1] ?? 0
+  const c = cell[2] ?? 0
+  const d = cell[3] ?? 0
+  const e = cell[4] ?? 0
+  const f = cell[5] ?? 0
+  const g = cell[6] ?? 0
+  const h = cell[7] ?? 0
+  const i = cell[8] ?? 0
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+  if (Math.abs(det) < 1e-10) return null
+  const invDet = 1 / det
+  return new Float32Array([
+    (e * i - f * h) * invDet,
+    (c * h - b * i) * invDet,
+    (b * f - c * e) * invDet,
+    (f * g - d * i) * invDet,
+    (a * i - c * g) * invDet,
+    (c * d - a * f) * invDet,
+    (d * h - e * g) * invDet,
+    (b * g - a * h) * invDet,
+    (a * e - b * d) * invDet
+  ])
+}
+
+function wrapToCell(x: number, y: number, z: number, cell: Float32Array, inverse: Float32Array): Vec3 {
+  const fx = wrapFraction(x * inverse[0] + y * inverse[3] + z * inverse[6])
+  const fy = wrapFraction(x * inverse[1] + y * inverse[4] + z * inverse[7])
+  const fz = wrapFraction(x * inverse[2] + y * inverse[5] + z * inverse[8])
+  return [
+    fx * cell[0] + fy * cell[3] + fz * cell[6],
+    fx * cell[1] + fy * cell[4] + fz * cell[7],
+    fx * cell[2] + fy * cell[5] + fz * cell[8]
+  ]
+}
+
+function wrapFraction(value: number) {
+  if (!Number.isFinite(value)) return 0
+  const wrapped = value - Math.floor(value)
+  return wrapped >= 1 ? 0 : wrapped
 }
 
 function normalizeTags(tags: Int32Array | number[] | undefined, nAtoms: number) {

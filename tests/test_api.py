@@ -1,4 +1,5 @@
 from io import BytesIO
+import json
 from pathlib import Path
 import subprocess
 from zipfile import ZipFile
@@ -179,6 +180,44 @@ def test_submit_job_uses_requested_queue_command(tmp_path: Path, monkeypatch) ->
     assert captured["cwd"] == str(tmp_path.resolve())
     assert response.json()["scheduler"] == "qsub"
     assert response.json()["job_id"] == "12345.server"
+
+
+def test_slurm_queue_can_list_all_or_current_user(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    captured: list[list[str]] = []
+
+    def fake_which(command: str) -> str:
+        return f"/usr/bin/{command}"
+
+    def fake_getuser() -> str:
+        return "alice"
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        captured.append(command)
+        payload = {
+            "jobs": [
+                {
+                    "job_id": 101,
+                    "name": "job",
+                    "user_name": "bob",
+                    "job_state": "RUNNING",
+                    "partition": "debug",
+                    "working_directory": str(tmp_path),
+                }
+            ]
+        }
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(slurm_provider.shutil, "which", fake_which)
+    monkeypatch.setattr(slurm_provider.getpass, "getuser", fake_getuser)
+    monkeypatch.setattr(slurm_provider.subprocess, "run", fake_run)
+
+    all_jobs = client.get("/api/queue/list")
+    current_user_jobs = client.get("/api/queue/list", params={"current_user_only": True})
+
+    assert all_jobs.status_code == 200
+    assert current_user_jobs.status_code == 200
+    assert captured == [["squeue", "--json"], ["squeue", "-u", "alice", "--json"]]
 
 
 def test_pbs_queue_actions_use_pbs_commands(tmp_path: Path, monkeypatch) -> None:

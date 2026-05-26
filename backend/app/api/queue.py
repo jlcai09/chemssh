@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from backend.app.dependencies import get_queue_service
 from backend.app.models.queue import (
@@ -18,8 +18,11 @@ router = APIRouter(prefix="/queue", tags=["queue"])
 
 
 @router.get("/list", response_model=QueueResponse)
-def list_queue(service: QueueService = Depends(get_queue_service)) -> QueueResponse:
-    return service.list_jobs()
+def list_queue(
+    current_user_only: bool = Query(default=False),
+    service: QueueService = Depends(get_queue_service),
+) -> QueueResponse:
+    return service.list_jobs(current_user_only=current_user_only)
 
 
 @router.get("/job/{job_id}", response_model=QueueJobDetailResponse)

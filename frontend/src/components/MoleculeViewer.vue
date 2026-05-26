@@ -79,6 +79,82 @@
         <el-tooltip :content="t('viewer.resetView')" placement="right">
           <el-button :aria-label="t('viewer.resetView')" :icon="ResetViewIcon" circle size="small" @click="resetView" />
         </el-tooltip>
+
+        <el-popover trigger="click" placement="right-start" :width="236" :disabled="!structureHasCell">
+          <template #reference>
+            <el-button
+              :aria-label="t('viewer.supercellSettings')"
+              :class="{ 'is-active': hasSupercell }"
+              :disabled="!structureHasCell"
+              :icon="Grid"
+              circle
+              size="small"
+            />
+          </template>
+          <div class="supercell-settings-panel">
+            <div class="supercell-settings-header">
+              <span>{{ t('viewer.supercell') }}</span>
+              <strong>{{ supercellX }} x {{ supercellY }} x {{ supercellZ }}</strong>
+            </div>
+            <div class="supercell-axis-row">
+              <span class="supercell-axis-label">X</span>
+              <el-input-number
+                v-model="supercellX"
+                class="supercell-axis-input"
+                size="small"
+                :min="1"
+                :max="supercellAxisMax('x')"
+                :step="1"
+                step-strictly
+                controls-position="right"
+                @change="clampSupercell"
+              />
+            </div>
+            <div class="supercell-axis-row">
+              <span class="supercell-axis-label">Y</span>
+              <el-input-number
+                v-model="supercellY"
+                class="supercell-axis-input"
+                size="small"
+                :min="1"
+                :max="supercellAxisMax('y')"
+                :step="1"
+                step-strictly
+                controls-position="right"
+                @change="clampSupercell"
+              />
+            </div>
+            <div class="supercell-axis-row">
+              <span class="supercell-axis-label">Z</span>
+              <el-input-number
+                v-model="supercellZ"
+                class="supercell-axis-input"
+                size="small"
+                :min="1"
+                :max="supercellAxisMax('z')"
+                :step="1"
+                step-strictly
+                controls-position="right"
+                @change="clampSupercell"
+              />
+            </div>
+            <div class="supercell-settings-actions">
+              <el-button size="small" text @click="resetSupercell">{{ t('viewer.resetSupercell') }}</el-button>
+            </div>
+          </div>
+        </el-popover>
+
+        <el-tooltip :content="t('viewer.wrapAtoms')" placement="right">
+          <el-button
+            :aria-label="t('viewer.wrapAtoms')"
+            :class="{ 'is-active': wrapAtoms }"
+            :disabled="!structureHasCell"
+            :icon="Crop"
+            circle
+            size="small"
+            @click="toggleWrapAtoms"
+          />
+        </el-tooltip>
       </div>
       <div v-if="asePreview" class="viewer-overlay">
         <span>Frame: {{ currentFrame.frame_index + 1 }} / {{ asePreview.n_frames }}</span>
@@ -95,8 +171,8 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Connection, Download, Refresh, View } from '@element-plus/icons-vue'
-import { readAseFrame, readAseFrameChunk } from '../api/structures'
+import { Connection, Crop, Download, Grid, Refresh, View } from '@element-plus/icons-vue'
+import { readAseFrame, readAseFrameChunk, readAseFrameJsonChunk } from '../api/structures'
 import { t } from '../i18n'
 import type { AseFrame, AseFrameChunk, AsePreviewResponse } from '../types/structure'
 import type { StructureFrame, TrajectoryStore, ViewerStyleMode } from '../viewer'
@@ -144,6 +220,10 @@ const selectedStyle = ref<StyleMode>(props.styleMode)
 const bondScale = ref(1.25)
 const showAtomIndex = ref(false)
 const showAtomTag = ref(false)
+const supercellX = ref(1)
+const supercellY = ref(1)
+const supercellZ = ref(1)
+const wrapAtoms = ref(false)
 const frameInput = ref(0)
 const frameLoading = ref(false)
 const cachedFrameCount = ref(0)
@@ -160,15 +240,24 @@ let viewerModulePromise: Promise<ViewerModule> | null = null
 
 const jsonFrameCache = new Map<number, AseFrame>()
 const pendingChunks = new Map<number, Promise<void>>()
+const pendingJsonChunks = new Map<number, Promise<void>>()
 const chunkSize = 64
+const jsonChunkSize = 16
+const jsonWarmChunkRadius = 1
 const maxLocalTrajectoryBytes = 512 * 1024 * 1024
+const maxLocalJsonTrajectoryBytes = 256 * 1024 * 1024
+const maxSupercellAxis = 12
+const maxDisplayAtoms = 120000
 
 const cacheStatus = computed(() => {
   if (!props.asePreview?.is_trajectory) return ''
-  if (!canPreloadTrajectory(props.asePreview)) return 'Frames: streaming'
   if (cachedFrameCount.value >= props.asePreview.n_frames) return ''
   return `Frames: ${cachedFrameCount.value} / ${props.asePreview.n_frames}`
 })
+
+const hasSupercell = computed(() => supercellX.value > 1 || supercellY.value > 1 || supercellZ.value > 1)
+
+const structureHasCell = computed(() => hasUsableCell(currentFrame.value.cell))
 
 function emptyFrame(): AseFrame {
   return {
@@ -203,6 +292,17 @@ function viewerStyle() {
     bondScale: bondScale.value,
     backgroundColor: props.backgroundColor,
     showCell: true
+  }
+}
+
+function viewerDisplayOptions() {
+  return {
+    supercell: {
+      x: supercellX.value,
+      y: supercellY.value,
+      z: supercellZ.value
+    },
+    wrap: wrapAtoms.value
   }
 }
 
@@ -245,6 +345,7 @@ async function renderChemwebStructure(keepView = false) {
     showAtomIndex: showAtomIndex.value,
     showAtomTag: showAtomTag.value
   })
+  chemwebViewer.setDisplayOptions(viewerDisplayOptions())
 
   if (trajectoryStore && props.asePreview.is_trajectory) {
     chemwebViewer.setTrajectory(trajectoryStore, {
@@ -314,6 +415,52 @@ function resetBondScale() {
   bondScale.value = 1.25
 }
 
+function resetSupercell() {
+  supercellX.value = 1
+  supercellY.value = 1
+  supercellZ.value = 1
+}
+
+function toggleWrapAtoms() {
+  wrapAtoms.value = !wrapAtoms.value
+}
+
+function supercellAxisMax(axis: 'x' | 'y' | 'z') {
+  const atomCount = Math.max(1, props.asePreview?.n_atoms ?? currentFrame.value.positions.length)
+  const x = axis === 'x' ? 1 : Math.max(1, Number(supercellX.value) || 1)
+  const y = axis === 'y' ? 1 : Math.max(1, Number(supercellY.value) || 1)
+  const z = axis === 'z' ? 1 : Math.max(1, Number(supercellZ.value) || 1)
+  const otherCopies = Math.max(1, x * y * z)
+  return Math.max(1, Math.min(maxSupercellAxis, Math.floor(maxDisplayAtoms / (atomCount * otherCopies))))
+}
+
+function clampSupercell() {
+  supercellX.value = clampMultiplier(supercellX.value, supercellAxisMax('x'))
+  supercellY.value = clampMultiplier(supercellY.value, supercellAxisMax('y'))
+  supercellZ.value = clampMultiplier(supercellZ.value, supercellAxisMax('z'))
+}
+
+function clampMultiplier(value: number | undefined, max: number) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 1
+  return Math.min(max, Math.max(1, Math.round(numeric)))
+}
+
+function hasUsableCell(cell: number[][] | undefined) {
+  if (!cell || cell.length < 3) return false
+  const ax = cell[0]?.[0] ?? 0
+  const ay = cell[0]?.[1] ?? 0
+  const az = cell[0]?.[2] ?? 0
+  const bx = cell[1]?.[0] ?? 0
+  const by = cell[1]?.[1] ?? 0
+  const bz = cell[1]?.[2] ?? 0
+  const cx = cell[2]?.[0] ?? 0
+  const cy = cell[2]?.[1] ?? 0
+  const cz = cell[2]?.[2] ?? 0
+  const det = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)
+  return Math.abs(det) > 1e-10
+}
+
 async function setFrame(index: number) {
   const preview = props.asePreview
   if (!preview) return
@@ -338,11 +485,23 @@ async function setFrame(index: number) {
     }
   }
 
+  if (preview.is_trajectory && !canPreloadTrajectory(preview)) {
+    frameLoading.value = true
+    try {
+      await ensureJsonChunk(target, preview)
+    } catch {
+      // Fall back to the single-frame endpoint below.
+    } finally {
+      frameLoading.value = false
+    }
+  }
+
   const cached = jsonFrameCache.get(target)
   if (cached) {
     currentFrame.value = cached
     frameInput.value = target
     await renderStructure(true)
+    warmJsonFramesAround(target)
     return
   }
 
@@ -350,9 +509,10 @@ async function setFrame(index: number) {
   try {
     const frame = await loadFrame(target)
     currentFrame.value = frame
-    jsonFrameCache.set(target, frame)
+    cacheJsonFrame(frame)
     frameInput.value = target
     await renderStructure(true)
+    warmJsonFramesAround(target)
   } finally {
     frameLoading.value = false
   }
@@ -399,10 +559,30 @@ function estimateTrajectoryBytes(preview: AsePreviewResponse) {
     preview.n_frames * (9 * Float32Array.BYTES_PER_ELEMENT + 2 * Float32Array.BYTES_PER_ELEMENT)
 }
 
+function canPreloadJsonTrajectory(preview: AsePreviewResponse) {
+  return preview.is_trajectory && !canPreloadTrajectory(preview) && estimateJsonTrajectoryBytes(preview) <= maxLocalJsonTrajectoryBytes
+}
+
+function estimateJsonTrajectoryBytes(preview: AsePreviewResponse) {
+  const sampledAtoms = Math.max(preview.n_atoms, preview.frame.positions.length)
+  return sampledAtoms * preview.n_frames * 96 + preview.n_frames * 512
+}
+
 async function preloadTrajectoryFrames(version: number) {
   const preview = props.asePreview
-  if (!preview?.is_trajectory || !canPreloadTrajectory(preview) || !trajectoryStore) return
+  if (!preview?.is_trajectory) return
+  if (canPreloadTrajectory(preview) && trajectoryStore) {
+    await preloadBinaryTrajectoryFrames(version, preview)
+    return
+  }
+  if (canPreloadJsonTrajectory(preview)) {
+    await preloadJsonTrajectoryFrames(version, preview)
+    return
+  }
+  warmJsonFramesAround(preview.initial_frame_index)
+}
 
+async function preloadBinaryTrajectoryFrames(version: number, preview: AsePreviewResponse) {
   const starts = chunkStartsForFullTrajectory(preview)
   const initialStart = Math.floor(preview.initial_frame_index / chunkSize) * chunkSize
   starts.sort((left, right) => {
@@ -421,9 +601,36 @@ async function preloadTrajectoryFrames(version: number) {
   }
 }
 
+async function preloadJsonTrajectoryFrames(version: number, preview: AsePreviewResponse) {
+  const starts = jsonChunkStartsForFullTrajectory(preview)
+  const initialStart = jsonChunkStartForIndex(preview.initial_frame_index)
+  starts.sort((left, right) => {
+    if (left === initialStart) return -1
+    if (right === initialStart) return 1
+    return left - right
+  })
+
+  for (const start of starts) {
+    if (version !== preloadVersion || !props.asePreview || props.asePreview.path !== preview.path) return
+    try {
+      await ensureJsonChunkStart(start, preview)
+    } catch {
+      return
+    }
+  }
+}
+
 function chunkStartsForFullTrajectory(preview: AsePreviewResponse) {
   const starts: number[] = []
   for (let start = 0; start < preview.n_frames; start += chunkSize) {
+    starts.push(start)
+  }
+  return starts
+}
+
+function jsonChunkStartsForFullTrajectory(preview: AsePreviewResponse) {
+  const starts: number[] = []
+  for (let start = 0; start < preview.n_frames; start += jsonChunkSize) {
     starts.push(start)
   }
   return starts
@@ -450,6 +657,7 @@ async function ensureChunkStart(chunkStart: number, preview: AsePreviewResponse)
     preview.size_limit_overridden === true
   )
     .then(chunk => {
+      if (!props.asePreview || props.asePreview.path !== preview.path) return
       writeChunkToStore(chunk)
       updateCachedFrameCount()
     })
@@ -458,6 +666,53 @@ async function ensureChunkStart(chunkStart: number, preview: AsePreviewResponse)
     })
   pendingChunks.set(chunkStart, request)
   await request
+}
+
+async function ensureJsonChunk(index: number, preview: AsePreviewResponse) {
+  await ensureJsonChunkStart(jsonChunkStartForIndex(index), preview)
+}
+
+async function ensureJsonChunkStart(chunkStart: number, preview: AsePreviewResponse) {
+  if (isJsonChunkAvailable(chunkStart, preview)) return
+  const pending = pendingJsonChunks.get(chunkStart)
+  if (pending) {
+    await pending
+    return
+  }
+
+  const request = readAseFrameJsonChunk(
+    preview.path,
+    chunkStart,
+    Math.min(jsonChunkSize, preview.n_frames - chunkStart),
+    preview.format,
+    preview.size_limit_overridden === true
+  )
+    .then(chunk => {
+      if (!props.asePreview || props.asePreview.path !== preview.path) return
+      for (const frame of chunk.frames) {
+        jsonFrameCache.set(frame.frame_index, frame)
+      }
+      updateCachedFrameCount()
+    })
+    .finally(() => {
+      pendingJsonChunks.delete(chunkStart)
+    })
+  pendingJsonChunks.set(chunkStart, request)
+  await request
+}
+
+function warmJsonFramesAround(index: number) {
+  const preview = props.asePreview
+  if (!preview?.is_trajectory || canPreloadTrajectory(preview)) return
+  const center = jsonChunkStartForIndex(index)
+  const starts: number[] = []
+  for (let radius = 0; radius <= jsonWarmChunkRadius; radius += 1) {
+    starts.push(center - radius * jsonChunkSize, center + radius * jsonChunkSize)
+  }
+  for (const start of new Set(starts)) {
+    if (start < 0 || start >= preview.n_frames) continue
+    void ensureJsonChunkStart(start, preview).catch(() => undefined)
+  }
 }
 
 function createTrajectoryStore(preview: AsePreviewResponse): TrajectoryStore | null {
@@ -541,12 +796,29 @@ function updateCachedFrameCount() {
   cachedFrameCount.value = trajectoryStore?.availableFrames?.reduce((total, value) => total + value, 0) ?? jsonFrameCache.size
 }
 
+function cacheJsonFrame(frame: AseFrame) {
+  jsonFrameCache.set(frame.frame_index, frame)
+  updateCachedFrameCount()
+}
+
 function isChunkAvailable(store: TrajectoryStore, chunkStart: number, preview: AsePreviewResponse) {
   const count = Math.min(chunkSize, preview.n_frames - chunkStart)
   for (let offset = 0; offset < count; offset += 1) {
     if (store.availableFrames?.[chunkStart + offset] !== 1) return false
   }
   return true
+}
+
+function isJsonChunkAvailable(chunkStart: number, preview: AsePreviewResponse) {
+  const count = Math.min(jsonChunkSize, preview.n_frames - chunkStart)
+  for (let offset = 0; offset < count; offset += 1) {
+    if (!jsonFrameCache.has(chunkStart + offset)) return false
+  }
+  return true
+}
+
+function jsonChunkStartForIndex(index: number) {
+  return Math.floor(index / jsonChunkSize) * jsonChunkSize
 }
 
 function isStoreFrameAvailable(store: TrajectoryStore, index: number) {
@@ -639,10 +911,11 @@ function resetAseState() {
   preloadVersion += 1
   jsonFrameCache.clear()
   pendingChunks.clear()
+  pendingJsonChunks.clear()
   const frame = props.asePreview?.frame ?? emptyFrame()
   currentFrame.value = frame
   frameInput.value = frame.frame_index
-  jsonFrameCache.set(frame.frame_index, frame)
+  cacheJsonFrame(frame)
   trajectoryStore = props.asePreview ? createTrajectoryStore(props.asePreview) : null
   updateCachedFrameCount()
   const version = preloadVersion
@@ -675,6 +948,8 @@ watch(
   () => {
     resetAseState()
     bondScale.value = 1.25
+    resetSupercell()
+    wrapAtoms.value = false
     void renderStructure()
   }
 )
@@ -688,6 +963,23 @@ watch(
         showAtomIndex: showAtomIndex.value,
         showAtomTag: showAtomTag.value
       })
+    } else {
+      void renderStructure(true)
+    }
+  }
+)
+
+watch(
+  () => [supercellX.value, supercellY.value, supercellZ.value, wrapAtoms.value, structureHasCell.value],
+  () => {
+    if (!structureHasCell.value) {
+      resetSupercell()
+      wrapAtoms.value = false
+      return
+    }
+    clampSupercell()
+    if (chemwebViewer && props.asePreview) {
+      chemwebViewer.setDisplayOptions(viewerDisplayOptions())
     } else {
       void renderStructure(true)
     }

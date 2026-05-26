@@ -100,6 +100,31 @@ def test_terminal_session_sync_cwd_validates_workspace(tmp_path: Path) -> None:
     assert exc.value.code == "FORBIDDEN_PATH"
 
 
+def test_terminal_session_extracts_cwd_marker_without_echo(tmp_path: Path) -> None:
+    provider = FakeTerminalProvider()
+    provider.start(str(tmp_path), 24, 80)
+    created_at = utc_now()
+    session = TerminalSession(
+        session_id="term_test",
+        provider=provider,
+        cwd=str(tmp_path),
+        created_at=created_at,
+        last_active_at=created_at,
+        security=WorkspaceSecurity(tmp_path),
+        allow_sync_cwd=True,
+    )
+    subdir = tmp_path / "calc"
+    subdir.mkdir()
+
+    provider.writes.clear()
+    provider.read = lambda size=4096: f"before\x1b]633;P;Cwd={subdir}\x07after"  # type: ignore[method-assign]
+
+    assert session.read() == "beforeafter"
+    assert session.cwd == str(subdir.resolve())
+    assert session.consume_cwd_update() == str(subdir.resolve())
+    assert session.consume_cwd_update() is None
+
+
 def test_terminal_manager_enforces_session_limit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("backend.app.services.terminal_service.LocalPtyTerminalProvider", FakeTerminalProvider)
     settings = Settings(

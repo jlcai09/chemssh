@@ -27,7 +27,7 @@ class SlurmProvider(SchedulerProvider):
     def _missing(self, command: str) -> bool:
         return shutil.which(command) is None
 
-    def list_jobs(self) -> QueueResponse:
+    def list_jobs(self, current_user_only: bool = False) -> QueueResponse:
         if self._missing("squeue"):
             return QueueResponse(
                 scheduler=self.scheduler_name,
@@ -36,13 +36,13 @@ class SlurmProvider(SchedulerProvider):
                 items=[],
             )
 
-        json_response = self._list_jobs_json()
+        json_response = self._list_jobs_json(current_user_only)
         if json_response is not None:
             return json_response
-        return self._list_jobs_text()
+        return self._list_jobs_text(current_user_only)
 
-    def _list_jobs_json(self) -> QueueResponse | None:
-        command = ["squeue", "-u", getpass.getuser(), "--json"]
+    def _list_jobs_json(self, current_user_only: bool) -> QueueResponse | None:
+        command = _squeue_command(current_user_only, "--json")
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=8, check=False)
         except (OSError, subprocess.TimeoutExpired):
@@ -88,9 +88,9 @@ class SlurmProvider(SchedulerProvider):
             ),
         )
 
-    def _list_jobs_text(self) -> QueueResponse:
+    def _list_jobs_text(self, current_user_only: bool) -> QueueResponse:
         fmt = "%i|%j|%u|%T|%M|%l|%D|%C|%R|%P|%Z"
-        command = ["squeue", "-u", getpass.getuser(), "-h", "-o", fmt]
+        command = _squeue_command(current_user_only, "-h", "-o", fmt)
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=8, check=False)
         except subprocess.TimeoutExpired as exc:
@@ -227,7 +227,7 @@ class SlurmProvider(SchedulerProvider):
 class LocalSchedulerProvider(SchedulerProvider):
     scheduler_name = "local"
 
-    def list_jobs(self) -> QueueResponse:
+    def list_jobs(self, current_user_only: bool = False) -> QueueResponse:
         return QueueResponse(
             scheduler=self.scheduler_name,
             available=False,
@@ -260,6 +260,14 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _squeue_command(current_user_only: bool, *args: str) -> list[str]:
+    command = ["squeue"]
+    if current_user_only:
+        command.extend(["-u", getpass.getuser()])
+    command.extend(args)
+    return command
 
 
 def _parse_key_value_output(text: str) -> dict[str, str]:

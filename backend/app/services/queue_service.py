@@ -14,8 +14,8 @@ class QueueService:
     def __init__(self, provider: SchedulerProvider) -> None:
         self.provider = provider
 
-    def list_jobs(self) -> QueueResponse:
-        return self.provider.list_jobs()
+    def list_jobs(self, *, current_user_only: bool = False) -> QueueResponse:
+        return self.provider.list_jobs(current_user_only=current_user_only)
 
     def job_detail(self, job_id: str) -> QueueJobDetailResponse:
         return self.provider.job_detail(job_id)

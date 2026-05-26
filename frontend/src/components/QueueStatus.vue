@@ -21,26 +21,52 @@
           <el-option label="HELD" value="HELD" />
           <el-option label="FAILED" value="FAILED" />
         </el-select>
-        <el-tooltip :content="t('toolbar.refresh')" placement="bottom">
-          <el-button :icon="Refresh" circle size="small" :loading="loading" @click="refresh" />
-        </el-tooltip>
+        <el-popover trigger="click" placement="bottom-end" :width="220" popper-class="queue-settings-popper">
+          <template #reference>
+            <el-button
+              class="queue-icon-button"
+              :class="{ 'is-active': filtersActive }"
+              :icon="Filter"
+              size="small"
+              :aria-label="t('queue.filter')"
+            />
+          </template>
+          <div class="queue-menu-panel">
+            <div class="queue-menu-title">{{ t('queue.filter') }}</div>
+            <el-checkbox v-model="currentUserFilterEnabled">{{ t('queue.currentUser') }}</el-checkbox>
+            <el-checkbox v-if="workspaceRoot" v-model="workspaceFilterEnabled">{{ t('queue.workspaceOnly') }}</el-checkbox>
+          </div>
+        </el-popover>
+        <el-popover trigger="click" placement="bottom-end" :width="240" popper-class="queue-settings-popper">
+          <template #reference>
+            <el-button
+              class="queue-icon-button"
+              :class="{ 'is-active': autoRefresh }"
+              :icon="Refresh"
+              size="small"
+              :loading="loading"
+              :aria-label="t('queue.autoRefresh')"
+            />
+          </template>
+          <div class="queue-menu-panel">
+            <div class="queue-menu-title">{{ t('queue.autoRefresh') }}</div>
+            <el-switch v-model="autoRefresh" size="small" :active-text="t('queue.autoRefresh')" />
+            <label class="queue-refresh-input-row">
+              <span>{{ t('queue.refreshInterval') }}</span>
+              <el-input-number
+                v-model="refreshSecondsModel"
+                class="queue-refresh-input"
+                size="small"
+                :min="MIN_REFRESH_SECONDS"
+                :max="MAX_REFRESH_SECONDS"
+                :step="1"
+                :controls="false"
+              />
+            </label>
+            <el-button size="small" text @click="refresh">{{ t('queue.refreshNow') }}</el-button>
+          </div>
+        </el-popover>
       </div>
-    </div>
-
-    <div class="queue-controls">
-      <el-switch v-model="autoRefresh" size="small" :active-text="t('queue.autoRefresh')" />
-      <el-switch
-        v-if="workspaceRoot"
-        v-model="workspaceFilterEnabled"
-        size="small"
-        :active-text="t('queue.workspaceOnly')"
-      />
-      <el-select v-model="refreshSeconds" size="small" class="interval-select">
-        <el-option :value="5" label="5s" />
-        <el-option :value="10" label="10s" />
-        <el-option :value="30" label="30s" />
-        <el-option :value="60" label="60s" />
-      </el-select>
     </div>
 
     <el-alert
@@ -94,7 +120,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Search } from '@element-plus/icons-vue'
+import { Filter, Refresh, Search } from '@element-plus/icons-vue'
 import {
   getJobDetail,
   listQueue,
@@ -114,7 +140,7 @@ const props = withDefaults(
   }>(),
   {
     compact: false,
-    initialInterval: 10,
+    initialInterval: 5,
     workspaceRoot: null
   }
 )
@@ -134,9 +160,12 @@ const response = ref<QueueResponse | null>(null)
 const loading = ref(false)
 const search = ref('')
 const stateFilter = ref('')
+const MIN_REFRESH_SECONDS = 1
+const MAX_REFRESH_SECONDS = 3600
 const autoRefresh = ref(true)
-const workspaceFilterEnabled = ref(true)
-const refreshSeconds = ref(props.initialInterval)
+const currentUserFilterEnabled = ref(true)
+const workspaceFilterEnabled = ref(false)
+const refreshSeconds = ref(clampRefreshSeconds(props.initialInterval))
 const detailOpen = ref(false)
 const detailText = ref('')
 const selectedJobs = ref<QueueItem[]>([])
@@ -149,6 +178,14 @@ const contextMenu = ref<QueueContextMenuState>({
 })
 let timer: number | undefined
 
+const refreshSecondsModel = computed({
+  get: () => refreshSeconds.value,
+  set: (value: number | undefined) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return
+    refreshSeconds.value = clampRefreshSeconds(value)
+  }
+})
+
 const actionLabels = computed(() => {
   const scheduler = (response.value?.scheduler ?? '').toLowerCase()
   if (scheduler.includes('pbs')) {
@@ -156,6 +193,8 @@ const actionLabels = computed(() => {
   }
   return { hold: 'hold', release: 'release', cancel: 'scancel' }
 })
+
+const filtersActive = computed(() => currentUserFilterEnabled.value || (workspaceFilterEnabled.value && Boolean(props.workspaceRoot)))
 
 const filteredJobs = computed(() => {
   const query = search.value.trim().toLowerCase()
@@ -176,7 +215,7 @@ const filteredJobs = computed(() => {
 async function refresh() {
   loading.value = true
   try {
-    response.value = await listQueue()
+    response.value = await listQueue({ currentUserOnly: currentUserFilterEnabled.value })
     syncSelectionWithVisibleJobs()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('queue.refreshFailed'))
@@ -188,6 +227,11 @@ async function refresh() {
 function clamp(value: number, min: number, max: number) {
   if (max < min) return min
   return Math.min(Math.max(value, min), max)
+}
+
+function clampRefreshSeconds(value: number) {
+  if (!Number.isFinite(value)) return 5
+  return clamp(Math.round(value), MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS)
 }
 
 function normalizePath(path: string) {
@@ -330,5 +374,8 @@ onBeforeUnmount(() => {
 })
 
 watch([autoRefresh, refreshSeconds], schedule)
+watch(currentUserFilterEnabled, () => {
+  void refresh()
+})
 watch(() => filteredJobs.value.map(job => job.job_id).join('\u0000'), syncSelectionWithVisibleJobs)
 </script>
