@@ -98,7 +98,7 @@
       </el-popover>
     </div>
 
-    <div class="terminal-shell">
+    <div class="terminal-shell" @dragover="handleFileDragOver" @drop="handleFileDrop">
       <div
         v-for="tab in tabs"
         :key="tab.localId"
@@ -124,6 +124,7 @@ import {
   terminalWebSocketUrl,
   type TerminalSession
 } from '../../api/terminal'
+import { formatFileDragTerminalInput, hasChemwebFileDrag, readChemwebFileDrag } from '../../api/fileDrag'
 import { t } from '../../i18n'
 
 type TerminalMessage =
@@ -544,6 +545,22 @@ function sendTabSocketMessage(tab: TerminalTab, payload: Record<string, unknown>
 function sendTabSyncCwd(tab: TerminalTab, path: string) {
   tab.cwd = path
   sendTabSocketMessage(tab, { type: 'sync_cwd', path })
+}
+
+function handleFileDragOver(event: DragEvent) {
+  if (!hasChemwebFileDrag(event)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function handleFileDrop(event: DragEvent) {
+  const payload = readChemwebFileDrag(event.dataTransfer)
+  if (!payload || payload.paths.length === 0) return
+  event.preventDefault()
+  const tab = activeTab.value
+  if (!tab) return
+  sendTabSocketMessage(tab, { type: 'input', data: formatFileDragTerminalInput(payload.paths) })
+  tab.terminal?.focus()
 }
 
 async function cleanupDetachedSessions() {

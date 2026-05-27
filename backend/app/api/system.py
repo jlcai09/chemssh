@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import os
 import platform
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ from fastapi import APIRouter, Depends
 from backend.app import __version__
 from backend.app.core.config import Settings
 from backend.app.dependencies import get_settings_dependency
-from backend.app.models.system import SystemInfo
+from backend.app.models.system import SystemIdentity, SystemInfo
 
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -24,6 +25,17 @@ def system_info(settings: Settings = Depends(get_settings_dependency)) -> System
         cwd=str(Path.cwd()),
         project_version=__version__,
         python_version=platform.python_version() or sys.version.split()[0],
+        scheduler=settings.scheduler.type,
+        workspace_root=str(settings.workspace.root),
+    )
+
+
+@router.get("/identity", response_model=SystemIdentity)
+def system_identity(settings: Settings = Depends(get_settings_dependency)) -> SystemIdentity:
+    return SystemIdentity(
+        app="chemweb",
+        project_version=__version__,
+        pid=os.getpid(),
         scheduler=settings.scheduler.type,
         workspace_root=str(settings.workspace.root),
     )

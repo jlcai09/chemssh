@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from backend.app.dependencies import get_file_service
+from backend.app.core.errors import AppError
 from backend.app.models.file import (
     CreateDirectoryRequest,
     DirectoryListing,
@@ -90,6 +91,27 @@ def download_archive(
     service: FileService = Depends(get_file_service),
 ) -> FileResponse:
     archive = service.create_download_archive(payload.paths)
+    return FileResponse(
+        archive,
+        media_type="application/zip",
+        filename="chemweb-selection.zip",
+        background=BackgroundTask(lambda: archive.unlink(missing_ok=True)),
+    )
+
+
+@router.get("/download-selection")
+def download_selection(
+    path: list[str] = Query(...),
+    service: FileService = Depends(get_file_service),
+) -> FileResponse:
+    if len(path) == 1:
+        try:
+            target = service.resolve_download(path[0])
+            return FileResponse(target, filename=target.name)
+        except AppError:
+            pass
+
+    archive = service.create_download_archive(path)
     return FileResponse(
         archive,
         media_type="application/zip",

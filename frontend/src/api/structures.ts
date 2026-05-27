@@ -1,6 +1,19 @@
 import { request } from './http'
 import { API_BASE, ApiError } from './http'
-import type { AseFrame, AseFrameChunk, AseFrameJsonChunk, AsePreviewResponse, BinaryArraySpec } from '../types/structure'
+import type {
+  AseFrame,
+  AseFrameChunk,
+  AseFrameJsonChunk,
+  AsePreviewResponse,
+  BinaryArraySpec,
+  StructureSource
+} from '../types/structure'
+
+export const ASE_STRUCTURE_SOURCE: StructureSource = {
+  id: 'ase',
+  parser: 'ase',
+  apiBase: '/api/structures/ase'
+}
 
 function aseQuery(path: string, format?: string | null, force = false) {
   const params = new URLSearchParams({ path })
@@ -9,29 +22,51 @@ function aseQuery(path: string, format?: string | null, force = false) {
   return params
 }
 
+function sourceBase(source?: StructureSource | null) {
+  return (source?.apiBase || ASE_STRUCTURE_SOURCE.apiBase).replace(/\/+$/, '')
+}
+
 export function readAsePreview(path: string, format?: string | null, force = false) {
-  return request<AsePreviewResponse>(`/api/structures/ase/preview?${aseQuery(path, format, force).toString()}`)
+  return readStructurePreview(ASE_STRUCTURE_SOURCE, path, format, force)
 }
 
 export function readAseFrame(path: string, index: number, format?: string | null, force = false) {
-  const params = aseQuery(path, format, force)
-  params.set('index', String(index))
-  return request<AseFrame>(`/api/structures/ase/frame?${params.toString()}`)
+  return readStructureFrame(ASE_STRUCTURE_SOURCE, path, index, format, force)
 }
 
 export function readAseFrameJsonChunk(path: string, start: number, count: number, format?: string | null, force = false) {
-  const params = aseQuery(path, format, force)
-  params.set('start', String(start))
-  params.set('count', String(count))
-  return request<AseFrameJsonChunk>(`/api/structures/ase/frames?${params.toString()}`)
+  return readStructureFrameJsonChunk(ASE_STRUCTURE_SOURCE, path, start, count, format, force)
 }
 
-export async function readAseFrameChunk(path: string, start: number, count: number, format?: string | null, force = false): Promise<AseFrameChunk> {
+export function readAseFrameChunk(path: string, start: number, count: number, format?: string | null, force = false): Promise<AseFrameChunk> {
+  return readStructureFrameChunk(ASE_STRUCTURE_SOURCE, path, start, count, format, force)
+}
+
+export function readStructurePreview(source: StructureSource | null | undefined, path: string, format?: string | null, force = false) {
+  const activeSource = source ?? ASE_STRUCTURE_SOURCE
+  return request<AsePreviewResponse>(`${sourceBase(activeSource)}/preview?${aseQuery(path, format, force).toString()}`)
+    .then(preview => ({ ...preview, source: activeSource }))
+}
+
+export function readStructureFrame(source: StructureSource | null | undefined, path: string, index: number, format?: string | null, force = false) {
+  const params = aseQuery(path, format, force)
+  params.set('index', String(index))
+  return request<AseFrame>(`${sourceBase(source)}/frame?${params.toString()}`)
+}
+
+export function readStructureFrameJsonChunk(source: StructureSource | null | undefined, path: string, start: number, count: number, format?: string | null, force = false) {
+  const params = aseQuery(path, format, force)
+  params.set('start', String(start))
+  params.set('count', String(count))
+  return request<AseFrameJsonChunk>(`${sourceBase(source)}/frames?${params.toString()}`)
+}
+
+export async function readStructureFrameChunk(source: StructureSource | null | undefined, path: string, start: number, count: number, format?: string | null, force = false): Promise<AseFrameChunk> {
   const params = aseQuery(path, format, force)
   params.set('start', String(start))
   params.set('count', String(count))
 
-  const response = await fetch(`${API_BASE}/api/structures/ase/frames.bin?${params.toString()}`, {
+  const response = await fetch(`${API_BASE}${sourceBase(source)}/frames.bin?${params.toString()}`, {
     headers: { Accept: 'application/vnd.chemweb.structure+bin' }
   })
 

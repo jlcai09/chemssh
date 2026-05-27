@@ -1,3 +1,9 @@
+export interface StructureSource {
+  id: string
+  parser: string
+  apiBase: string
+}
+
 export interface AseFrame {
   frame_index: number
   positions: number[][]
@@ -23,6 +29,7 @@ export interface AsePreviewResponse {
   topology_stable: boolean
   size_limit_overridden?: boolean
   frame: AseFrame
+  source?: StructureSource
 }
 
 export interface BinaryArraySpec {

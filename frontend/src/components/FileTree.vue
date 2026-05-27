@@ -1,5 +1,12 @@
 <template>
-  <div class="file-tree" role="grid" aria-multiselectable="true" @dragstart.prevent>
+  <div
+    ref="treeRef"
+    class="file-tree"
+    :class="{ 'is-column-resizing': Boolean(activeColumnResize) }"
+    :style="columnStyle"
+    role="grid"
+    aria-multiselectable="true"
+  >
     <div class="file-list-header" role="row">
       <span role="columnheader" />
       <span class="file-header-cell" role="columnheader" :aria-sort="sortAria('name')">
@@ -19,6 +26,15 @@
           </span>
         </button>
       </span>
+      <button
+        class="file-column-resizer file-column-resizer-name-size"
+        type="button"
+        role="separator"
+        :aria-label="t('resize.fileColumnNameSize')"
+        tabindex="0"
+        @pointerdown="startColumnResize('name-size', $event)"
+        @dblclick="resetColumnWidths"
+      />
       <span class="file-header-cell file-header-size" role="columnheader" :aria-sort="sortAria('size')">
         <button
           class="file-sort-button is-size"
@@ -36,6 +52,15 @@
           </span>
         </button>
       </span>
+      <button
+        class="file-column-resizer file-column-resizer-size-time"
+        type="button"
+        role="separator"
+        :aria-label="t('resize.fileColumnSizeTime')"
+        tabindex="0"
+        @pointerdown="startColumnResize('size-time', $event)"
+        @dblclick="resetColumnWidths"
+      />
       <span class="file-header-cell" role="columnheader" :aria-sort="sortAria('mtime')">
         <button
           class="file-sort-button"
@@ -64,28 +89,34 @@
           'is-directory': item.type === 'directory',
           'is-selected': selectedPathSet.has(item.path),
           'is-drag-range': isInDragRange(index),
+          'is-drag-export': exportDragPathSet.has(item.path),
           'is-focused': focusedIndex === index,
           'is-anchor': anchorIndex === index
         }"
         role="row"
         tabindex="0"
+        draggable="true"
         :aria-selected="selectedPathSet.has(item.path)"
         @focus="focusedIndex = index"
         @mousedown.left="beginSelect(index, $event)"
         @contextmenu.prevent="openContextMenu(index, $event)"
         @mouseenter="extendSelection(index)"
+        @dragstart="handleFileDragStart(index, $event)"
+        @dragend="finishFileDrag"
         @dblclick="handleOpen(index)"
         @keydown="handleKeydown(index, $event)"
       >
         <span class="file-cell file-icon-cell" role="gridcell">
           <el-icon class="file-kind-icon">
             <Folder v-if="item.type === 'directory'" />
-            <View v-else-if="item.preview_type === 'structure'" />
+            <View v-else-if="isPreviewableItem(item)" />
             <Document v-else />
           </el-icon>
         </span>
         <span class="file-cell file-name-cell" role="gridcell" :title="item.name">{{ item.name }}</span>
+        <span class="file-column-divider file-column-divider-name-size" aria-hidden="true" />
         <span class="file-cell file-size-cell" role="gridcell">{{ formatSize(item.size) }}</span>
+        <span class="file-column-divider file-column-divider-size-time" aria-hidden="true" />
         <span class="file-cell file-time-cell" role="gridcell">{{ formatDate(item.mtime) }}</span>
       </div>
     </div>
@@ -95,6 +126,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CaretBottom, CaretTop, Document, Folder, View } from '@element-plus/icons-vue'
+import { writeChemwebFileDrag } from '../api/fileDrag'
+import { hasActivePreviewProvider, type FilePreviewProvider } from '../api/filePreviewProviders'
 import type { FileItem } from '../api/files'
 import { locale, t } from '../i18n'
 
@@ -102,9 +135,11 @@ const props = withDefaults(
   defineProps<{
     items: FileItem[]
     selectedItems?: FileItem[]
+    previewProviders?: FilePreviewProvider[]
   }>(),
   {
-    selectedItems: () => []
+    selectedItems: () => [],
+    previewProviders: () => []
   }
 )
 
@@ -116,10 +151,12 @@ const emit = defineEmits<{
 
 type SortKey = 'name' | 'size' | 'mtime'
 type SortDirection = 'asc' | 'desc'
+type ColumnResizeTarget = 'name-size' | 'size-time'
 
 const sortKey = ref<SortKey>('name')
 const sortDirection = ref<SortDirection>('asc')
 const selectedPathSet = computed(() => new Set(props.selectedItems.map(item => item.path)))
+const treeRef = ref<HTMLElement | null>(null)
 const bodyRef = ref<HTMLElement | null>(null)
 const rowRefs = ref<(HTMLElement | null)[]>([])
 const focusedIndex = ref<number | null>(null)
@@ -129,10 +166,43 @@ const dragAnchor = ref<number | null>(null)
 const dragOverIndex = ref<number | null>(null)
 const blankDragActive = ref(false)
 const blankDragPathSet = ref(new Set<string>())
+const exportDragPathSet = ref(new Set<string>())
+const exportDragArmed = ref(false)
+const exportDragActive = ref(false)
 let blankDragStartX = 0
 let blankDragStartY = 0
 let blankDragCurrentX = 0
 let blankDragCurrentY = 0
+let longPressTimer: number | null = null
+let pressIndex: number | null = null
+let pressStartX = 0
+let pressStartY = 0
+let columnResizeStartX = 0
+let columnResizeStartSize = 0
+let columnResizeStartTime = 0
+let previousBodyCursor = ''
+let previousBodyUserSelect = ''
+
+const LONG_PRESS_MS = 430
+const SELECT_DRAG_THRESHOLD = 4
+const DEFAULT_SIZE_COLUMN_WIDTH = 88
+const DEFAULT_TIME_COLUMN_WIDTH = 152
+const MIN_NAME_COLUMN_WIDTH = 160
+const MIN_SIZE_COLUMN_WIDTH = 64
+const MAX_SIZE_COLUMN_WIDTH = 168
+const MIN_TIME_COLUMN_WIDTH = 112
+const MAX_TIME_COLUMN_WIDTH = 260
+const FILE_ICON_COLUMN_WIDTH = 34
+const FILE_COLUMN_RESIZER_WIDTH = 10
+
+const activeColumnResize = ref<ColumnResizeTarget | null>(null)
+const sizeColumnWidth = ref(DEFAULT_SIZE_COLUMN_WIDTH)
+const timeColumnWidth = ref(DEFAULT_TIME_COLUMN_WIDTH)
+
+const columnStyle = computed<Record<string, string>>(() => ({
+  '--file-size-col': `${sizeColumnWidth.value}px`,
+  '--file-time-col': `${timeColumnWidth.value}px`
+}))
 
 const sortedItems = computed(() => {
   return [...props.items].sort((a, b) => {
@@ -146,6 +216,10 @@ const sortedItems = computed(() => {
 
 function typeRank(item: FileItem) {
   return item.type === 'directory' ? 0 : 1
+}
+
+function isPreviewableItem(item: FileItem) {
+  return item.preview_type === 'structure' || hasActivePreviewProvider(item, props.previewProviders)
 }
 
 function nameCompare(a: FileItem, b: FileItem) {
@@ -196,6 +270,67 @@ function toggleSort(key: SortKey) {
     sortKey.value = key
     sortDirection.value = 'asc'
   }
+}
+
+function clamp(value: number, min: number, max: number) {
+  if (max < min) return min
+  return Math.min(Math.max(value, min), max)
+}
+
+function maxSizeColumnWidth() {
+  const width = treeRef.value?.getBoundingClientRect().width ?? 0
+  if (width <= 0) return MAX_SIZE_COLUMN_WIDTH
+  const reserved = FILE_ICON_COLUMN_WIDTH + FILE_COLUMN_RESIZER_WIDTH * 2 + MIN_NAME_COLUMN_WIDTH + timeColumnWidth.value
+  return Math.min(MAX_SIZE_COLUMN_WIDTH, Math.max(MIN_SIZE_COLUMN_WIDTH, width - reserved))
+}
+
+function startColumnResize(target: ColumnResizeTarget, event: PointerEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  activeColumnResize.value = target
+  columnResizeStartX = event.clientX
+  columnResizeStartSize = sizeColumnWidth.value
+  columnResizeStartTime = timeColumnWidth.value
+  previousBodyCursor = document.body.style.cursor
+  previousBodyUserSelect = document.body.style.userSelect
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('pointermove', handleColumnResizeMove)
+  window.addEventListener('pointerup', stopColumnResize, { once: true })
+  window.addEventListener('pointercancel', stopColumnResize, { once: true })
+}
+
+function handleColumnResizeMove(event: PointerEvent) {
+  if (!activeColumnResize.value) return
+  const delta = event.clientX - columnResizeStartX
+
+  if (activeColumnResize.value === 'name-size') {
+    const maxSize = maxSizeColumnWidth()
+    sizeColumnWidth.value = clamp(columnResizeStartSize - delta, MIN_SIZE_COLUMN_WIDTH, maxSize)
+    return
+  }
+
+  const combinedWidth = columnResizeStartSize + columnResizeStartTime
+  const minSize = Math.max(MIN_SIZE_COLUMN_WIDTH, combinedWidth - MAX_TIME_COLUMN_WIDTH)
+  const maxSize = Math.min(MAX_SIZE_COLUMN_WIDTH, combinedWidth - MIN_TIME_COLUMN_WIDTH, maxSizeColumnWidth())
+  const nextSize = clamp(columnResizeStartSize + delta, minSize, maxSize)
+  sizeColumnWidth.value = nextSize
+  timeColumnWidth.value = clamp(combinedWidth - nextSize, MIN_TIME_COLUMN_WIDTH, MAX_TIME_COLUMN_WIDTH)
+}
+
+function stopColumnResize() {
+  if (!activeColumnResize.value) return
+  activeColumnResize.value = null
+  document.body.style.cursor = previousBodyCursor
+  document.body.style.userSelect = previousBodyUserSelect
+  window.removeEventListener('pointermove', handleColumnResizeMove)
+  window.removeEventListener('pointerup', stopColumnResize)
+  window.removeEventListener('pointercancel', stopColumnResize)
+}
+
+function resetColumnWidths() {
+  sizeColumnWidth.value = DEFAULT_SIZE_COLUMN_WIDTH
+  timeColumnWidth.value = DEFAULT_TIME_COLUMN_WIDTH
 }
 
 function setRowRef(el: unknown, index: number) {
@@ -277,24 +412,83 @@ function clearSelection() {
 
 function beginSelect(index: number, event: MouseEvent) {
   event.stopPropagation()
-  event.preventDefault()
   focusRow(index)
+  finishFileDrag()
 
   if (event.ctrlKey || event.metaKey) {
+    event.preventDefault()
     toggleSelection(index)
     return
   }
 
   if (event.shiftKey) {
+    event.preventDefault()
     const start = anchorIndex.value ?? focusedIndex.value ?? index
     selectRange(start, index)
     return
   }
 
+  const item = sortedItems.value[index]
+  if (!item) return
+
+  if (selectedPathSet.value.has(item.path)) {
+    anchorIndex.value = index
+    focusedIndex.value = index
+    emitSelection(new Set(selectedPathSet.value), item)
+  } else {
+    selectSingle(index)
+  }
+
+  startLongPress(index, event)
+}
+
+function startLongPress(index: number, event: MouseEvent) {
+  cancelLongPress()
+  pressIndex = index
+  pressStartX = event.clientX
+  pressStartY = event.clientY
+  longPressTimer = window.setTimeout(() => armFileDrag(index), LONG_PRESS_MS)
+  window.addEventListener('mousemove', handlePressMove)
+}
+
+function cancelLongPress() {
+  if (longPressTimer !== null) {
+    window.clearTimeout(longPressTimer)
+    longPressTimer = null
+  }
+}
+
+function resetPressState() {
+  cancelLongPress()
+  pressIndex = null
+  window.removeEventListener('mousemove', handlePressMove)
+}
+
+function handlePressMove(event: MouseEvent) {
+  if (pressIndex === null || exportDragArmed.value) return
+  if (Math.abs(event.clientX - pressStartX) < SELECT_DRAG_THRESHOLD && Math.abs(event.clientY - pressStartY) < SELECT_DRAG_THRESHOLD) return
+  cancelLongPress()
   dragActive.value = true
-  dragAnchor.value = index
-  dragOverIndex.value = index
-  selectSingle(index)
+  dragAnchor.value = pressIndex
+  dragOverIndex.value = pressIndex
+}
+
+function armFileDrag(index: number) {
+  const items = dragItemsForIndex(index)
+  exportDragPathSet.value = new Set(items.map(item => item.path))
+  exportDragArmed.value = items.length > 0
+  dragActive.value = false
+  dragAnchor.value = null
+  dragOverIndex.value = null
+}
+
+function dragItemsForIndex(index: number) {
+  const item = sortedItems.value[index]
+  if (!item) return []
+  if (selectedPathSet.value.has(item.path) && props.selectedItems.length > 0) {
+    return sortedItems.value.filter(candidate => selectedPathSet.value.has(candidate.path))
+  }
+  return [item]
 }
 
 function beginBlankSelect(event: MouseEvent) {
@@ -354,6 +548,12 @@ function updateBlankDragSelection() {
 }
 
 function extendSelection(index: number) {
+  if (pressIndex !== null && !exportDragArmed.value && !dragActive.value && index !== pressIndex) {
+    cancelLongPress()
+    dragActive.value = true
+    dragAnchor.value = pressIndex
+    dragOverIndex.value = pressIndex
+  }
   if (!dragActive.value || dragAnchor.value === null) return
   dragOverIndex.value = index
   selectRange(dragAnchor.value, index)
@@ -368,6 +568,46 @@ function finishSelection() {
   dragOverIndex.value = null
   blankDragActive.value = false
   blankDragPathSet.value = new Set()
+  if (!exportDragActive.value) finishFileDrag()
+  resetPressState()
+}
+
+function handleFileDragStart(index: number, event: DragEvent) {
+  const item = sortedItems.value[index]
+  if (!item || !exportDragArmed.value || !exportDragPathSet.value.has(item.path) || !event.dataTransfer) {
+    event.preventDefault()
+    finishFileDrag()
+    return
+  }
+
+  const items = dragItemsForIndex(index)
+  if (items.length === 0) {
+    event.preventDefault()
+    finishFileDrag()
+    return
+  }
+
+  exportDragActive.value = true
+  resetPressState()
+  writeChemwebFileDrag(event.dataTransfer, items)
+  setDragImage(event, items)
+}
+
+function setDragImage(event: DragEvent, items: FileItem[]) {
+  if (!event.dataTransfer) return
+  const image = document.createElement('div')
+  image.className = 'file-drag-image'
+  image.textContent = items.length === 1 ? items[0].name : `${items.length} files`
+  document.body.appendChild(image)
+  event.dataTransfer.setDragImage(image, 12, 12)
+  window.setTimeout(() => image.remove(), 0)
+}
+
+function finishFileDrag() {
+  cancelLongPress()
+  exportDragActive.value = false
+  exportDragArmed.value = false
+  exportDragPathSet.value = new Set()
 }
 
 function isInDragRange(index: number) {
@@ -492,7 +732,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopColumnResize()
   window.removeEventListener('mouseup', finishSelection)
   window.removeEventListener('mousemove', handleBlankDragMove)
+  window.removeEventListener('mousemove', handlePressMove)
+  cancelLongPress()
 })
 </script>

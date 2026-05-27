@@ -90,6 +90,11 @@ class CompressionConfig(BaseModel):
     brotli: BrotliConfig = Field(default_factory=BrotliConfig)
 
 
+class PluginsConfig(BaseModel):
+    enabled: bool = True
+    directories: list[Path] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
@@ -99,6 +104,7 @@ class Settings(BaseModel):
     logs: LogConfig = Field(default_factory=LogConfig)
     terminal: TerminalConfig = Field(default_factory=TerminalConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
+    plugins: PluginsConfig = Field(default_factory=PluginsConfig)
 
 
 _settings: Optional[Settings] = None

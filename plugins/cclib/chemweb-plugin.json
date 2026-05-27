@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "id": "cclib",
+  "name": "cclib",
+  "version": "0.1.0",
+  "description": "Parse quantum chemistry output files with cclib and send structure trajectories to the existing preview window.",
+  "enabled": true,
+  "entry": {
+    "frontend": {
+      "type": "iframe",
+      "path": "frontend/bundle/index.html"
+    },
+    "backend": {
+      "type": "python",
+      "module": "backend.plugin",
+      "factory": "create_plugin"
+    }
+  },
+  "panels": [
+    {
+      "id": "cclib-provider",
+      "title": "cclib",
+      "icon": "LineChart",
+      "kind": "tool",
+      "singleton": true,
+      "accepts": {
+        "extensions": [".out", ".log", ".dat", ".txt"],
+        "filenames": [],
+        "preview_types": ["text", "file"]
+      }
+    }
+  ],
+  "file_manager": {
+    "preview_providers": [
+      {
+        "id": "cclib-output",
+        "title": "Open with cclib",
+        "panel_id": "cclib-provider",
+        "activate": "on_panel_open",
+        "priority": 60,
+        "accepts": {
+          "extensions": [".out", ".log", ".dat", ".txt"],
+          "preview_types": ["text", "file"]
+        },
+        "probe": {
+          "method": "POST",
+          "path": "/probe"
+        },
+        "open": {
+          "mode": "preview-window",
+          "structure_api": "/structures"
+        }
+      }
+    ]
+  },
+  "dependencies": {
+    "python": {
+      "mode": "host",
+      "requirements": "backend/requirements.txt"
+    },
+    "frontend": {
+      "mode": "bundled",
+      "bundle": "frontend/bundle"
+    }
+  }
+}

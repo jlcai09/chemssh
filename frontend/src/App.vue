@@ -3,7 +3,7 @@
     <div class="app-shell">
       <header class="topbar">
         <div class="brand-block">
-          <div class="brand-mark">CW</div>
+          <img class="brand-mark" :src="chemwebIcon" alt="Chemweb" />
           <div>
             <h1>{{ appTitle }}</h1>
             <p>{{ subtitle }}</p>
@@ -49,6 +49,7 @@ import { ElMessage } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import en from 'element-plus/es/locale/lang/en'
 import { getSystemInfo, type SystemInfo } from './api/system'
+import chemwebIcon from './assets/chemweb-icon.svg'
 import Jobs from './views/Jobs.vue'
 import Settings from './views/Settings.vue'
 import Workspace from './views/Workspace.vue'
@@ -70,8 +71,8 @@ const navOptions = computed(() => [
 ])
 
 const appTitle = computed(() => {
-  if (!systemInfo.value?.project_version) return 'chemweb'
-  return `chemweb ${systemInfo.value.project_version}`
+  if (!systemInfo.value?.project_version) return 'Chemweb'
+  return `Chemweb ${systemInfo.value.project_version}`
 })
 
 const subtitle = computed(() => {

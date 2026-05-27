@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cclib</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, "Segoe UI", Arial, sans-serif;
+        color: #1f2937;
+        background: #f8fafc;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      main {
+        box-sizing: border-box;
+        min-height: 100vh;
+        padding: 16px;
+        display: grid;
+        align-content: start;
+        gap: 12px;
+      }
+
+      .status {
+        border: 1px solid #d8dee8;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 14px;
+      }
+
+      .eyebrow {
+        display: block;
+        font-size: 11px;
+        line-height: 1.2;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        margin: 4px 0 8px;
+        font-size: 18px;
+        line-height: 1.25;
+      }
+
+      p {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.55;
+        color: #475569;
+      }
+
+      code {
+        border-radius: 4px;
+        background: #eef2f7;
+        padding: 1px 4px;
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      button {
+        height: 30px;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 0 10px;
+        color: #1f2937;
+        background: #ffffff;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      button.primary {
+        border-color: #2563eb;
+        color: #ffffff;
+        background: #2563eb;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
+      .external-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      input {
+        min-width: 0;
+        flex: 1;
+        height: 30px;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 0 8px;
+        font: inherit;
+        font-size: 12px;
+      }
+
+      .status-line {
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="status">
+        <span class="eyebrow">plugin</span>
+        <h1>cclib</h1>
+        <p id="message">Waiting for chemweb...</p>
+      </section>
+      <section class="status">
+        <span class="eyebrow">preview provider</span>
+        <p>When this panel is open, matching output files can be sent to the existing preview window through <code>cclib</code>.</p>
+      </section>
+      <section class="status">
+        <span class="eyebrow">dependencies</span>
+        <p id="dependency">Checking dependency status...</p>
+        <div class="actions">
+          <button id="refresh" type="button">Refresh</button>
+          <button id="install-host" class="primary" type="button">Install to host</button>
+          <button id="install-venv" type="button">Install to plugin venv</button>
+        </div>
+        <div class="external-row">
+          <input id="external-python" spellcheck="false" placeholder="External python path" />
+          <button id="save-external" type="button">Use external</button>
+        </div>
+        <p id="operation" class="status-line"></p>
+      </section>
+    </main>
+    <script>
+      const message = document.getElementById('message')
+      const dependency = document.getElementById('dependency')
+      const operation = document.getElementById('operation')
+      const externalPython = document.getElementById('external-python')
+      const buttons = Array.from(document.querySelectorAll('button'))
+      let context = null
+
+      function pluginBase() {
+        return context ? context.apiBase.replace(/\/api\/?$/, '') : '/api/plugins/cclib'
+      }
+
+      function post(payload) {
+        window.parent.postMessage(payload, '*')
+      }
+
+      function setBusy(value) {
+        for (const button of buttons) button.disabled = value
+      }
+
+      async function request(path, options) {
+        const response = await fetch(pluginBase() + path, {
+          headers: { 'Content-Type': 'application/json' },
+          ...options
+        })
+        const text = await response.text()
+        const data = text ? JSON.parse(text) : null
+        if (!response.ok) {
+          throw new Error(data?.error?.message || response.statusText)
+        }
+        return data
+      }
+
+      function renderStatus(status) {
+        const python = status?.python
+        if (!python) {
+          dependency.textContent = 'No Python dependency metadata.'
+          return
+        }
+        const missing = python.missing || []
+        const packages = (python.packages || [])
+          .map(item => item.version ? `${item.name} ${item.version}` : `${item.name} missing`)
+          .join(', ')
+        dependency.textContent = `${python.satisfied ? 'Ready' : 'Missing dependencies'} · mode: ${python.mode} · ${packages || 'no packages'}`
+        if (python.python) externalPython.value = python.python
+      }
+
+      async function refreshDependencies() {
+        if (!context) return
+        try {
+          renderStatus(await request('/dependencies'))
+          operation.textContent = ''
+        } catch (error) {
+          dependency.textContent = error.message
+        }
+      }
+
+      async function install(mode) {
+        if (mode === 'host' && !window.confirm('Install cclib dependencies into the Python environment currently running chemweb?')) {
+          return
+        }
+        setBusy(true)
+        operation.textContent = `Installing ${mode} dependencies...`
+        try {
+          renderStatus(await request('/dependencies/install', {
+            method: 'POST',
+            body: JSON.stringify({ mode })
+          }))
+          operation.textContent = 'Dependency install finished.'
+        } catch (error) {
+          operation.textContent = error.message
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      async function saveExternal() {
+        const python = externalPython.value.trim()
+        if (!python) return
+        setBusy(true)
+        operation.textContent = 'Validating external Python...'
+        try {
+          renderStatus(await request('/dependencies/external', {
+            method: 'POST',
+            body: JSON.stringify({ python })
+          }))
+          operation.textContent = 'External Python configured.'
+        } catch (error) {
+          operation.textContent = error.message
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      function registerProvider() {
+        if (!context) return
+        post({
+          type: 'chemweb:file-manager:register-preview-provider',
+          version: 1,
+          provider: {
+            id: 'cclib:cclib-output',
+            pluginId: 'cclib',
+            panelId: 'cclib-provider',
+            title: 'Open with cclib',
+            priority: 60,
+            apiBase: context.apiBase,
+            accepts: {
+              extensions: ['.out', '.log', '.dat', '.txt'],
+              preview_types: ['text', 'file']
+            },
+            probe: {
+              method: 'POST',
+              apiPath: '/probe'
+            },
+            open: {
+              mode: 'preview-window',
+              reuse: 'preview-tab',
+              structureSource: {
+                id: 'cclib',
+                parser: 'cclib',
+                apiBase: context.apiBase + '/structures'
+              }
+            }
+          }
+        })
+        message.textContent = 'cclib preview provider is active.'
+      }
+
+      function unregisterProvider() {
+        post({
+          type: 'chemweb:file-manager:unregister-preview-provider',
+          version: 1,
+          providerId: 'cclib:cclib-output'
+        })
+      }
+
+      window.addEventListener('message', event => {
+        const data = event.data || {}
+        if (data.type !== 'chemweb:plugin:init') return
+        context = data
+        registerProvider()
+        refreshDependencies()
+      })
+
+      document.getElementById('refresh').addEventListener('click', refreshDependencies)
+      document.getElementById('install-host').addEventListener('click', () => install('host'))
+      document.getElementById('install-venv').addEventListener('click', () => install('venv'))
+      document.getElementById('save-external').addEventListener('click', saveExternal)
+      window.addEventListener('beforeunload', unregisterProvider)
+      post({ type: 'chemweb:plugin:ready', version: 1, pluginId: 'cclib' })
+    </script>
+  </body>
+</html>

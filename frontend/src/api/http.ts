@@ -58,3 +58,10 @@ export async function requestBlob(path: string, options: RequestInit = {}) {
 export function downloadUrl(path: string): string {
   return `${API_BASE}/api/files/download?path=${encodeURIComponent(path)}`
 }
+
+export function downloadSelectionUrl(paths: string[]): string {
+  if (paths.length === 1) return downloadUrl(paths[0])
+  const query = new URLSearchParams()
+  for (const path of paths) query.append('path', path)
+  return `${API_BASE}/api/files/download-selection?${query.toString()}`
+}

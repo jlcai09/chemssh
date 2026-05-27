@@ -1,18 +1,20 @@
 # chemweb
 
-`chemweb` 是一个面向计算催化、计算化学和材料模拟目录的轻量级 Web 工作台 MVP。它适合部署在远程 Linux 服务器或 HPC 登录节点上，通过 SSH 端口转发在本地浏览器访问。
+English | [中文](README.zh-CN.md)
 
-当前版本提供文件管理、文本/日志预览、自定义三维结构预览、Slurm 队列查看、`sbatch` 作业提交和 `scancel` 作业取消。
+`chemweb` is a lightweight web workspace for computational catalysis, computational chemistry, and materials simulation directories. It is designed to run on a remote Linux server or HPC login node and be accessed locally through SSH port forwarding.
 
-## 技术栈
+The current version provides file management, text/log preview, custom 3D structure preview, Slurm queue inspection, `sbatch` submission, and `scancel` cancellation.
 
-- 后端：Python 3.10+、FastAPI、Uvicorn、Pydantic
-- 前端：Vue 3、Vite、Element Plus、自定义 Canvas 结构显示器
-- 调度系统：MVP 优先支持 Slurm
+## Stack
 
-## 安装
+- Backend: Python 3.10+, FastAPI, Uvicorn, Pydantic
+- Frontend: Vue 3, Vite, Element Plus, custom Canvas structure viewer
+- Scheduler: Slurm-first MVP
 
-建议在项目根目录 `D:\Git\chemweb` 或远程服务器上的项目根目录创建虚拟环境。
+## Install
+
+Create a virtual environment in the project root, such as `D:\path\to\chemweb` on Windows or the project directory on a remote server.
 
 Windows PowerShell:
 
@@ -38,105 +40,135 @@ npm --prefix frontend install
 npm --prefix frontend run build
 ```
 
-安装完成后，命令行入口为：
+After installation, the command-line entry point is:
 
 ```bash
 chemweb --help
 ```
 
-## 配置
+## Configuration
 
-复制并修改 `config.yaml`。最重要的是设置工作区根目录：
+Copy and edit `config.yaml`. The most important setting is the workspace root:
 
 ```yaml
 workspace:
   root: /home/user
 ```
 
-所有文件读写、上传、下载、删除、重命名和作业提交都会被限制在 `workspace.root` 之内，防止访问 `/etc/passwd`、`/root` 或其他用户目录。
+All file reads, writes, uploads, downloads, deletes, renames, and job submissions are restricted to `workspace.root`.
 
-## 启动
+## Start
 
 ```bash
 chemweb --config config.yaml --host 127.0.0.1 --port 8888
 ```
 
-开发模式可以分别启动后端和前端：
+Before starting, the CLI checks whether the target port is already in use. If it finds an existing Chemweb server on the same port and with the same `workspace.root`, it reuses that server and prints the existing URL instead of failing. If the port is occupied by another application, or by Chemweb serving a different workspace, startup fails with a clear error.
+
+Reuse behavior can be adjusted with:
+
+```bash
+chemweb --config config.yaml --reuse-existing auto
+chemweb --config config.yaml --reuse-existing never
+chemweb --config config.yaml --reuse-existing any-chemweb
+```
+
+To check the port without starting a server, use:
+
+```bash
+chemweb --config config.yaml --check-port
+```
+
+This exits with code `0` when the port is free or points to a reusable Chemweb server, and exits with code `1` when the port is occupied by something that should not be reused.
+
+For development, run the backend and frontend separately:
 
 ```bash
 uvicorn backend.app.main:app --host 127.0.0.1 --port 8888 --reload
 npm.cmd --prefix frontend run dev
 ```
 
-如果在 Linux 或 macOS 上开发，把 `npm.cmd` 换成 `npm`。
+On Linux or macOS, use `npm` instead of `npm.cmd`.
 
-## SSH 端口转发
+## Server PID Checks
 
-在远程服务器上启动：
+If the server was started with `chemweb --config config.yaml`, check the server-side process with:
+
+```bash
+pgrep -af 'chemweb'
+```
+
+If it was started directly with `uvicorn`, use:
+
+```bash
+pgrep -af 'uvicorn'
+```
+
+## SSH Port Forwarding
+
+Start Chemweb on the remote server:
 
 ```bash
 chemweb --config config.yaml --host 127.0.0.1 --port 8888
 ```
 
-在本地机器执行端口转发：
+Forward the remote port from your local machine:
 
 ```bash
 ssh -p 22 -L 8888:127.0.0.XX:8888 user@server
-# 等价于 -L 127.0.0.1:8888:127.0.0.XX:8888 所以远程.XX 本地还是.1
-# 127.0.0.1等价localhost
 ```
 
-然后在本地浏览器打开：
+Then open the local browser at:
 
 ```text
 http://localhost:8888
 ```
 
-## MVP 功能
+## MVP Features
 
-- 浏览 `workspace.root` 及其子目录
-- 上传、下载、删除、重命名文件，新建目录
-- 读取和保存文本文件
-- 预览 `.txt`、`.log`、`.out`、`.in`、`.inp` 等文本文件
-- 预览 `.xyz`、`.pdb`、`.mol`、`.sdf`、`.cif` 结构文件
-- 在浏览器中切换结构显示模式：stick、sphere、line
-- 查看 Slurm 队列，支持手动刷新和自动刷新
-- 查看 Slurm 作业详情，取消作业
-- 在当前目录提交 `sbatch run.sh`
-- 读取日志文件末尾 N 行，支持手动刷新和自动刷新
+- Browse `workspace.root` and its subdirectories
+- Upload, download, delete, rename, and create files or folders
+- Read and save text files
+- Preview `.txt`, `.log`, `.out`, `.in`, `.inp`, and similar text files
+- Preview `.xyz`, `.pdb`, `.mol`, `.sdf`, `.cif`, and related structure files
+- Switch browser structure styles: stick, sphere, line
+- Inspect the Slurm queue with manual and automatic refresh
+- View Slurm job details and cancel jobs
+- Submit `sbatch run.sh` from the current directory
+- Read the tail of log files with manual and automatic refresh
 
-## Slurm 说明
+## Slurm Notes
 
-后端只调用固定白名单命令：
+The backend calls only fixed allowlisted commands:
 
 - `squeue`
 - `scontrol show job <job_id>`
 - `scancel <job_id>`
 - `sbatch <script>`
 
-作业提交接口只接受脚本文件名，例如 `run.sh`。它不会执行任意 shell 命令，也不会接受包含路径或 shell 控制字符的脚本参数。
+The job submission API accepts only script filenames such as `run.sh`. It does not execute arbitrary shell commands or accept script parameters containing paths or shell control characters.
 
-## 安全注意事项
+## Security Notes
 
-- 默认绑定 `127.0.0.1`，建议通过 SSH 隧道访问。
-- 将 `workspace.root` 设置为尽可能小的工作目录。
-- 普通文件读取受 `workspace.max_read_size_mb` 限制，大文件请使用日志 tail 或下载。
-- 如需禁止删除操作，可设置 `workspace.allow_delete: false`。
+- The server binds to `127.0.0.1` by default; SSH tunneling is recommended.
+- Set `workspace.root` to the smallest practical working directory.
+- Plain file reads are limited by `workspace.max_read_size_mb`; use log tail or download for large files.
+- Set `workspace.allow_delete: false` to disable delete operations.
 
-## API 文档
+## API
 
-接口说明见 [docs/API.md](docs/API.md)。
+API details are documented in [docs/API.md](docs/API.md).
 
-启动服务后也可以访问 FastAPI 自动文档：
+FastAPI's generated docs are also available while the server is running:
 
 ```text
 http://127.0.0.1:8888/docs
 ```
 
-## 测试
+## Tests
 
 ```bash
 python -m pytest
 ```
 
-当前最小测试覆盖路径安全、文件类型识别、文件 API 读写和基础应用启动。
+The minimal test suite covers path safety, file type detection, file API read/write, plugins, and basic app startup.

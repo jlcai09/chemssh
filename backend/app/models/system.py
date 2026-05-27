@@ -11,3 +11,11 @@ class SystemInfo(BaseModel):
     python_version: str
     scheduler: str
     workspace_root: str
+
+
+class SystemIdentity(BaseModel):
+    app: str
+    project_version: str
+    pid: int
+    scheduler: str
+    workspace_root: str

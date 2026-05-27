@@ -1,11 +1,13 @@
 <template>
   <div class="molecule-viewer">
     <div class="viewer-toolbar">
-      <el-radio-group v-model="selectedStyle" size="small">
-        <el-radio-button label="stick">{{ t('viewer.styleStick') }}</el-radio-button>
-        <el-radio-button label="sphere">{{ t('viewer.styleSphere') }}</el-radio-button>
-        <el-radio-button label="line">{{ t('viewer.styleLine') }}</el-radio-button>
-      </el-radio-group>
+      <div class="viewer-style-group">
+        <el-radio-group v-model="selectedStyle" size="small">
+          <el-radio-button label="stick">{{ t('viewer.styleStick') }}</el-radio-button>
+          <el-radio-button label="sphere">{{ t('viewer.styleSphere') }}</el-radio-button>
+          <el-radio-button label="line">{{ t('viewer.styleLine') }}</el-radio-button>
+        </el-radio-group>
+      </div>
 
       <div v-if="asePreview?.is_trajectory" class="trajectory-controls">
         <span class="frame-label">{{ t('viewer.frame') }}</span>
@@ -31,14 +33,14 @@
         />
       </div>
 
-      <div class="toolbar-spacer" />
-
-      <el-tooltip :content="t('toolbar.refresh')" placement="bottom">
-        <el-button :icon="Refresh" circle size="small" @click="refreshStructure" />
-      </el-tooltip>
-      <el-tooltip :content="t('viewer.exportScreenshot')" placement="bottom">
-        <el-button :icon="Download" circle size="small" @click="exportPng" />
-      </el-tooltip>
+      <div class="viewer-toolbar-actions">
+        <el-tooltip :content="t('toolbar.refresh')" placement="bottom">
+          <el-button :icon="Refresh" circle size="small" @click="refreshStructure" />
+        </el-tooltip>
+        <el-tooltip :content="t('viewer.exportScreenshot')" placement="bottom">
+          <el-button :icon="Download" circle size="small" @click="exportPng" />
+        </el-tooltip>
+      </div>
     </div>
     <div class="viewer-stage">
       <div ref="container" class="viewer-canvas" />
@@ -172,7 +174,7 @@
 <script setup lang="ts">
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Connection, Crop, Download, Grid, Refresh, View } from '@element-plus/icons-vue'
-import { readAseFrame, readAseFrameChunk, readAseFrameJsonChunk } from '../api/structures'
+import { readStructureFrame, readStructureFrameChunk, readStructureFrameJsonChunk } from '../api/structures'
 import { t } from '../i18n'
 import type { AseFrame, AseFrameChunk, AsePreviewResponse } from '../types/structure'
 import type { StructureFrame, TrajectoryStore, ViewerStyleMode } from '../viewer'
@@ -537,7 +539,8 @@ async function loadFrame(index: number) {
   if (trajectoryStore && isStoreFrameAvailable(trajectoryStore, index)) {
     return frameFromStore(index) ?? emptyFrame()
   }
-  return readAseFrame(
+  return readStructureFrame(
+    props.asePreview.source,
     props.asePreview.path,
     index,
     props.asePreview.format,
@@ -649,7 +652,8 @@ async function ensureChunkStart(chunkStart: number, preview: AsePreviewResponse)
     await pending
     return
   }
-  const request = readAseFrameChunk(
+  const request = readStructureFrameChunk(
+    preview.source,
     preview.path,
     chunkStart,
     Math.min(chunkSize, preview.n_frames - chunkStart),
@@ -680,7 +684,8 @@ async function ensureJsonChunkStart(chunkStart: number, preview: AsePreviewRespo
     return
   }
 
-  const request = readAseFrameJsonChunk(
+  const request = readStructureFrameJsonChunk(
+    preview.source,
     preview.path,
     chunkStart,
     Math.min(jsonChunkSize, preview.n_frames - chunkStart),
@@ -944,7 +949,7 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [props.asePreview?.path, props.asePreview?.initial_frame_index],
+  () => [props.asePreview?.source?.id, props.asePreview?.path, props.asePreview?.initial_frame_index],
   () => {
     resetAseState()
     bondScale.value = 1.25

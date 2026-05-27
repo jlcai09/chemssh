@@ -7,7 +7,7 @@ from zipfile import ZipFile
 from fastapi.testclient import TestClient
 
 from backend.app import __version__
-from backend.app.core.config import BrotliConfig, CompressionConfig, SchedulerConfig, Settings, WorkspaceConfig
+from backend.app.core.config import BrotliConfig, CompressionConfig, PluginsConfig, SchedulerConfig, Settings, WorkspaceConfig
 from backend.app.main import create_app
 from backend.app.providers.scheduler import pbs as pbs_provider
 from backend.app.providers.scheduler import slurm as slurm_provider
@@ -49,6 +49,12 @@ def test_system_info_and_file_roundtrip(tmp_path: Path) -> None:
     assert system.status_code == 200
     assert system.json()["project_version"] == __version__
     assert system.json()["workspace_root"] == str(tmp_path.resolve())
+
+    identity = client.get("/api/system/identity")
+    assert identity.status_code == 200
+    assert identity.json()["app"] == "chemweb"
+    assert identity.json()["project_version"] == __version__
+    assert identity.json()["workspace_root"] == str(tmp_path.resolve())
 
     listing = client.get("/api/files/list")
     assert listing.status_code == 200
@@ -106,6 +112,100 @@ def test_brotli_respects_zero_quality(tmp_path: Path) -> None:
     assert "content-encoding" not in response.headers
 
 
+def test_plugins_can_be_listed_activated_and_served(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    sample = tmp_path / "sample.log"
+    sample.write_text("not a quantum chemistry output\n", encoding="utf-8")
+
+    listing = client.get("/api/plugins")
+    assert listing.status_code == 200
+    assert any(plugin["id"] == "cclib" for plugin in listing.json()["plugins"])
+
+    dependencies = client.get("/api/plugins/cclib/dependencies")
+    assert dependencies.status_code == 200
+    assert dependencies.json()["python"]["mode"] == "host"
+    assert dependencies.json()["python"]["requirements"].endswith("plugins\\cclib\\backend\\requirements.txt") or dependencies.json()["python"]["requirements"].endswith("plugins/cclib/backend/requirements.txt")
+
+    bad_external = client.post("/api/plugins/cclib/dependencies/external", json={"python": str(tmp_path / "missing-python")})
+    assert bad_external.status_code == 404
+    assert bad_external.json()["error"]["code"] == "PLUGIN_EXTERNAL_PYTHON_NOT_FOUND"
+
+    activated = client.post("/api/plugins/cclib/activate")
+    assert activated.status_code == 200
+    assert activated.json()["api_base"] == "/api/plugins/cclib/api"
+
+    asset = client.get("/api/plugins/cclib/assets")
+    assert asset.status_code == 200
+    assert b"cclib" in asset.content
+
+    probe = client.post("/api/plugins/cclib/api/probe", json={"path": str(sample)})
+    assert probe.status_code == 200
+    assert probe.json()["handler"] == "cclib-output"
+
+
+def test_plugin_get_routes_take_precedence_over_spa_fallback(tmp_path: Path) -> None:
+    plugins_dir = tmp_path / "plugins"
+    plugin_dir = plugins_dir / "dummy-get"
+    backend_dir = plugin_dir / "backend"
+    backend_dir.mkdir(parents=True)
+    (plugin_dir / "chemweb-plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": "dummy-get",
+                "name": "Dummy GET",
+                "version": "0.1.0",
+                "entry": {
+                    "backend": {
+                        "type": "python",
+                        "module": "backend.plugin",
+                        "factory": "create_plugin",
+                    }
+                },
+                "panels": [{"id": "main", "title": "Dummy GET"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (backend_dir / "plugin.py").write_text(
+        "\n".join(
+            [
+                "from fastapi import APIRouter",
+                "",
+                "class DummyPlugin:",
+                "    def __init__(self, context):",
+                "        self.router = APIRouter()",
+                "        self.router.get('/hello')(self.hello)",
+                "",
+                "    def hello(self):",
+                "        return {'ok': True}",
+                "",
+                "def create_plugin(context):",
+                "    return DummyPlugin(context)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        workspace=WorkspaceConfig(root=tmp_path),
+        plugins=PluginsConfig(directories=[plugins_dir]),
+    )
+    client = TestClient(create_app(settings))
+
+    activated = client.post("/api/plugins/dummy-get/activate")
+    assert activated.status_code == 200
+
+    response = client.get("/api/plugins/dummy-get/api/hello")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {"ok": True}
+
+    route_paths = [getattr(route, "path", None) for route in client.app.router.routes]
+    if "/{full_path:path}" in route_paths:
+        assert route_paths.index("/api/plugins/dummy-get/api/hello") < route_paths.index("/{full_path:path}")
+
+
 def test_files_api_blocks_path_traversal(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
@@ -146,6 +246,29 @@ def test_download_archive_contains_selected_paths(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
+    with ZipFile(BytesIO(response.content)) as archive:
+        names = set(archive.namelist())
+        assert "sample.txt" in names
+        assert "folder/" in names
+        assert "folder/nested.txt" in names
+
+
+def test_download_selection_get_archives_multiple_paths(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    sample = tmp_path / "sample.txt"
+    folder = tmp_path / "folder"
+    nested = folder / "nested.txt"
+    folder.mkdir()
+    sample.write_text("sample\n", encoding="utf-8")
+    nested.write_text("nested\n", encoding="utf-8")
+
+    response = client.get(
+        "/api/files/download-selection",
+        params=[("path", str(sample)), ("path", str(folder))],
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
     with ZipFile(BytesIO(response.content)) as archive:
         names = set(archive.namelist())
         assert "sample.txt" in names

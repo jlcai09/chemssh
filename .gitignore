@@ -1,6 +1,8 @@
 # User-specific files
 idea/
 logs/
+plugins/*/.chemweb-plugin-state.json
+plugins/*/.venv/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -146,4 +148,9 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+plugins/*/frontend/dist/
 npm-debug.log*
+
+# Bundled plugin frontend assets are shipped with the plugin package.
+!plugins/*/frontend/bundle/
+!plugins/*/frontend/bundle/**

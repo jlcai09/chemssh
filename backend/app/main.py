@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app import __version__
-from backend.app.api import files, jobs, queue, structures, system, terminal
+from backend.app.api import files, jobs, plugins, queue, structures, system, terminal
 from backend.app.core.config import Settings, get_settings, set_settings
 from backend.app.core.errors import (
     AppError,
@@ -21,6 +21,7 @@ from backend.app.core.errors import (
 )
 from backend.app.middleware.brotli import BrotliMiddleware
 from backend.app.middleware.idle_shutdown import IdleShutdownManager, IdleShutdownMiddleware, ShutdownCallback
+from backend.app.services.plugin_service import PluginService
 
 
 def _build_lifespan(idle_shutdown: IdleShutdownManager):
@@ -52,6 +53,7 @@ def create_app(settings: Settings | None = None, *, idle_shutdown_callback: Shut
     )
     app.state.settings = active_settings
     app.state.idle_shutdown = idle_shutdown
+    app.state.plugin_service = PluginService(active_settings, app)
 
     app.add_middleware(
         BrotliMiddleware,
@@ -78,6 +80,7 @@ def create_app(settings: Settings | None = None, *, idle_shutdown_callback: Shut
     app.include_router(queue.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
     app.include_router(terminal.router, prefix="/api")
+    app.include_router(plugins.router, prefix="/api")
 
     frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if frontend_dist.exists():

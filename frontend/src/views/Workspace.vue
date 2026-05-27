@@ -46,6 +46,7 @@
         <FileTree
           :items="visibleItems"
           :selected-items="selectedItems"
+          :preview-providers="previewProviders"
           @selection-change="handleSelectionChange"
           @context-menu="openFileContextMenu"
           @open="openItem"
@@ -83,12 +84,48 @@
 
     <aside ref="sidePaneRef" class="workspace-side" :style="sideStyle">
       <section class="side-work-panel">
-        <div class="side-panel-tabs">
-          <el-segmented v-model="activeSidePanel" :options="sidePanelOptions" size="small" />
+        <div class="side-panel-tabbar">
+          <button
+            v-for="panel in workPanels"
+            :key="panel.id"
+            class="side-panel-tab"
+            :class="{ 'is-active': panel.id === activeWorkPanelId }"
+            type="button"
+            @click="activeWorkPanelId = panel.id"
+          >
+            <span>{{ panelTitle(panel) }}</span>
+            <el-tooltip :content="t('panel.close')" placement="bottom">
+              <el-button
+                class="side-panel-close"
+                :icon="Close"
+                circle
+                size="small"
+                text
+                @click.stop="closeWorkPanel(panel.id)"
+              />
+            </el-tooltip>
+          </button>
+          <el-dropdown trigger="click" @command="openWorkPanelCommand">
+            <el-button class="side-panel-add" :icon="Plus" circle size="small" />
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="builtin:preview">{{ t('preview.type.preview') }}</el-dropdown-item>
+                <el-dropdown-item command="builtin:queue">{{ props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title') }}</el-dropdown-item>
+                <el-dropdown-item
+                  v-for="item in pluginPanelCommands"
+                  :key="item.command"
+                  :command="item.command"
+                  divided
+                >
+                  {{ item.title }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
         <div class="side-panel-body">
           <FilePreview
-            v-if="activeSidePanel === 'preview'"
+            v-if="activeWorkPanel?.kind === 'preview'"
             :file="preview"
             :ase-structure="asePreview"
             :mode="previewMode"
@@ -98,14 +135,26 @@
             @update:mode="setPreviewMode"
             @refresh="refreshPreview"
             @save="savePreview"
+            @dragover="handlePreviewDragOver"
+            @drop="handlePreviewDrop"
           />
           <QueueStatus
-            v-else
+            v-else-if="activeWorkPanel?.kind === 'queue'"
             class="side-queue"
             :initial-interval="5"
             :workspace-root="props.systemInfo?.workspace_root"
             @open-workdir="openQueueWorkdir"
           />
+          <iframe
+            v-else-if="activeWorkPanel?.kind === 'plugin'"
+            class="plugin-panel-frame"
+            :src="activeWorkPanel.assetUrl"
+            :title="activeWorkPanel.title"
+            @load="handlePluginFrameLoad($event, activeWorkPanel)"
+          />
+          <div v-else class="empty-state">
+            <el-empty :description="t('panel.empty')" />
+          </div>
         </div>
       </section>
 
@@ -157,7 +206,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Promotion, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowRight, Close, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
   deletePath,
   downloadArchive,
@@ -171,11 +220,18 @@ import {
   type FileItem,
   type FileReadResponse
 } from '../api/files'
-import { ApiError, downloadUrl } from '../api/http'
+import { API_BASE, ApiError, downloadUrl, request } from '../api/http'
+import { hasChemwebFileDrag, readChemwebFileDrag } from '../api/fileDrag'
+import {
+  providerMatchesItem,
+  type FilePreviewProvider,
+  type PreviewProbeResponse
+} from '../api/filePreviewProviders'
 import { submitJob, type SubmitCommand } from '../api/jobs'
-import { readAsePreview } from '../api/structures'
+import { activatePlugin, deactivatePlugin, listPlugins, type PluginManifest } from '../api/plugins'
+import { ASE_STRUCTURE_SOURCE, readStructurePreview } from '../api/structures'
 import type { SystemInfo } from '../api/system'
-import type { AsePreviewResponse } from '../types/structure'
+import type { AsePreviewResponse, StructureSource } from '../types/structure'
 import FilePreview from '../components/FilePreview.vue'
 import FileToolbar from '../components/FileToolbar.vue'
 import FileTree from '../components/FileTree.vue'
@@ -212,8 +268,17 @@ const forcedLargeTextPreviews = new Set<string>()
 const forcedLargeStructurePreviews = new Set<string>()
 
 type ResizeTarget = 'left' | 'right' | 'side'
-type SidePanel = 'preview' | 'queue'
+type WorkPanelKind = 'preview' | 'queue' | 'plugin'
 type PreviewMode = 'structure' | 'text'
+type WorkPanel = {
+  id: string
+  kind: WorkPanelKind
+  title: string
+  pluginId?: string
+  panelId?: string
+  assetUrl?: string
+  apiBase?: string
+}
 type ContextMenuState = {
   visible: boolean
   x: number
@@ -231,7 +296,13 @@ const leftPaneWidth = ref<number | null>(null)
 const sidePaneWidth = ref<number | null>(null)
 const sideQueueHeight = ref<number | null>(null)
 const terminalLayoutVersion = ref(0)
-const activeSidePanel = ref<SidePanel>('preview')
+const workPanels = ref<WorkPanel[]>([
+  { id: 'builtin:preview', kind: 'preview', title: t('preview.type.preview') }
+])
+const activeWorkPanelId = ref('builtin:preview')
+const pluginManifests = ref<PluginManifest[]>([])
+const previewProviders = ref<FilePreviewProvider[]>([])
+const currentStructureSource = ref<StructureSource>(ASE_STRUCTURE_SOURCE)
 const contextMenu = ref<ContextMenuState>({
   visible: false,
   x: 0,
@@ -267,14 +338,21 @@ const terminalInitialPath = computed(() => currentPath.value || props.systemInfo
 const visibleItems = computed(() => (listing.value?.items ?? []).filter(item => showHiddenFiles.value || !isHiddenItem(item)))
 const logPath = computed(() => selectedItems.value.find(item => item.type === 'file')?.path ?? null)
 const structurePreviewCandidate = computed(() => {
-  if (previewCandidate.value) return isStructureCandidate(previewCandidate.value)
+  if (previewCandidate.value) return isStructureCandidate(previewCandidate.value) || providerLightMatchExists(previewCandidate.value)
   if (asePreview.value) return true
   return preview.value?.preview_type === 'structure' || false
 })
-const sidePanelOptions = computed(() => [
-  { label: t('preview.type.preview'), value: 'preview' },
-  { label: props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title'), value: 'queue' }
-])
+const activeWorkPanel = computed(() => workPanels.value.find(panel => panel.id === activeWorkPanelId.value) ?? null)
+const pluginPanelCommands = computed(() =>
+  pluginManifests.value.flatMap(plugin =>
+    (plugin.panels ?? []).map(panel => ({
+      command: `plugin:${plugin.id}:${panel.id}`,
+      title: panel.title || plugin.name || plugin.id,
+      plugin,
+      panel
+    }))
+  )
+)
 
 function clamp(value: number, min: number, max: number) {
   if (max < min) return min
@@ -420,6 +498,172 @@ function isStructureCandidate(item: FileItem) {
   return item.preview_type === 'structure' || isForcedStructureName(item.name)
 }
 
+function panelTitle(panel: WorkPanel) {
+  if (panel.kind === 'preview') return t('preview.type.preview')
+  if (panel.kind === 'queue') return props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title')
+  return panel.title
+}
+
+function openBuiltinPanel(kind: 'preview' | 'queue') {
+  const id = `builtin:${kind}`
+  if (!workPanels.value.some(panel => panel.id === id)) {
+    workPanels.value.push({
+      id,
+      kind,
+      title: kind === 'preview' ? t('preview.type.preview') : (props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title'))
+    })
+  }
+  activeWorkPanelId.value = id
+}
+
+function closeWorkPanel(panelId: string) {
+  const panel = workPanels.value.find(item => item.id === panelId)
+  workPanels.value = workPanels.value.filter(item => item.id !== panelId)
+  if (panel?.kind === 'plugin' && panel.pluginId) {
+    unregisterProvidersByPlugin(panel.pluginId)
+    if (!workPanels.value.some(item => item.kind === 'plugin' && item.pluginId === panel.pluginId)) {
+      void deactivatePlugin(panel.pluginId).catch(() => undefined)
+    }
+  }
+  if (activeWorkPanelId.value === panelId) {
+    activeWorkPanelId.value = workPanels.value[workPanels.value.length - 1]?.id ?? ''
+  }
+}
+
+async function openWorkPanelCommand(command: string | number | object) {
+  if (typeof command !== 'string') return
+  if (command === 'builtin:preview') {
+    openBuiltinPanel('preview')
+    return
+  }
+  if (command === 'builtin:queue') {
+    openBuiltinPanel('queue')
+    return
+  }
+  if (!command.startsWith('plugin:')) return
+  const [, pluginId, panelId] = command.split(':')
+  await openPluginPanel(pluginId, panelId)
+}
+
+async function loadPluginManifests() {
+  try {
+    const response = await listPlugins()
+    pluginManifests.value = response.plugins
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('plugin.loadFailed'))
+  }
+}
+
+async function openPluginPanel(pluginId: string, panelId: string) {
+  const manifest = pluginManifests.value.find(plugin => plugin.id === pluginId)
+  const panel = manifest?.panels.find(item => item.id === panelId)
+  if (!manifest || !panel) return
+
+  const existing = workPanels.value.find(item => item.kind === 'plugin' && item.pluginId === pluginId && item.panelId === panelId)
+  if (existing && panel.singleton !== false) {
+    activeWorkPanelId.value = existing.id
+    return
+  }
+
+  try {
+    const runtime = await activatePlugin(pluginId)
+    const id = `plugin:${pluginId}:${panelId}:${Date.now()}`
+    workPanels.value.push({
+      id,
+      kind: 'plugin',
+      title: panel.title || manifest.name || pluginId,
+      pluginId,
+      panelId,
+      assetUrl: `${API_BASE}${runtime.asset_url}`,
+      apiBase: runtime.api_base
+    })
+    activeWorkPanelId.value = id
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('plugin.activateFailed'))
+  }
+}
+
+function handlePluginFrameLoad(event: Event, panel: WorkPanel | null) {
+  const frame = event.target instanceof HTMLIFrameElement ? event.target : null
+  if (!frame?.contentWindow || !panel || !panel.pluginId || !panel.panelId) return
+  frame.contentWindow.postMessage({
+    type: 'chemweb:plugin:init',
+    version: 1,
+    pluginId: panel.pluginId,
+    panelId: panel.panelId,
+    instanceId: panel.id,
+    locale: window.navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en',
+    theme: 'light',
+    apiBase: panel.apiBase,
+    assetBase: panel.assetUrl,
+    initialFile: previewCandidate.value
+      ? { path: previewCandidate.value.path, name: previewCandidate.value.name }
+      : null
+  }, new URL(panel.assetUrl ?? window.location.href, window.location.href).origin)
+}
+
+function handlePluginMessage(event: MessageEvent) {
+  if (!isTrustedPluginOrigin(event.origin)) return
+  const data = event.data as { type?: string; provider?: FilePreviewProvider; providerId?: string }
+  if (data?.type === 'chemweb:file-manager:register-preview-provider' && data.provider) {
+    registerPreviewProvider(data.provider)
+  } else if (data?.type === 'chemweb:file-manager:unregister-preview-provider' && data.providerId) {
+    unregisterPreviewProvider(data.providerId)
+  }
+}
+
+function isTrustedPluginOrigin(origin: string) {
+  if (origin === window.location.origin) return true
+  if (!API_BASE) return false
+  try {
+    return origin === new URL(API_BASE, window.location.href).origin
+  } catch {
+    return false
+  }
+}
+
+function registerPreviewProvider(provider: FilePreviewProvider) {
+  previewProviders.value = [
+    ...previewProviders.value.filter(item => item.id !== provider.id),
+    provider
+  ].sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0))
+}
+
+function unregisterPreviewProvider(providerId: string) {
+  previewProviders.value = previewProviders.value.filter(provider => provider.id !== providerId)
+}
+
+function unregisterProvidersByPlugin(pluginId: string) {
+  previewProviders.value = previewProviders.value.filter(provider => provider.pluginId !== pluginId)
+}
+
+function providerLightMatchExists(item: FileItem) {
+  return previewProviders.value.some(provider => providerMatchesItem(provider, item))
+}
+
+async function resolvePreviewProvider(item: FileItem) {
+  const candidates = previewProviders.value.filter(provider => providerMatchesItem(provider, item))
+  for (const provider of candidates) {
+    if (!provider.probe?.apiPath || !provider.apiBase) return provider
+    try {
+      const response = await request<PreviewProbeResponse>(`${provider.apiBase}${provider.probe.apiPath}`, {
+        method: provider.probe.method ?? 'POST',
+        body: JSON.stringify({ path: item.path, item })
+      })
+      if (response.can_preview) return provider
+    } catch {
+      // Ignore a failed plugin probe and continue with the next provider.
+    }
+  }
+  return null
+}
+
+function providerStructureSource(provider: FilePreviewProvider): StructureSource | null {
+  const source = provider.open?.structureSource
+  if (!source?.apiBase) return null
+  return source
+}
+
 function setShowHiddenFiles(value: boolean) {
   showHiddenFiles.value = value
   if (value) return
@@ -443,6 +687,7 @@ async function loadDirectory(path?: string | null) {
     asePreview.value = null
     previewCandidate.value = null
     previewError.value = null
+    currentStructureSource.value = ASE_STRUCTURE_SOURCE
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.directoryLoadFailed'))
   } finally {
@@ -497,13 +742,27 @@ async function previewFile(itemOrPath: FileItem | string) {
   previewCandidate.value = item
   previewError.value = null
   try {
+    const provider = item ? await resolvePreviewProvider(item) : null
+    const providerSource = provider ? providerStructureSource(provider) : null
+    if (providerSource) {
+      previewMode.value = 'structure'
+      currentStructureSource.value = providerSource
+      const structure = await readStructurePreviewWithLargeConfirmation(path, providerSource)
+      if (structure) {
+        asePreview.value = structure
+        openBuiltinPanel('preview')
+      }
+      return
+    }
+
     if (item && isStructureCandidate(item)) {
       previewMode.value = 'structure'
+      currentStructureSource.value = ASE_STRUCTURE_SOURCE
       try {
-        const structure = await readStructurePreviewWithLargeConfirmation(path)
+        const structure = await readStructurePreviewWithLargeConfirmation(path, ASE_STRUCTURE_SOURCE)
         if (structure) {
           asePreview.value = structure
-          activeSidePanel.value = 'preview'
+          openBuiltinPanel('preview')
         }
         return
       } catch (error) {
@@ -517,7 +776,7 @@ async function previewFile(itemOrPath: FileItem | string) {
     const file = await readTextPreviewWithLargeConfirmation(path)
     if (file) {
       preview.value = file
-      activeSidePanel.value = 'preview'
+      openBuiltinPanel('preview')
     }
   } catch (error) {
     preview.value = null
@@ -553,7 +812,7 @@ async function readTextPreview(path: string) {
     const file = await readTextPreviewWithLargeConfirmation(path)
     if (file) {
       preview.value = file
-      activeSidePanel.value = 'preview'
+      openBuiltinPanel('preview')
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.previewFailed'))
@@ -568,7 +827,7 @@ async function loadStructurePreview() {
   previewLoading.value = true
   previewError.value = null
   try {
-    const structure = await readStructurePreviewWithLargeConfirmation(path)
+    const structure = await readStructurePreviewWithLargeConfirmation(path, currentStructureSource.value)
     if (structure) asePreview.value = structure
   } catch (error) {
     previewError.value = error instanceof Error ? error.message : t('message.previewFailed')
@@ -585,10 +844,10 @@ async function refreshStructurePreview() {
   previewLoading.value = true
   previewError.value = null
   try {
-    const structure = await readStructurePreviewWithLargeConfirmation(path)
+    const structure = await readStructurePreviewWithLargeConfirmation(path, currentStructureSource.value)
     if (structure) {
       asePreview.value = structure
-      activeSidePanel.value = 'preview'
+      openBuiltinPanel('preview')
     }
   } catch (error) {
     previewError.value = error instanceof Error ? error.message : t('message.previewFailed')
@@ -610,15 +869,16 @@ async function readTextPreviewWithLargeConfirmation(path: string) {
   }
 }
 
-async function readStructurePreviewWithLargeConfirmation(path: string) {
+async function readStructurePreviewWithLargeConfirmation(path: string, source: StructureSource = ASE_STRUCTURE_SOURCE) {
+  const cacheKey = `${source.id}:${path}`
   try {
-    return await readAsePreview(path, undefined, forcedLargeStructurePreviews.has(path))
+    return await readStructurePreview(source, path, undefined, forcedLargeStructurePreviews.has(cacheKey))
   } catch (error) {
     if (!isLargePreviewError(error, 'STRUCTURE_FILE_TOO_LARGE')) throw error
     const confirmed = await confirmLargePreview(error, 'structure')
     if (!confirmed) return null
-    forcedLargeStructurePreviews.add(path)
-    return readAsePreview(path, undefined, true)
+    forcedLargeStructurePreviews.add(cacheKey)
+    return readStructurePreview(source, path, undefined, true)
   }
 }
 
@@ -793,6 +1053,21 @@ function handleWorkspaceDrop(event: DragEvent) {
   if (files.length > 0) void handleUpload(files)
 }
 
+function handlePreviewDragOver(event: DragEvent) {
+  if (!hasChemwebFileDrag(event)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function handlePreviewDrop(event: DragEvent) {
+  const payload = readChemwebFileDrag(event.dataTransfer)
+  const path = payload?.paths[0]
+  if (!path) return
+  event.preventDefault()
+  openBuiltinPanel('preview')
+  void previewFile(payload.items[0] ?? path)
+}
+
 function triggerDownload(path: string) {
   const link = document.createElement('a')
   link.href = downloadUrl(path)
@@ -864,6 +1139,7 @@ async function confirmDelete() {
     asePreview.value = null
     previewCandidate.value = null
     previewError.value = null
+    currentStructureSource.value = ASE_STRUCTURE_SOURCE
     await loadDirectory(currentPath.value)
     ElMessage.success(t('message.deleted'))
   } catch (error) {
@@ -873,8 +1149,10 @@ async function confirmDelete() {
 
 onMounted(() => {
   void loadDirectory()
+  void loadPluginManifests()
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
+  window.addEventListener('message', handlePluginMessage)
   window.addEventListener('resize', closeContextMenu)
   window.addEventListener('scroll', closeContextMenu, true)
 })
@@ -891,6 +1169,7 @@ onBeforeUnmount(() => {
   stopResize()
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
+  window.removeEventListener('message', handlePluginMessage)
   window.removeEventListener('resize', closeContextMenu)
   window.removeEventListener('scroll', closeContextMenu, true)
 })
