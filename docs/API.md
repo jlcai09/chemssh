@@ -377,11 +377,26 @@ CLI 参数：
 
 终端后端接口见 `frontend/src/api/terminal.ts` 和 `backend/app/api/terminal.py`。前端组件为 `frontend/src/components/terminal/TerminalPanel.vue`。
 
+终端会话按浏览器 client id 轻量隔离。前端通过 `frontend/src/api/clientSession.ts` 在 `localStorage` 中保存 `chemweb.clientId.v1`，并在终端 HTTP 请求中发送：
+
+```http
+X-Chemweb-Client-Id: client_xxx
+```
+
+WebSocket 连接使用 query 参数：
+
+```text
+/api/terminal/ws/{session_id}?client_id=client_xxx
+```
+
+后端只会列出、关闭、连接当前 client id 拥有的终端会话。`terminal.max_sessions` 是每个 client id 的上限，不是全局上限。client id 只用于会话隔离，不代表用户身份或安全认证。
+
 常用交互：
 
 - 创建终端会带上当前文件管理器目录作为 `cwd`。
 - 文件管理器与终端支持目录同步：`follow` 表示终端跟随文件管理器，`bidirectional` 表示终端 cwd 变化也会反向打开文件管理器目录。
 - 终端接收文件拖放时，会向当前活跃 tab 写入输入数据。当前约定是路径串前置一个空格，多个绝对路径用空格连接，例如 ` /abs/a /abs/b`。
+- 终端支持“中键粘贴当前终端选区文本”。该行为依赖宿主环境放行中键事件；常规浏览器通常会拦截为自动滚屏，自定义 WebView2 启动器可通过关闭默认中键滚轮后启用。
 
 如果新增终端相关模块，优先通过已有 websocket 消息发送：
 

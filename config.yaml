@@ -37,7 +37,8 @@ logs:
 
 terminal:
   enabled: true
-  shell:
+  shell: null
+  # Per browser client_id limit, not a global terminal session limit.
   max_sessions: 4
   default_rows: 30
   default_cols: 120

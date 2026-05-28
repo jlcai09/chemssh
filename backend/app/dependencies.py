@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from fastapi import Depends
+import re
+
+from fastapi import Depends, Header
 
 from backend.app.core.config import Settings, get_settings
+from backend.app.core.errors import AppError
 from backend.app.providers.scheduler.base import SchedulerProvider
 from backend.app.providers.scheduler.pbs import PbsProvider
 from backend.app.providers.scheduler.slurm import LocalSchedulerProvider, SlurmProvider
@@ -12,8 +15,25 @@ from backend.app.services.queue_service import QueueService
 from backend.app.services.structure_service import StructureService
 
 
+CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+
+
 def get_settings_dependency() -> Settings:
     return get_settings()
+
+
+def validate_client_id(client_id: str | None) -> str:
+    if not client_id:
+        raise AppError("CLIENT_ID_REQUIRED", "Client id is required", 400)
+    if not CLIENT_ID_RE.match(client_id):
+        raise AppError("INVALID_CLIENT_ID", "Invalid client id", 400)
+    return client_id
+
+
+def get_client_id_dependency(
+    client_id: str | None = Header(default=None, alias="X-Chemweb-Client-Id"),
+) -> str:
+    return validate_client_id(client_id)
 
 
 def get_file_service(settings: Settings = Depends(get_settings_dependency)) -> FileService:

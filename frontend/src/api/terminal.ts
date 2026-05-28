@@ -1,4 +1,5 @@
 import { API_BASE, request } from './http'
+import { clientIdHeaders, getClientId } from './clientSession'
 
 export interface CreateTerminalSessionPayload {
   cwd?: string | null
@@ -24,28 +25,39 @@ export interface TerminalSessionList {
 export function createTerminalSession(payload: CreateTerminalSessionPayload) {
   return request<TerminalSession>('/api/terminal/sessions', {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...clientIdHeaders()
+    },
     body: JSON.stringify(payload)
   })
 }
 
 export function listTerminalSessions() {
-  return request<TerminalSessionList>('/api/terminal/sessions')
+  return request<TerminalSessionList>('/api/terminal/sessions', {
+    headers: clientIdHeaders()
+  })
 }
 
 export function closeTerminalSession(sessionId: string) {
   return request<{ success: boolean }>(`/api/terminal/sessions/${encodeURIComponent(sessionId)}`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    headers: clientIdHeaders()
   })
 }
 
 export function terminalWebSocketUrl(sessionId: string) {
   const path = `/api/terminal/ws/${encodeURIComponent(sessionId)}`
+  const clientId = getClientId()
   if (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) {
     const url = new URL(path, API_BASE)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    url.searchParams.set('client_id', clientId)
     return url.toString()
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${protocol}://${window.location.host}${API_BASE}${path}`
+  const url = new URL(`${API_BASE}${path}`, `${protocol}://${window.location.host}`)
+  url.searchParams.set('client_id', clientId)
+  return url.toString()
 }

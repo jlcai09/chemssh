@@ -11,7 +11,13 @@ from backend.app.core.security import WorkspaceSecurity
 from backend.app.main import create_app
 from backend.app.providers.terminal.base import TerminalProvider
 from backend.app.providers.terminal.local_pty import LocalPtyTerminalProvider
-from backend.app.services.terminal_service import TerminalManager, TerminalSession, utc_now
+from backend.app.services.terminal_service import TerminalManager, TerminalSession, terminal_manager, utc_now
+
+
+CLIENT_A = "client_test_a"
+CLIENT_B = "client_test_b"
+CLIENT_A_HEADERS = {"X-Chemweb-Client-Id": CLIENT_A}
+CLIENT_B_HEADERS = {"X-Chemweb-Client-Id": CLIENT_B}
 
 
 class FakeTerminalProvider(TerminalProvider):
@@ -58,6 +64,7 @@ def test_terminal_config_defaults() -> None:
     assert settings.terminal.max_sessions == 4
     assert settings.terminal.default_rows == 30
     assert settings.terminal.default_cols == 120
+    assert settings.terminal.idle_timeout_seconds == 3600
     assert settings.terminal.allow_sync_cwd is True
 
 
@@ -79,6 +86,7 @@ def test_terminal_session_sync_cwd_validates_workspace(tmp_path: Path) -> None:
     created_at = utc_now()
     session = TerminalSession(
         session_id="term_test",
+        client_id=CLIENT_A,
         provider=provider,
         cwd=str(tmp_path),
         created_at=created_at,
@@ -106,6 +114,7 @@ def test_terminal_session_extracts_cwd_marker_without_echo(tmp_path: Path) -> No
     created_at = utc_now()
     session = TerminalSession(
         session_id="term_test",
+        client_id=CLIENT_A,
         provider=provider,
         cwd=str(tmp_path),
         created_at=created_at,
@@ -133,17 +142,21 @@ def test_terminal_manager_enforces_session_limit(monkeypatch: pytest.MonkeyPatch
     )
     manager = TerminalManager()
 
-    session = manager.create_session(settings, None, None, None, None)
+    session = manager.create_session(settings, CLIENT_A, None, None, None, None)
 
     assert session.cwd == str(tmp_path.resolve())
     assert session.provider.rows == 33
     assert session.provider.cols == 101
 
     with pytest.raises(AppError) as exc:
-        manager.create_session(settings, None, None, None, None)
+        manager.create_session(settings, CLIENT_A, None, None, None, None)
 
     assert exc.value.code == "TERMINAL_LIMIT_REACHED"
-    manager.close_session(session.session_id)
+    other_session = manager.create_session(settings, CLIENT_B, None, None, None, None)
+    assert other_session.client_id == CLIENT_B
+
+    manager.close_session(session.session_id, CLIENT_A)
+    manager.close_session(other_session.session_id, CLIENT_B)
 
 
 def test_terminal_manager_releases_session_after_client_disconnect(
@@ -153,30 +166,75 @@ def test_terminal_manager_releases_session_after_client_disconnect(
     monkeypatch.setattr("backend.app.services.terminal_service.LocalPtyTerminalProvider", FakeTerminalProvider)
     settings = Settings(workspace=WorkspaceConfig(root=tmp_path))
     manager = TerminalManager()
-    session = manager.create_session(settings, None, None, None, None)
+    session = manager.create_session(settings, CLIENT_A, None, None, None, None)
 
-    attached = manager.attach_client(session.session_id)
-    manager.detach_client(session.session_id)
+    attached = manager.attach_client(session.session_id, CLIENT_A)
+    manager.detach_client(session.session_id, CLIENT_A)
 
     assert attached.clients == 0
     assert attached.is_alive() is False
-    assert manager.list_sessions() == []
+    assert manager.list_sessions(CLIENT_A) == []
+
+
+def test_terminal_manager_scopes_sessions_to_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("backend.app.services.terminal_service.LocalPtyTerminalProvider", FakeTerminalProvider)
+    settings = Settings(workspace=WorkspaceConfig(root=tmp_path))
+    manager = TerminalManager()
+
+    session_a = manager.create_session(settings, CLIENT_A, None, None, None, None)
+    session_b = manager.create_session(settings, CLIENT_B, None, None, None, None)
+
+    assert [item.session_id for item in manager.list_sessions(CLIENT_A)] == [session_a.session_id]
+    assert [item.session_id for item in manager.list_sessions(CLIENT_B)] == [session_b.session_id]
+
+    with pytest.raises(AppError) as exc:
+        manager.close_session(session_b.session_id, CLIENT_A)
+
+    assert exc.value.code == "TERMINAL_SESSION_NOT_FOUND"
+    assert session_b.is_alive() is True
+
+    with pytest.raises(AppError) as exc:
+        manager.attach_client(session_b.session_id, CLIENT_A)
+
+    assert exc.value.code == "TERMINAL_SESSION_NOT_FOUND"
+
+    manager.close_session(session_a.session_id, CLIENT_A)
+    manager.close_session(session_b.session_id, CLIENT_B)
 
 
 def test_terminal_sessions_api(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("backend.app.services.terminal_service.LocalPtyTerminalProvider", FakeTerminalProvider)
+    terminal_manager.sessions.clear()
     settings = Settings(workspace=WorkspaceConfig(root=tmp_path))
     client = TestClient(create_app(settings))
 
-    created = client.post("/api/terminal/sessions", json={"cwd": str(tmp_path), "rows": 20, "cols": 80})
+    missing_client = client.get("/api/terminal/sessions")
+    assert missing_client.status_code == 400
+    assert missing_client.json()["error"]["code"] == "CLIENT_ID_REQUIRED"
+
+    created = client.post(
+        "/api/terminal/sessions",
+        headers=CLIENT_A_HEADERS,
+        json={"cwd": str(tmp_path), "rows": 20, "cols": 80},
+    )
 
     assert created.status_code == 200
     session_id = created.json()["session_id"]
 
-    listed = client.get("/api/terminal/sessions")
+    listed = client.get("/api/terminal/sessions", headers=CLIENT_A_HEADERS)
     assert listed.status_code == 200
     assert any(item["session_id"] == session_id for item in listed.json()["items"])
 
-    closed = client.delete(f"/api/terminal/sessions/{session_id}")
+    other_listed = client.get("/api/terminal/sessions", headers=CLIENT_B_HEADERS)
+    assert other_listed.status_code == 200
+    assert other_listed.json()["items"] == []
+
+    wrong_client_close = client.delete(f"/api/terminal/sessions/{session_id}", headers=CLIENT_B_HEADERS)
+    assert wrong_client_close.status_code == 404
+
+    closed = client.delete(f"/api/terminal/sessions/{session_id}", headers=CLIENT_A_HEADERS)
     assert closed.status_code == 200
     assert closed.json()["success"] is True

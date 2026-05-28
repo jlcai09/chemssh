@@ -77,7 +77,7 @@ class TerminalConfig(BaseModel):
     max_sessions: int = 4
     default_rows: int = 30
     default_cols: int = 120
-    idle_timeout_minutes: int = 60
+    idle_timeout_seconds: int = Field(default=3600, ge=0)
     allow_sync_cwd: bool = True
 
 

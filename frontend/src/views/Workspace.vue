@@ -175,6 +175,37 @@
       <span>{{ t('file.dropUpload') }}</span>
     </div>
 
+    <div
+      v-if="uploadState.active"
+      class="upload-progress-widget"
+      :class="{ 'is-open': uploadProgressOpen }"
+      @mouseenter="uploadProgressOpen = true"
+      @mouseleave="uploadProgressOpen = false"
+    >
+      <button
+        class="upload-progress-orb"
+        type="button"
+        :aria-label="t('upload.progress')"
+        @focus="uploadProgressOpen = true"
+        @blur="uploadProgressOpen = false"
+      >
+        <span class="upload-progress-ring" />
+        <span class="upload-progress-value">{{ uploadPercent }}%</span>
+      </button>
+      <div v-if="uploadProgressOpen" class="upload-progress-panel" role="status">
+        <div class="upload-progress-title">{{ t('upload.progress') }}</div>
+        <div class="upload-progress-file" :title="uploadState.currentFile">{{ uploadState.currentFile }}</div>
+        <div class="upload-progress-bar" aria-hidden="true">
+          <span :style="{ width: `${uploadPercent}%` }" />
+        </div>
+        <div class="upload-progress-meta">
+          <span>{{ uploadPercent }}%</span>
+          <span>{{ uploadSpeedLabel }}</span>
+          <span>{{ uploadState.done }}/{{ uploadState.totalFiles }}</span>
+        </div>
+      </div>
+    </div>
+
     <Teleport to="body">
       <div
         v-if="contextMenu.visible"
@@ -218,7 +249,8 @@ import {
   writeFile,
   type DirectoryListing,
   type FileItem,
-  type FileReadResponse
+  type FileReadResponse,
+  type UploadProgress
 } from '../api/files'
 import { API_BASE, ApiError, downloadUrl, request } from '../api/http'
 import { hasChemwebFileDrag, readChemwebFileDrag } from '../api/fileDrag'
@@ -286,6 +318,15 @@ type ContextMenuState = {
   opensLeft: boolean
   item: FileItem | null
 }
+type UploadState = {
+  active: boolean
+  currentFile: string
+  done: number
+  totalFiles: number
+  loaded: number
+  total: number
+  speedBytesPerSecond: number
+}
 
 const workspaceRef = ref<HTMLElement | null>(null)
 const leftPaneRef = ref<HTMLElement | null>(null)
@@ -310,6 +351,16 @@ const contextMenu = ref<ContextMenuState>({
   opensLeft: false,
   item: null
 })
+const uploadState = ref<UploadState>({
+  active: false,
+  currentFile: '',
+  done: 0,
+  totalFiles: 0,
+  loaded: 0,
+  total: 0,
+  speedBytesPerSecond: 0
+})
+const uploadProgressOpen = ref(false)
 let previousBodyCursor = ''
 let previousBodyUserSelect = ''
 
@@ -328,6 +379,11 @@ const workspaceStyle = computed<Record<string, string | undefined>>(() => ({
 }))
 
 const dragUploadActive = computed(() => dragUploadDepth.value > 0)
+const uploadPercent = computed(() => {
+  if (!uploadState.value.active || uploadState.value.total <= 0) return 0
+  return Math.min(100, Math.max(0, Math.round((uploadState.value.loaded / uploadState.value.total) * 100)))
+})
+const uploadSpeedLabel = computed(() => formatUploadSpeed(uploadState.value.speedBytesPerSecond))
 
 const sideStyle = computed<Record<string, string | undefined>>(() => ({
   '--workspace-queue': sideQueueHeight.value === null ? undefined : `${sideQueueHeight.value}px`
@@ -990,17 +1046,51 @@ async function handleUpload(files: File[]) {
 
   let uploaded = 0
   let firstError: unknown = null
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0)
+  let completedBytes = 0
+  uploadState.value = {
+    active: true,
+    currentFile: files[0]?.name ?? '',
+    done: 0,
+    totalFiles: files.length,
+    loaded: 0,
+    total: totalBytes,
+    speedBytesPerSecond: 0
+  }
+  uploadProgressOpen.value = false
 
   for (const file of files) {
     try {
-      await uploadFile(currentPath.value, file)
+      uploadState.value.currentFile = file.name
+      let lastProgressLoaded = 0
+      let lastProgressAt = performance.now()
+      await uploadFile(currentPath.value, file, (progress: UploadProgress) => {
+        const fileLoaded = Math.min(progress.loaded, progress.total || file.size)
+        const now = performance.now()
+        const elapsedSeconds = Math.max((now - lastProgressAt) / 1000, 0.001)
+        const deltaBytes = Math.max(0, fileLoaded - lastProgressLoaded)
+        const instantSpeed = deltaBytes / elapsedSeconds
+        uploadState.value.speedBytesPerSecond = uploadState.value.speedBytesPerSecond === 0
+          ? instantSpeed
+          : uploadState.value.speedBytesPerSecond * 0.72 + instantSpeed * 0.28
+        lastProgressLoaded = fileLoaded
+        lastProgressAt = now
+        uploadState.value.loaded = Math.min(totalBytes, completedBytes + fileLoaded)
+      })
       uploaded += 1
+      completedBytes += file.size
+      uploadState.value.done = uploaded
+      uploadState.value.loaded = Math.min(totalBytes, completedBytes)
     } catch (error) {
       firstError ??= error
+      completedBytes += file.size
+      uploadState.value.loaded = Math.min(totalBytes, completedBytes)
     }
   }
 
   await loadDirectory(currentPath.value)
+  uploadState.value.active = false
+  uploadProgressOpen.value = false
 
   if (uploaded === files.length) {
     ElMessage.success(
@@ -1011,6 +1101,11 @@ async function handleUpload(files: File[]) {
     const message = firstError instanceof Error ? firstError.message : t('message.uploadFailed')
     ElMessage.error(t('message.uploadPartial', { message, uploaded, failed }))
   }
+}
+
+function formatUploadSpeed(bytesPerSecond: number) {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0.0 MB/s'
+  return `${(bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s`
 }
 
 function hasFileDrag(event: DragEvent) {

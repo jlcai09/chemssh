@@ -23,6 +23,7 @@ def utc_now() -> datetime:
 @dataclass
 class TerminalSession:
     session_id: str
+    client_id: str
     provider: TerminalProvider
     cwd: str
     created_at: datetime
@@ -152,6 +153,7 @@ class TerminalManager:
     def create_session(
         self,
         settings: Settings,
+        client_id: str,
         cwd: str | None,
         shell: str | None,
         rows: int | None,
@@ -162,7 +164,7 @@ class TerminalManager:
 
         with self._lock:
             self._prune_closed_sessions()
-            if self._alive_count() >= settings.terminal.max_sessions:
+            if self._alive_count(client_id) >= settings.terminal.max_sessions:
                 raise AppError("TERMINAL_LIMIT_REACHED", "Terminal session limit reached", 429)
 
             security = WorkspaceSecurity(settings.workspace.root)
@@ -190,6 +192,7 @@ class TerminalManager:
 
             session = TerminalSession(
                 session_id=session_id,
+                client_id=client_id,
                 provider=provider,
                 cwd=str(safe_cwd),
                 created_at=started_at,
@@ -200,32 +203,27 @@ class TerminalManager:
             self.sessions[session_id] = session
             return session
 
-    def get_session(self, session_id: str) -> TerminalSession:
+    def get_session(self, session_id: str, client_id: str) -> TerminalSession:
         with self._lock:
-            session = self.sessions.get(session_id)
-        if session is None:
-            raise AppError("TERMINAL_SESSION_NOT_FOUND", f"Terminal session not found: {session_id}", 404)
+            session = self._get_owned_session(session_id, client_id)
         return session
 
-    def close_session(self, session_id: str) -> None:
+    def close_session(self, session_id: str, client_id: str) -> None:
         with self._lock:
-            session = self.sessions.pop(session_id, None)
-        if session is None:
-            raise AppError("TERMINAL_SESSION_NOT_FOUND", f"Terminal session not found: {session_id}", 404)
+            session = self._get_owned_session(session_id, client_id)
+            self.sessions.pop(session_id, None)
         session.close()
 
-    def attach_client(self, session_id: str) -> TerminalSession:
+    def attach_client(self, session_id: str, client_id: str) -> TerminalSession:
         with self._lock:
-            session = self.sessions.get(session_id)
-            if session is None:
-                raise AppError("TERMINAL_SESSION_NOT_FOUND", f"Terminal session not found: {session_id}", 404)
+            session = self._get_owned_session(session_id, client_id)
             session.attach_client()
             return session
 
-    def detach_client(self, session_id: str) -> None:
+    def detach_client(self, session_id: str, client_id: str) -> None:
         with self._lock:
             session = self.sessions.get(session_id)
-            if session is None:
+            if session is None or session.client_id != client_id:
                 return
             remaining_clients = session.detach_client()
             if remaining_clients > 0:
@@ -233,13 +231,22 @@ class TerminalManager:
             self.sessions.pop(session_id, None)
         session.close()
 
-    def list_sessions(self) -> list[TerminalSessionResponse]:
+    def list_sessions(self, client_id: str) -> list[TerminalSessionResponse]:
         with self._lock:
-            sessions = sorted(self.sessions.values(), key=lambda item: item.created_at)
+            sessions = sorted(
+                (session for session in self.sessions.values() if session.client_id == client_id),
+                key=lambda item: item.created_at,
+            )
         return [session.to_response() for session in sessions]
 
-    def _alive_count(self) -> int:
-        return sum(1 for session in self.sessions.values() if session.is_alive())
+    def _get_owned_session(self, session_id: str, client_id: str) -> TerminalSession:
+        session = self.sessions.get(session_id)
+        if session is None or session.client_id != client_id:
+            raise AppError("TERMINAL_SESSION_NOT_FOUND", f"Terminal session not found: {session_id}", 404)
+        return session
+
+    def _alive_count(self, client_id: str) -> int:
+        return sum(1 for session in self.sessions.values() if session.client_id == client_id and session.is_alive())
 
     def _prune_closed_sessions(self) -> None:
         closed = [session_id for session_id, session in self.sessions.items() if not session.is_alive()]

@@ -148,6 +148,10 @@ type TerminalTab = {
   fitAddon: FitAddon | null
   socket: WebSocket | null
   inputDisposable: IDisposable | null
+  selectionDisposable: IDisposable | null
+  middleClickCleanup: (() => void) | null
+  latestSelection: string
+  preservingMiddleClickSelection: boolean
   resizeObserver: ResizeObserver | null
   fitFrame: number
 }
@@ -266,6 +270,10 @@ function createEmptyTab(cwd?: string): TerminalTab {
     fitAddon: null,
     socket: null,
     inputDisposable: null,
+    selectionDisposable: null,
+    middleClickCleanup: null,
+    latestSelection: '',
+    preservingMiddleClickSelection: false,
     resizeObserver: null,
     fitFrame: 0
   }
@@ -328,11 +336,16 @@ async function initializeTabTerminal(tab: TerminalTab) {
     }
     return true
   })
+  tab.middleClickCleanup = bindTerminalMiddleClickPaste(tab, host)
 
   tab.terminal = terminal
   tab.fitAddon = fitAddon
   tab.inputDisposable = terminal.onData(data => {
     sendTabSocketMessage(tab, { type: 'input', data })
+  })
+  tab.selectionDisposable = terminal.onSelectionChange(() => {
+    const selection = terminal.getSelection()
+    if (selection || !tab.preservingMiddleClickSelection) tab.latestSelection = selection
   })
   tab.resizeObserver = new ResizeObserver(() => scheduleTabFit(tab))
   tab.resizeObserver.observe(host)
@@ -450,6 +463,8 @@ async function disposeTab(tab: TerminalTab, closeSession: boolean) {
   closeTabSocket(tab)
   tab.resizeObserver?.disconnect()
   tab.inputDisposable?.dispose()
+  tab.selectionDisposable?.dispose()
+  tab.middleClickCleanup?.()
   tab.terminal?.dispose()
   if (tab.fitFrame) window.cancelAnimationFrame(tab.fitFrame)
   terminalHosts.delete(tab.localId)
@@ -460,6 +475,10 @@ async function disposeTab(tab: TerminalTab, closeSession: boolean) {
   tab.terminal = null
   tab.fitAddon = null
   tab.inputDisposable = null
+  tab.selectionDisposable = null
+  tab.middleClickCleanup = null
+  tab.latestSelection = ''
+  tab.preservingMiddleClickSelection = false
   tab.resizeObserver = null
   tab.fitFrame = 0
   resetTabInteraction(tab)
@@ -561,6 +580,71 @@ function handleFileDrop(event: DragEvent) {
   if (!tab) return
   sendTabSocketMessage(tab, { type: 'input', data: formatFileDragTerminalInput(payload.paths) })
   tab.terminal?.focus()
+}
+
+function bindTerminalMiddleClickPaste(tab: TerminalTab, host: HTMLElement) {
+  let pendingText = ''
+  let handledCurrentClick = false
+
+  const handleMouseDown = (event: MouseEvent) => {
+    if (event.button !== 1) return
+    pendingText = tab.terminal?.getSelection() || tab.latestSelection
+    tab.preservingMiddleClickSelection = true
+    handledCurrentClick = false
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
+  const handleMouseUp = (event: MouseEvent) => {
+    if (event.button !== 1) return
+    event.preventDefault()
+    event.stopPropagation()
+    pastePendingMiddleClickSelection(tab, pendingText || tab.terminal?.getSelection() || tab.latestSelection, handledCurrentClick)
+    handledCurrentClick = true
+    finishMiddleClickSelection(tab, () => {
+      pendingText = ''
+    })
+  }
+
+  const handleAuxClick = (event: MouseEvent) => {
+    if (event.button !== 1) return
+    event.preventDefault()
+    event.stopPropagation()
+    pastePendingMiddleClickSelection(tab, pendingText || tab.terminal?.getSelection() || tab.latestSelection, handledCurrentClick)
+    handledCurrentClick = true
+    finishMiddleClickSelection(tab, () => {
+      pendingText = ''
+    })
+  }
+
+  host.addEventListener('mousedown', handleMouseDown, { capture: true })
+  host.addEventListener('mouseup', handleMouseUp, { capture: true })
+  host.addEventListener('auxclick', handleAuxClick, { capture: true })
+
+  return () => {
+    host.removeEventListener('mousedown', handleMouseDown, { capture: true })
+    host.removeEventListener('mouseup', handleMouseUp, { capture: true })
+    host.removeEventListener('auxclick', handleAuxClick, { capture: true })
+  }
+}
+
+function finishMiddleClickSelection(tab: TerminalTab, callback: () => void) {
+  window.setTimeout(() => {
+    callback()
+    tab.preservingMiddleClickSelection = false
+  }, 0)
+}
+
+function pastePendingMiddleClickSelection(tab: TerminalTab, text: string, alreadyHandled: boolean) {
+  if (alreadyHandled) return
+  const terminal = tab.terminal
+  if (!terminal) return
+  if (!text) {
+    terminal.focus()
+    return
+  }
+  terminal.paste(text)
+  terminal.focus()
 }
 
 async function cleanupDetachedSessions() {

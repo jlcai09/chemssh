@@ -1,4 +1,4 @@
-import { request, requestBlob } from './http'
+import { API_BASE, ApiError, request, requestBlob } from './http'
 
 export type FileKind = 'file' | 'directory'
 export type PreviewType = 'text' | 'structure' | 'file' | 'directory'
@@ -34,6 +34,12 @@ export interface FileOperationResponse {
   success: boolean
   path?: string | null
   message: string
+}
+
+export interface UploadProgress {
+  loaded: number
+  total: number
+  lengthComputable: boolean
 }
 
 export interface TailResponse {
@@ -81,13 +87,47 @@ export function makeDirectory(path: string, name: string) {
   })
 }
 
-export function uploadFile(path: string, file: File) {
+export function uploadFile(path: string, file: File, onProgress?: (progress: UploadProgress) => void) {
   const form = new FormData()
   form.set('path', path)
   form.set('file', file)
-  return request<FileOperationResponse>('/api/files/upload', {
-    method: 'POST',
-    body: form
+
+  if (!onProgress) {
+    return request<FileOperationResponse>('/api/files/upload', {
+      method: 'POST',
+      body: form
+    })
+  }
+
+  return new Promise<FileOperationResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${API_BASE}/api/files/upload`)
+    xhr.upload.onprogress = event => {
+      onProgress({
+        loaded: event.loaded,
+        total: event.lengthComputable ? event.total : file.size,
+        lengthComputable: event.lengthComputable
+      })
+    }
+    xhr.onload = () => {
+      let data: unknown = null
+      if (xhr.responseText) {
+        try {
+          data = JSON.parse(xhr.responseText) as unknown
+        } catch {
+          data = null
+        }
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data as FileOperationResponse)
+        return
+      }
+      const error = data && typeof data === 'object' ? (data as { error?: { code?: string; message?: string } }).error : null
+      reject(new ApiError(error?.code ?? 'HTTP_ERROR', error?.message ?? xhr.statusText))
+    }
+    xhr.onerror = () => reject(new ApiError('NETWORK_ERROR', 'Upload failed'))
+    xhr.onabort = () => reject(new ApiError('UPLOAD_ABORTED', 'Upload aborted'))
+    xhr.send(form)
   })
 }
 

@@ -229,6 +229,112 @@ p {
   color: var(--accent-2);
 }
 
+.upload-progress-widget {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  z-index: 24;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.upload-progress-orb {
+  width: 48px;
+  height: 48px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 50%;
+  padding: 0;
+  color: #164253;
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: 0 10px 24px rgba(31, 41, 55, 0.16);
+  backdrop-filter: blur(14px);
+  cursor: default;
+}
+
+.upload-progress-orb:focus-visible {
+  outline: 0;
+  box-shadow: var(--ring), 0 10px 24px rgba(31, 41, 55, 0.16);
+}
+
+.upload-progress-ring {
+  width: 32px;
+  height: 32px;
+  position: absolute;
+  border: 2px dashed rgba(23, 107, 135, 0.88);
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  border-radius: 50%;
+  animation: upload-progress-spin 1s linear infinite;
+}
+
+.upload-progress-value {
+  position: relative;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.upload-progress-panel {
+  width: 218px;
+  margin-bottom: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.64);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #172635;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 14px 32px rgba(31, 41, 55, 0.14);
+  backdrop-filter: blur(16px);
+}
+
+.upload-progress-title {
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.upload-progress-file {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-progress-bar {
+  height: 5px;
+  margin-top: 9px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.32);
+  overflow: hidden;
+}
+
+.upload-progress-bar span {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.18s ease;
+}
+
+.upload-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+@keyframes upload-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .workspace-left,
 .workspace-main,
 .workspace-side,

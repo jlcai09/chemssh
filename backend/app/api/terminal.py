@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import AppError
-from backend.app.dependencies import get_settings_dependency
+from backend.app.dependencies import get_client_id_dependency, get_settings_dependency, validate_client_id
 from backend.app.models.terminal import (
     CreateTerminalSessionRequest,
     TerminalCloseResponse,
@@ -25,9 +25,11 @@ router = APIRouter(prefix="/terminal", tags=["terminal"])
 def create_terminal_session(
     payload: CreateTerminalSessionRequest,
     settings: Settings = Depends(get_settings_dependency),
+    client_id: str = Depends(get_client_id_dependency),
 ) -> TerminalSessionResponse:
     session = terminal_manager.create_session(
         settings,
+        client_id=client_id,
         cwd=payload.cwd,
         shell=payload.shell,
         rows=payload.rows,
@@ -37,13 +39,16 @@ def create_terminal_session(
 
 
 @router.get("/sessions", response_model=TerminalSessionListResponse)
-def list_terminal_sessions() -> TerminalSessionListResponse:
-    return TerminalSessionListResponse(items=terminal_manager.list_sessions())
+def list_terminal_sessions(client_id: str = Depends(get_client_id_dependency)) -> TerminalSessionListResponse:
+    return TerminalSessionListResponse(items=terminal_manager.list_sessions(client_id))
 
 
 @router.delete("/sessions/{session_id}", response_model=TerminalCloseResponse)
-def close_terminal_session(session_id: str) -> TerminalCloseResponse:
-    terminal_manager.close_session(session_id)
+def close_terminal_session(
+    session_id: str,
+    client_id: str = Depends(get_client_id_dependency),
+) -> TerminalCloseResponse:
+    terminal_manager.close_session(session_id, client_id)
     return TerminalCloseResponse()
 
 
@@ -56,9 +61,10 @@ async def terminal_ws(
     await websocket.accept()
 
     try:
+        client_id = validate_client_id(websocket.query_params.get("client_id"))
         if not settings.terminal.enabled:
             raise AppError("TERMINAL_DISABLED", "Terminal is disabled by configuration", 403)
-        session = terminal_manager.attach_client(session_id)
+        session = terminal_manager.attach_client(session_id, client_id)
     except AppError as exc:
         await websocket.send_json(_error_message(exc))
         await websocket.close(code=1008)
@@ -77,7 +83,7 @@ async def terminal_ws(
         reader_task.cancel()
         with suppress(asyncio.CancelledError):
             await reader_task
-        terminal_manager.detach_client(session_id)
+        terminal_manager.detach_client(session_id, client_id)
 
 
 async def _terminal_reader(websocket: WebSocket, session: TerminalSession, send_lock: asyncio.Lock) -> None:
