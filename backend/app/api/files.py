@@ -73,10 +73,11 @@ def create_directory(
 @router.post("/upload", response_model=FileOperationResponse)
 async def upload_file(
     path: str = Form(...),
+    relative_path: Optional[str] = Form(default=None),
     file: UploadFile = File(...),
     service: FileService = Depends(get_file_service),
 ) -> FileOperationResponse:
-    return await service.save_upload(path, file)
+    return await service.save_upload(path, file, relative_path)
 
 
 @router.get("/download")

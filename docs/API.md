@@ -124,6 +124,14 @@ CLI 参数：
 
 - `path`: 目标目录。
 - `file`: 上传文件。
+- `relative_path`: 可选，上传到目标目录下的相对路径。用于文件夹上传，例如 `case/A/input.inp`。后端会逐段校验路径并自动创建父目录，路径仍必须留在工作区内。
+
+前端封装：`uploadFile(path, file, { relativePath, onProgress })`。文件夹上传由 `Workspace.vue` 在上传前检查当前目录顶层重名项，并按用户选择逐文件调用该接口：
+
+- `overwrite`：同名文件写入覆盖；同名目录只合并目录树，内部仅覆盖实际上传且同名的文件，远程额外文件保留。
+- `skip`：跳过该顶层冲突项。
+- `suffix`：把冲突顶层文件或文件夹自动改名为 `.new` 后缀，例如 `A` -> `A.new`。
+- `cancel`：取消本批上传。
 
 ### `GET /api/files/download?path=/workspace/project/result.out`
 
@@ -472,6 +480,7 @@ function handleDrop(event: DragEvent) {
 ### 推荐的窗口行为
 
 - 文件管理器 -> 浏览器外部：打开 `text/uri-list` 中的下载 URL。单文件直接下载，多文件或目录下载 zip。
+- 文件管理器 -> 浏览器外部拖拽目录时，即使只拖了一个目录，也使用 `download-selection` 返回 zip。
 - 文件管理器 -> 终端：向当前 tab 输入 ` ${paths.join(' ')}`，不自动回车。
 - 文件管理器 -> 预览：只打开第一个路径，并切换到预览面板。
 - 文件管理器 -> 插件结构 provider：如果插件 UI 已加载并注册 active preview provider，文件管理器可先调用插件 `probe`，匹配成功后把插件 `StructureSource` 和文件路径发送到现有预览窗口。

@@ -24,6 +24,18 @@
       <el-button :icon="Upload" circle @click="pickFile" />
     </el-tooltip>
     <input ref="fileInput" class="hidden-input" type="file" multiple @change="handleUpload" />
+    <el-tooltip :content="t('toolbar.uploadFolder')" placement="bottom">
+      <el-button :icon="FolderOpened" circle @click="pickFolder" />
+    </el-tooltip>
+    <input
+      ref="folderInput"
+      class="hidden-input"
+      type="file"
+      multiple
+      webkitdirectory
+      directory
+      @change="handleUpload"
+    />
     <el-tooltip :content="t('toolbar.download')" placement="bottom">
       <el-button :icon="Download" circle :disabled="selectedCount === 0" @click="$emit('download')" />
     </el-tooltip>
@@ -38,7 +50,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Back, Delete, Download, Edit, FolderAdd, Hide, Refresh, Upload, View } from '@element-plus/icons-vue'
+import { Back, Delete, Download, Edit, FolderAdd, FolderOpened, Hide, Refresh, Upload, View } from '@element-plus/icons-vue'
 import type { FileItem } from '../api/files'
 import { t } from '../i18n'
 
@@ -66,10 +78,15 @@ const emit = defineEmits<{
 }>()
 
 const fileInput = ref<HTMLInputElement | null>(null)
+const folderInput = ref<HTMLInputElement | null>(null)
 const selectedCount = computed(() => props.selectedItems.length)
 
 function pickFile() {
   fileInput.value?.click()
+}
+
+function pickFolder() {
+  folderInput.value?.click()
 }
 
 function handleUpload(event: Event) {

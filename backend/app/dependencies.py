@@ -8,7 +8,7 @@ from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import AppError
 from backend.app.providers.scheduler.base import SchedulerProvider
 from backend.app.providers.scheduler.pbs import PbsProvider
-from backend.app.providers.scheduler.slurm import LocalSchedulerProvider, SlurmProvider
+from backend.app.providers.scheduler.slurm import SlurmProvider
 from backend.app.services.file_service import FileService
 from backend.app.services.job_service import JobService
 from backend.app.services.queue_service import QueueService
@@ -45,8 +45,6 @@ def get_structure_service(settings: Settings = Depends(get_settings_dependency))
 
 
 def get_scheduler_provider(settings: Settings = Depends(get_settings_dependency)) -> SchedulerProvider:
-    if settings.scheduler.type == "local":
-        return LocalSchedulerProvider()
     if settings.scheduler.type == "pbs":
         return PbsProvider()
     return SlurmProvider()

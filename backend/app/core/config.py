@@ -4,31 +4,13 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8888
     idle_shutdown_seconds: int = Field(default=0, ge=0)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_idle_shutdown_minutes(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        if "idle_shutdown_minutes" not in data or "idle_shutdown_seconds" in data:
-            return data
-
-        migrated = dict(data)
-        minutes = migrated.pop("idle_shutdown_minutes")
-        if isinstance(minutes, int):
-            migrated["idle_shutdown_seconds"] = minutes * 60
-        elif isinstance(minutes, str) and minutes.strip().isdigit():
-            migrated["idle_shutdown_seconds"] = int(minutes.strip()) * 60
-        else:
-            migrated["idle_shutdown_seconds"] = minutes
-        return migrated
 
 
 class WorkspaceConfig(BaseModel):
@@ -142,7 +124,7 @@ def load_settings(
         config_file = Path(config_path).expanduser().resolve()
         data = _load_yaml(config_file)
 
-    env_root = os.getenv("CHEM_WORKBENCH_WORKSPACE")
+    env_root = os.getenv("CHEMWEB_WORKSPACE")
     if workspace_root or env_root:
         data.setdefault("workspace", {})
         data["workspace"]["root"] = str(workspace_root or env_root)

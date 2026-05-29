@@ -276,6 +276,38 @@ def test_download_selection_get_archives_multiple_paths(tmp_path: Path) -> None:
         assert "folder/nested.txt" in names
 
 
+def test_upload_accepts_relative_path_and_overwrites_nested_file(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    existing = tmp_path / "A" / "B.txt"
+    keep = tmp_path / "A" / "C.txt"
+    existing.parent.mkdir()
+    existing.write_text("old\n", encoding="utf-8")
+    keep.write_text("keep\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/files/upload",
+        data={"path": str(tmp_path), "relative_path": "A/B.txt"},
+        files={"file": ("B.txt", b"new\n", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    assert existing.read_text(encoding="utf-8") == "new\n"
+    assert keep.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_upload_relative_path_blocks_traversal(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/api/files/upload",
+        data={"path": str(tmp_path), "relative_path": "../escape.txt"},
+        files={"file": ("escape.txt", b"bad", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_NAME"
+
+
 def test_submit_job_uses_requested_queue_command(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path)
     script = tmp_path / "vasp.script"

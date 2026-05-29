@@ -85,15 +85,16 @@ class FileService:
         self.provider.make_directory(target)
         return FileOperationResponse(path=str(target), message="Directory created")
 
-    async def save_upload(self, raw_path: str, upload: Any) -> FileOperationResponse:
+    async def save_upload(self, raw_path: str, upload: Any, relative_path: str | None = None) -> FileOperationResponse:
         directory = self.security.resolve_path(raw_path)
         if not directory.exists() or not directory.is_dir():
             raise AppError("DIRECTORY_NOT_FOUND", f"Upload directory not found: {directory}", 404)
-        target = self.security.resolve_child(directory, upload.filename, field="file name")
+        target = self._resolve_upload_target(directory, relative_path or upload.filename)
         max_bytes = self.settings.workspace.max_upload_size_mb * 1024 * 1024
         total = 0
 
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("wb") as handle:
                 while True:
                     chunk = await upload.read(1024 * 1024)
@@ -113,6 +114,28 @@ class FileService:
             raise AppError("PERMISSION_DENIED", f"Cannot upload to: {target}", 403) from exc
 
         return FileOperationResponse(path=str(target), message="File uploaded")
+
+    def _resolve_upload_target(self, directory: Path, relative_path: str) -> Path:
+        normalized = relative_path.replace("\\", "/").strip("/")
+        if not normalized:
+            raise AppError("INVALID_NAME", "Invalid upload path", 400)
+
+        candidate_path = Path(normalized)
+        if candidate_path.is_absolute():
+            raise AppError("INVALID_NAME", f"Invalid upload path: {relative_path}", 400)
+
+        parts: list[str] = []
+        for part in candidate_path.parts:
+            if part in {"", ".", ".."}:
+                raise AppError("INVALID_NAME", f"Invalid upload path: {relative_path}", 400)
+            parts.append(self.security.validate_child_name(part, field="upload path segment"))
+
+        target = directory.joinpath(*parts).resolve(strict=False)
+        if not self.security.is_allowed(target):
+            raise AppError("FORBIDDEN_PATH", f"Path is outside workspace root: {relative_path}", 403)
+        if target.exists() and target.is_dir():
+            raise AppError("NOT_A_FILE", f"Upload target is a directory: {target}", 400)
+        return target
 
     def resolve_download(self, raw_path: str) -> Path:
         path = self.security.resolve_path(raw_path)

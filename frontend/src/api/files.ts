@@ -87,12 +87,25 @@ export function makeDirectory(path: string, name: string) {
   })
 }
 
-export function uploadFile(path: string, file: File, onProgress?: (progress: UploadProgress) => void) {
+export interface UploadFileOptions {
+  relativePath?: string
+  onProgress?: (progress: UploadProgress) => void
+}
+
+export function uploadFile(
+  path: string,
+  file: File,
+  optionsOrProgress?: UploadFileOptions | ((progress: UploadProgress) => void)
+) {
+  const options = typeof optionsOrProgress === 'function'
+    ? { onProgress: optionsOrProgress }
+    : (optionsOrProgress ?? {})
   const form = new FormData()
   form.set('path', path)
+  if (options.relativePath) form.set('relative_path', options.relativePath)
   form.set('file', file)
 
-  if (!onProgress) {
+  if (!options.onProgress) {
     return request<FileOperationResponse>('/api/files/upload', {
       method: 'POST',
       body: form
@@ -103,7 +116,7 @@ export function uploadFile(path: string, file: File, onProgress?: (progress: Upl
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${API_BASE}/api/files/upload`)
     xhr.upload.onprogress = event => {
-      onProgress({
+      options.onProgress?.({
         loaded: event.loaded,
         total: event.lengthComputable ? event.total : file.size,
         lengthComputable: event.lengthComputable

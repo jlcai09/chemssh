@@ -35,21 +35,6 @@ server:
     assert settings.server.idle_shutdown_seconds == 15
 
 
-def test_server_idle_shutdown_legacy_minutes_yaml(tmp_path: Path) -> None:
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        """
-server:
-  idle_shutdown_minutes: 2
-""",
-        encoding="utf-8",
-    )
-
-    settings = load_settings(config)
-
-    assert settings.server.idle_shutdown_seconds == 120
-
-
 def test_server_idle_shutdown_is_validated() -> None:
     with pytest.raises(ValidationError):
         Settings(server={"idle_shutdown_seconds": -1})

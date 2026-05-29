@@ -224,37 +224,6 @@ class SlurmProvider(SchedulerProvider):
         )
 
 
-class LocalSchedulerProvider(SchedulerProvider):
-    scheduler_name = "local"
-
-    def list_jobs(self, current_user_only: bool = False) -> QueueResponse:
-        return QueueResponse(
-            scheduler=self.scheduler_name,
-            available=False,
-            message="Local process scheduler is reserved for a later milestone",
-            items=[],
-        )
-
-    def job_detail(self, job_id: str) -> QueueJobDetailResponse:
-        validate_job_id(job_id)
-        raise AppError("LOCAL_UNSUPPORTED", "Local job details are not implemented yet", 501)
-
-    def cancel_job(self, job_id: str) -> CancelJobResponse:
-        validate_job_id(job_id)
-        raise AppError("LOCAL_UNSUPPORTED", "Local job cancel is not implemented yet", 501)
-
-    def hold_job(self, job_id: str) -> QueueJobActionResponse:
-        validate_job_id(job_id)
-        raise AppError("LOCAL_UNSUPPORTED", "Local job hold is not implemented yet", 501)
-
-    def release_job(self, job_id: str) -> QueueJobActionResponse:
-        validate_job_id(job_id)
-        raise AppError("LOCAL_UNSUPPORTED", "Local job release is not implemented yet", 501)
-
-    def submit_job(self, workdir: Path, script: str, command: SubmitCommand = "sbatch") -> SubmitJobResponse:
-        raise AppError("LOCAL_UNSUPPORTED", "Local job submit is not implemented yet", 501)
-
-
 def _int_or_none(value: Any) -> int | None:
     try:
         return int(value)

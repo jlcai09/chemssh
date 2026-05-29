@@ -329,6 +329,55 @@ p {
   font-weight: 650;
 }
 
+.upload-conflict-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.32);
+}
+
+.upload-conflict-dialog {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2937;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.24);
+}
+
+.upload-conflict-title {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.upload-conflict-dialog p {
+  margin: 0;
+  color: #4b5563;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.upload-conflict-apply {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.upload-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 @keyframes upload-progress-spin {
   to {
     transform: rotate(360deg);
@@ -1313,6 +1362,15 @@ p {
     border-color 0.14s ease,
     color 0.14s ease,
     box-shadow 0.14s ease;
+  user-select: none;
+}
+
+.side-panel-tab[draggable="true"] {
+  cursor: grab;
+}
+
+.side-panel-tab[draggable="true"]:active {
+  cursor: grabbing;
 }
 
 .side-panel-tab:hover,
@@ -1814,6 +1872,15 @@ button.context-menu-item {
   background: #151b22;
   cursor: pointer;
   outline: 0;
+  user-select: none;
+}
+
+.terminal-tab[draggable="true"] {
+  cursor: grab;
+}
+
+.terminal-tab[draggable="true"]:active {
+  cursor: grabbing;
 }
 
 .terminal-tab:hover,

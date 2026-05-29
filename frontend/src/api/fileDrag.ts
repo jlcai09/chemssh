@@ -33,15 +33,15 @@ export function formatFileDragTerminalInput(paths: string[]) {
   return paths.length === 0 ? '' : ` ${paths.join(' ')}`
 }
 
-export function getFileDragDownloadUrl(paths: string[]) {
-  const relative = downloadSelectionUrl(paths)
+export function getFileDragDownloadUrl(paths: string[], options: { forceArchive?: boolean } = {}) {
+  const relative = downloadSelectionUrl(paths, options)
   return new URL(relative, window.location.href).href
 }
 
 export function writeChemwebFileDrag(dataTransfer: DataTransfer, items: FileItem[]) {
   const payload = createChemwebFileDragPayload(items)
   const paths = payload.paths
-  const downloadUrl = getFileDragDownloadUrl(paths)
+  const downloadUrl = getFileDragDownloadUrl(paths, { forceArchive: paths.length === 1 && items[0]?.type === 'directory' })
   const filename = paths.length === 1 ? items[0]?.name ?? 'chemweb-file' : 'chemweb-selection.zip'
 
   dataTransfer.effectAllowed = 'copy'
@@ -49,7 +49,8 @@ export function writeChemwebFileDrag(dataTransfer: DataTransfer, items: FileItem
   dataTransfer.setData(CHEMWEB_FILE_PATHS_MIME, JSON.stringify(paths))
   dataTransfer.setData('text/plain', formatFileDragTerminalInput(paths))
   dataTransfer.setData('text/uri-list', downloadUrl)
-  dataTransfer.setData('DownloadURL', `${paths.length === 1 ? 'application/octet-stream' : 'application/zip'}:${filename}:${downloadUrl}`)
+  const mediaType = paths.length === 1 && items[0]?.type === 'file' ? 'application/octet-stream' : 'application/zip'
+  dataTransfer.setData('DownloadURL', `${mediaType}:${filename}:${downloadUrl}`)
 }
 
 export function readChemwebFileDrag(dataTransfer: DataTransfer | null): ChemwebFileDragPayload | null {

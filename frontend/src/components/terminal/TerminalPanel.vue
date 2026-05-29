@@ -14,11 +14,15 @@
         :class="{ 'is-active': tab.localId === activeTabId, 'is-connected': tab.connected }"
         role="tab"
         tabindex="0"
+        draggable="true"
         :aria-selected="tab.localId === activeTabId"
         :title="tab.cwd || tab.sessionId || ''"
         @click="activateTab(tab.localId)"
         @keydown.enter.prevent="activateTab(tab.localId)"
         @keydown.space.prevent="activateTab(tab.localId)"
+        @dragstart="handleTabDragStart(tab.localId, $event)"
+        @dragover="handleTabDragOver($event)"
+        @drop="handleTabDrop(tab.localId, $event)"
       >
         <span class="terminal-tab-label">{{ tabTitle(tab) }}</span>
         <span class="terminal-tab-actions" @click.stop>
@@ -183,6 +187,7 @@ const terminalFontSizeModel = computed({
 const terminalHosts = new Map<string, HTMLElement>()
 let tabsResizeObserver: ResizeObserver | null = null
 let tabSerial = 0
+const TERMINAL_TAB_DRAG_MIME = 'application/x-chemweb-terminal-tab'
 
 const preferredCwd = computed(() => props.currentFileManagerPath || props.initialCwd || undefined)
 const activeTab = computed(() => tabs.value.find(tab => tab.localId === activeTabId.value) ?? null)
@@ -296,6 +301,36 @@ async function ensureInitialTab(cwd?: string) {
 
 function activateTab(tabId: string) {
   activeTabId.value = tabId
+}
+
+function handleTabDragStart(tabId: string, event: DragEvent) {
+  if (!event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData(TERMINAL_TAB_DRAG_MIME, tabId)
+}
+
+function handleTabDragOver(event: DragEvent) {
+  const types = Array.from(event.dataTransfer?.types ?? [])
+  if (!types.includes(TERMINAL_TAB_DRAG_MIME)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+function handleTabDrop(targetTabId: string, event: DragEvent) {
+  const sourceTabId = event.dataTransfer?.getData(TERMINAL_TAB_DRAG_MIME)
+  if (!sourceTabId || sourceTabId === targetTabId) return
+  event.preventDefault()
+  const fromIndex = tabs.value.findIndex(tab => tab.localId === sourceTabId)
+  const toIndex = tabs.value.findIndex(tab => tab.localId === targetTabId)
+  if (fromIndex < 0 || toIndex < 0) return
+  const next = [...tabs.value]
+  const [moved] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, moved)
+  tabs.value = next
+  void nextTick(() => {
+    measureTabsOverflow()
+    requestActiveTabFit()
+  })
 }
 
 function setTerminalHost(tabId: string, el: unknown) {

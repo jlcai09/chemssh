@@ -91,7 +91,11 @@
             class="side-panel-tab"
             :class="{ 'is-active': panel.id === activeWorkPanelId }"
             type="button"
+            draggable="true"
             @click="activeWorkPanelId = panel.id"
+            @dragstart="onWorkPanelDragStart(panel.id, $event)"
+            @dragover="onWorkPanelDragOver(panel.id, $event)"
+            @drop="onWorkPanelDrop(panel.id, $event)"
           >
             <span>{{ panelTitle(panel) }}</span>
             <el-tooltip :content="t('panel.close')" placement="bottom">
@@ -207,6 +211,23 @@
     </div>
 
     <Teleport to="body">
+      <div v-if="uploadConflictDialog.visible" class="upload-conflict-backdrop">
+        <div class="upload-conflict-dialog" role="dialog" aria-modal="true">
+          <div class="upload-conflict-title">{{ t('upload.conflictTitle') }}</div>
+          <p>{{ t('upload.conflictMessage', { name: uploadConflictDialog.name }) }}</p>
+          <label class="upload-conflict-apply">
+            <input v-model="uploadConflictDialog.applyAll" type="checkbox" />
+            <span>{{ t('upload.applyAll') }}</span>
+          </label>
+          <div class="upload-conflict-actions">
+            <el-button type="primary" @click="chooseUploadConflict('overwrite')">{{ t('upload.overwrite') }}</el-button>
+            <el-button @click="chooseUploadConflict('skip')">{{ t('upload.skip') }}</el-button>
+            <el-button @click="chooseUploadConflict('suffix')">{{ t('upload.renameNew') }}</el-button>
+            <el-button @click="chooseUploadConflict('cancel')">{{ t('common.cancel') }}</el-button>
+          </div>
+        </div>
+      </div>
+
       <div
         v-if="contextMenu.visible"
         class="file-context-menu"
@@ -327,6 +348,32 @@ type UploadState = {
   total: number
   speedBytesPerSecond: number
 }
+type UploadConflictAction = 'overwrite' | 'skip' | 'suffix' | 'cancel'
+type UploadConflictResolution = {
+  action: UploadConflictAction
+  applyAll: boolean
+}
+type UploadConflictDialogState = {
+  visible: boolean
+  name: string
+  applyAll: boolean
+  resolve: ((resolution: UploadConflictResolution) => void) | null
+}
+type UploadEntry = {
+  file: File
+  relativePath: string
+  displayPath: string
+  rootName: string
+}
+type FileSystemEntryLike = {
+  isFile: boolean
+  isDirectory: boolean
+  name: string
+  file?: (callback: (file: File) => void, errorCallback?: (error: unknown) => void) => void
+  createReader?: () => {
+    readEntries: (callback: (entries: FileSystemEntryLike[]) => void, errorCallback?: (error: unknown) => void) => void
+  }
+}
 
 const workspaceRef = ref<HTMLElement | null>(null)
 const leftPaneRef = ref<HTMLElement | null>(null)
@@ -338,7 +385,8 @@ const sidePaneWidth = ref<number | null>(null)
 const sideQueueHeight = ref<number | null>(null)
 const terminalLayoutVersion = ref(0)
 const workPanels = ref<WorkPanel[]>([
-  { id: 'builtin:preview', kind: 'preview', title: t('preview.type.preview') }
+  { id: 'builtin:preview', kind: 'preview', title: t('preview.type.preview') },
+  { id: 'builtin:queue', kind: 'queue', title: t('queue.title') }
 ])
 const activeWorkPanelId = ref('builtin:preview')
 const pluginManifests = ref<PluginManifest[]>([])
@@ -359,6 +407,12 @@ const uploadState = ref<UploadState>({
   loaded: 0,
   total: 0,
   speedBytesPerSecond: 0
+})
+const uploadConflictDialog = ref<UploadConflictDialogState>({
+  visible: false,
+  name: '',
+  applyAll: false,
+  resolve: null
 })
 const uploadProgressOpen = ref(false)
 let previousBodyCursor = ''
@@ -560,6 +614,14 @@ function panelTitle(panel: WorkPanel) {
   return panel.title
 }
 
+function syncBuiltinPanelTitles() {
+  workPanels.value = workPanels.value.map(panel => {
+    if (panel.kind === 'preview') return { ...panel, title: t('preview.type.preview') }
+    if (panel.kind === 'queue') return { ...panel, title: props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title') }
+    return panel
+  })
+}
+
 function openBuiltinPanel(kind: 'preview' | 'queue') {
   const id = `builtin:${kind}`
   if (!workPanels.value.some(panel => panel.id === id)) {
@@ -570,6 +632,17 @@ function openBuiltinPanel(kind: 'preview' | 'queue') {
     })
   }
   activeWorkPanelId.value = id
+}
+
+function moveWorkPanel(fromId: string, toId: string) {
+  if (fromId === toId) return
+  const fromIndex = workPanels.value.findIndex(panel => panel.id === fromId)
+  const toIndex = workPanels.value.findIndex(panel => panel.id === toId)
+  if (fromIndex < 0 || toIndex < 0) return
+  const next = [...workPanels.value]
+  const [moved] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, moved)
+  workPanels.value = next
 }
 
 function closeWorkPanel(panelId: string) {
@@ -584,6 +657,26 @@ function closeWorkPanel(panelId: string) {
   if (activeWorkPanelId.value === panelId) {
     activeWorkPanelId.value = workPanels.value[workPanels.value.length - 1]?.id ?? ''
   }
+}
+
+function onWorkPanelDragStart(panelId: string, event: DragEvent) {
+  if (!event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('application/x-chemweb-work-panel', panelId)
+}
+
+function onWorkPanelDragOver(panelId: string, event: DragEvent) {
+  const types = Array.from(event.dataTransfer?.types ?? [])
+  if (!types.includes('application/x-chemweb-work-panel')) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+function onWorkPanelDrop(panelId: string, event: DragEvent) {
+  const fromId = event.dataTransfer?.getData('application/x-chemweb-work-panel')
+  if (!fromId) return
+  event.preventDefault()
+  moveWorkPanel(fromId, panelId)
 }
 
 async function openWorkPanelCommand(command: string | number | object) {
@@ -1042,29 +1135,54 @@ async function promptMkdir() {
 }
 
 async function handleUpload(files: File[]) {
-  if (files.length === 0) return
+  const entries = filesToUploadEntries(files)
+  await handleUploadEntries(entries)
+}
+
+function filesToUploadEntries(files: File[]) {
+  return files
+    .filter(file => file.name)
+    .map(file => {
+      const relativePath = sanitizeRelativePath(file.webkitRelativePath || file.name)
+      return {
+        file,
+        relativePath,
+        displayPath: relativePath,
+        rootName: relativePath.split('/')[0] ?? file.name
+      } satisfies UploadEntry
+    })
+}
+
+async function handleUploadEntries(entries: UploadEntry[]) {
+  if (entries.length === 0) return
+
+  const prepared = await prepareUploadEntries(entries)
+  if (!prepared || prepared.length === 0) return
 
   let uploaded = 0
   let firstError: unknown = null
-  const totalBytes = files.reduce((sum, file) => sum + file.size, 0)
+  const totalBytes = prepared.reduce((sum, entry) => sum + entry.file.size, 0)
   let completedBytes = 0
   uploadState.value = {
     active: true,
-    currentFile: files[0]?.name ?? '',
+    currentFile: prepared[0]?.displayPath ?? '',
     done: 0,
-    totalFiles: files.length,
+    totalFiles: prepared.length,
     loaded: 0,
     total: totalBytes,
     speedBytesPerSecond: 0
   }
   uploadProgressOpen.value = false
 
-  for (const file of files) {
+  for (const entry of prepared) {
+    const file = entry.file
     try {
-      uploadState.value.currentFile = file.name
+      uploadState.value.currentFile = entry.displayPath
       let lastProgressLoaded = 0
       let lastProgressAt = performance.now()
-      await uploadFile(currentPath.value, file, (progress: UploadProgress) => {
+      await uploadFile(currentPath.value, file, {
+        relativePath: entry.relativePath,
+        onProgress: (progress: UploadProgress) => {
         const fileLoaded = Math.min(progress.loaded, progress.total || file.size)
         const now = performance.now()
         const elapsedSeconds = Math.max((now - lastProgressAt) / 1000, 0.001)
@@ -1076,6 +1194,7 @@ async function handleUpload(files: File[]) {
         lastProgressLoaded = fileLoaded
         lastProgressAt = now
         uploadState.value.loaded = Math.min(totalBytes, completedBytes + fileLoaded)
+        }
       })
       uploaded += 1
       completedBytes += file.size
@@ -1092,14 +1211,125 @@ async function handleUpload(files: File[]) {
   uploadState.value.active = false
   uploadProgressOpen.value = false
 
-  if (uploaded === files.length) {
+  if (uploaded === prepared.length) {
     ElMessage.success(
-      files.length === 1 ? t('message.uploadComplete') : t('message.uploadCompleteMany', { count: files.length })
+      prepared.length === 1 ? t('message.uploadComplete') : t('message.uploadCompleteMany', { count: prepared.length })
     )
   } else {
-    const failed = files.length - uploaded
+    const failed = prepared.length - uploaded
     const message = firstError instanceof Error ? firstError.message : t('message.uploadFailed')
     ElMessage.error(t('message.uploadPartial', { message, uploaded, failed }))
+  }
+}
+
+function sanitizeRelativePath(path: string) {
+  return path.replace(/\\/g, '/').split('/').filter(part => part && part !== '.' && part !== '..').join('/')
+}
+
+async function prepareUploadEntries(entries: UploadEntry[]) {
+  const normalized = entries
+    .map(entry => ({
+      ...entry,
+      relativePath: sanitizeRelativePath(entry.relativePath),
+      displayPath: sanitizeRelativePath(entry.displayPath || entry.relativePath)
+    }))
+    .filter(entry => entry.relativePath)
+
+  if (normalized.length === 0) return []
+
+  const topLevelItems = new Map((await listFiles(currentPath.value)).items.map(item => [item.name, item] as const))
+  const resolved: UploadEntry[] = []
+  let applyAllAction: UploadConflictAction | null = null
+
+  const groups = new Map<string, UploadEntry[]>()
+  for (const entry of normalized) {
+    const rootName = entry.relativePath.split('/')[0] ?? entry.file.name
+    const group = groups.get(rootName)
+    if (group) group.push(entry)
+    else groups.set(rootName, [entry])
+  }
+
+  for (const [rootName, group] of groups) {
+    const isFolderUpload = group.some(entry => entry.relativePath.includes('/'))
+    const existing = topLevelItems.get(rootName) ?? null
+
+    let action: UploadConflictAction = 'overwrite'
+    if (existing) {
+      const resolution: UploadConflictResolution = applyAllAction
+        ? { action: applyAllAction, applyAll: true }
+        : await promptUploadConflict(rootName)
+      if (resolution.applyAll) applyAllAction = resolution.action
+      action = resolution.action
+    }
+
+    if (action === 'cancel') return null
+    if (action === 'skip') continue
+
+    let finalRootName = rootName
+    if (action === 'suffix') {
+      finalRootName = uniqueSuffixedName(rootName, topLevelItems)
+    }
+
+    for (const entry of group) {
+      const suffix = entry.relativePath === rootName ? '' : entry.relativePath.slice(rootName.length)
+      const relativePath = `${finalRootName}${suffix}`
+      resolved.push({
+        ...entry,
+        relativePath,
+        displayPath: relativePath,
+        rootName: finalRootName
+      })
+    }
+
+    topLevelItems.set(finalRootName, {
+      name: finalRootName,
+      path: joinDisplayPath(currentPath.value, finalRootName),
+      type: isFolderUpload ? 'directory' : 'file',
+      size: null,
+      mtime: '',
+      extension: '',
+      preview_type: isFolderUpload ? 'directory' : 'file',
+      format: null
+    })
+  }
+
+  return resolved
+}
+
+function uniqueSuffixedName(name: string, existing: Map<string, FileItem>) {
+  let candidate = `${name}.new`
+  while (existing.has(candidate)) {
+    candidate = `${candidate}.new`
+  }
+  return candidate
+}
+
+function joinDisplayPath(parent: string, name: string) {
+  if (!parent) return name
+  const separator = parent.includes('\\') ? '\\' : '/'
+  return `${parent.replace(/[\\/]+$/, '')}${separator}${name}`
+}
+
+async function promptUploadConflict(name: string) {
+  return new Promise<UploadConflictResolution>(resolve => {
+    uploadConflictDialog.value = {
+      visible: true,
+      name,
+      applyAll: false,
+      resolve
+    }
+  })
+}
+
+function chooseUploadConflict(action: UploadConflictAction) {
+  const dialog = uploadConflictDialog.value
+  if (!dialog.resolve) return
+  dialog.resolve({ action, applyAll: dialog.applyAll })
+  uploadConflictDialog.value = {
+    visible: false,
+    name: '',
+    applyAll: false,
+    resolve: null
   }
 }
 
@@ -1144,8 +1374,73 @@ function handleWorkspaceDrop(event: DragEvent) {
   if (!hasFileDrag(event)) return
   event.preventDefault()
   dragUploadDepth.value = 0
-  const files = Array.from(event.dataTransfer?.files ?? []).filter(file => file.name)
-  if (files.length > 0) void handleUpload(files)
+  void collectDropUploadEntries(event).then(entries => {
+    if (entries.length > 0) void handleUploadEntries(entries)
+  })
+}
+
+async function collectDropUploadEntries(event: DragEvent) {
+  const items = Array.from(event.dataTransfer?.items ?? [])
+  if (items.length > 0) {
+    const entries = await Promise.all(items.map(item => collectDataTransferItem(item)))
+    const flattened = entries.flat().filter(entry => entry.file.name)
+    if (flattened.length > 0) return flattened
+  }
+  return filesToUploadEntries(Array.from(event.dataTransfer?.files ?? []).filter(file => file.name))
+}
+
+async function collectDataTransferItem(item: DataTransferItem): Promise<UploadEntry[]> {
+  if (item.kind !== 'file') return []
+  const getEntry = (item as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntryLike | null }).webkitGetAsEntry
+  const entry = getEntry?.call(item)
+  if (!entry) {
+    const file = item.getAsFile()
+    return file ? filesToUploadEntries([file]) : []
+  }
+  return collectFileSystemEntry(entry, '')
+}
+
+async function collectFileSystemEntry(entry: FileSystemEntryLike, parentPath: string): Promise<UploadEntry[]> {
+  const relativePath = sanitizeRelativePath(parentPath ? `${parentPath}/${entry.name}` : entry.name)
+  if (entry.isFile) {
+    const file = await readFileSystemEntryFile(entry)
+    return file
+      ? [{
+          file,
+          relativePath,
+          displayPath: relativePath,
+          rootName: relativePath.split('/')[0] ?? file.name
+        }]
+      : []
+  }
+  if (!entry.isDirectory || !entry.createReader) return []
+  const children = await readAllDirectoryEntries(entry)
+  const nested = await Promise.all(children.map(child => collectFileSystemEntry(child, relativePath)))
+  return nested.flat()
+}
+
+function readFileSystemEntryFile(entry: FileSystemEntryLike) {
+  return new Promise<File | null>(resolve => {
+    if (!entry.file) {
+      resolve(null)
+      return
+    }
+    entry.file(file => resolve(file), () => resolve(null))
+  })
+}
+
+async function readAllDirectoryEntries(entry: FileSystemEntryLike) {
+  const reader = entry.createReader?.()
+  if (!reader) return []
+  const entries: FileSystemEntryLike[] = []
+  while (true) {
+    const batch = await new Promise<FileSystemEntryLike[]>(resolve => {
+      reader.readEntries(resolve, () => resolve([]))
+    })
+    if (batch.length === 0) break
+    entries.push(...batch)
+  }
+  return entries
 }
 
 function handlePreviewDragOver(event: DragEvent) {
@@ -1260,7 +1555,16 @@ watch(
   }
 )
 
+watch(
+  () => props.systemInfo?.scheduler,
+  () => {
+    syncBuiltinPanelTitles()
+  },
+  { immediate: true }
+)
+
 onBeforeUnmount(() => {
+  if (uploadConflictDialog.value.resolve) chooseUploadConflict('cancel')
   stopResize()
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)
