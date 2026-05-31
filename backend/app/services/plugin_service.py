@@ -19,8 +19,8 @@ from backend.app.core.security import WorkspaceSecurity
 
 
 PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-PLUGIN_MANIFEST = "chemweb-plugin.json"
-PLUGIN_STATE = ".chemweb-plugin-state.json"
+PLUGIN_MANIFEST = "chemssh-plugin.json"
+PLUGIN_STATE = ".chemssh-plugin-state.json"
 REQUIREMENT_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
 
 
@@ -51,7 +51,7 @@ class PluginService:
         self.project_root = Path(__file__).resolve().parents[3]
         self.plugin_dirs = self._plugin_dirs()
         self.security = WorkspaceSecurity(settings.workspace.root)
-        self.logger = logging.getLogger("chemweb.plugins")
+        self.logger = logging.getLogger("chemssh.plugins")
         self._manifests: dict[str, dict[str, Any]] = {}
         self._plugin_roots: dict[str, Path] = {}
         self._runtimes: dict[str, PluginRuntime] = {}
@@ -88,7 +88,7 @@ class PluginService:
                 plugin_dir=self._plugin_roots[plugin_id],
                 settings=self.settings,
                 workspace_security=self.security,
-                logger=logging.getLogger(f"chemweb.plugins.{plugin_id}"),
+                logger=logging.getLogger(f"chemssh.plugins.{plugin_id}"),
                 manifest=manifest,
                 dependencies=dependency_config,
             )
@@ -285,7 +285,7 @@ class PluginService:
         if not module_file.is_file():
             raise AppError("PLUGIN_BACKEND_NOT_FOUND", f"Plugin backend module not found: {module_name}", 500)
 
-        unique_name = f"_chemweb_plugin_{plugin_id.replace('-', '_')}_{module_name.replace('.', '_')}"
+        unique_name = f"_chemssh_plugin_{plugin_id.replace('-', '_')}_{module_name.replace('.', '_')}"
         spec = importlib.util.spec_from_file_location(unique_name, module_file)
         if spec is None or spec.loader is None:
             raise AppError("PLUGIN_BACKEND_LOAD_FAILED", f"Could not load plugin backend: {module_name}", 500)

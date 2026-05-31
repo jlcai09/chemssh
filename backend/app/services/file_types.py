@@ -14,6 +14,7 @@ STRUCTURE_EXTENSIONS = {
     ".extxyz": "extxyz",
     ".vasp": "vasp",
     ".xsf": "xsf",
+    ".xsd": "xsd",
     ".cube": "cube",
     ".gen": "gen",
     ".db": "db",

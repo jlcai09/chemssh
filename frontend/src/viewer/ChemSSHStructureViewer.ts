@@ -369,7 +369,7 @@ const COVALENT_RADII = Object.fromEntries(
   NUMBER_SYMBOLS.map((symbol, index) => [symbol, COVALENT_RADII_BY_NUMBER[index]]).filter((entry): entry is [string, number] => typeof entry[1] === 'number')
 )
 
-export class ChemwebStructureViewer {
+export class ChemSSHStructureViewer {
   private readonly container: HTMLElement
   private readonly root: HTMLDivElement
   private readonly sceneCanvas: HTMLCanvasElement
@@ -414,7 +414,7 @@ export class ChemwebStructureViewer {
     this.displayOptions = normalizeDisplayOptions(options.displayOptions)
 
     this.root = document.createElement('div')
-    this.root.className = 'chemweb-viewer-root'
+    this.root.className = 'chemssh-viewer-root'
     this.root.style.position = 'relative'
     this.root.style.width = '100%'
     this.root.style.height = '100%'

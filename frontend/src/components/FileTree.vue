@@ -126,7 +126,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CaretBottom, CaretTop, Document, Folder, View } from '@element-plus/icons-vue'
-import { writeChemwebFileDrag } from '../api/fileDrag'
+import { writeChemSSHFileDrag } from '../api/fileDrag'
 import { hasActivePreviewProvider, type FilePreviewProvider } from '../api/filePreviewProviders'
 import type { FileItem } from '../api/files'
 import { locale, t } from '../i18n'
@@ -589,7 +589,7 @@ function handleFileDragStart(index: number, event: DragEvent) {
 
   exportDragActive.value = true
   resetPressState()
-  writeChemwebFileDrag(event.dataTransfer, items)
+  writeChemSSHFileDrag(event.dataTransfer, items)
   setDragImage(event, items)
 }
 

@@ -31,7 +31,7 @@ def validate_client_id(client_id: str | None) -> str:
 
 
 def get_client_id_dependency(
-    client_id: str | None = Header(default=None, alias="X-Chemweb-Client-Id"),
+    client_id: str | None = Header(default=None, alias="X-ChemSSH-Client-Id"),
 ) -> str:
     return validate_client_id(client_id)
 

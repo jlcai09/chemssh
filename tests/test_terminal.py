@@ -16,8 +16,8 @@ from backend.app.services.terminal_service import TerminalManager, TerminalSessi
 
 CLIENT_A = "client_test_a"
 CLIENT_B = "client_test_b"
-CLIENT_A_HEADERS = {"X-Chemweb-Client-Id": CLIENT_A}
-CLIENT_B_HEADERS = {"X-Chemweb-Client-Id": CLIENT_B}
+CLIENT_A_HEADERS = {"X-ChemSSH-Client-Id": CLIENT_A}
+CLIENT_B_HEADERS = {"X-ChemSSH-Client-Id": CLIENT_B}
 
 
 class FakeTerminalProvider(TerminalProvider):

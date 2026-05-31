@@ -1,5 +1,5 @@
 {
-  "name": "chemweb-root",
+  "name": "chemssh-root",
   "private": true,
   "scripts": {
     "frontend:dev": "npm --prefix frontend run dev",

@@ -67,7 +67,7 @@ export async function readStructureFrameChunk(source: StructureSource | null | u
   params.set('count', String(count))
 
   const response = await fetch(`${API_BASE}${sourceBase(source)}/frames.bin?${params.toString()}`, {
-    headers: { Accept: 'application/vnd.chemweb.structure+bin' }
+    headers: { Accept: 'application/vnd.chemssh.structure+bin' }
   })
 
   if (!response.ok) {

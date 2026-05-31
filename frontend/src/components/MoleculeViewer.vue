@@ -181,7 +181,7 @@ import type { StructureFrame, TrajectoryStore, ViewerStyleMode } from '../viewer
 
 type StyleMode = ViewerStyleMode
 type ViewerModule = typeof import('../viewer')
-type ChemwebViewerInstance = InstanceType<ViewerModule['ChemwebStructureViewer']>
+type ChemSSHViewerInstance = InstanceType<ViewerModule['ChemSSHStructureViewer']>
 
 const props = withDefaults(
   defineProps<{
@@ -231,7 +231,7 @@ const frameLoading = ref(false)
 const cachedFrameCount = ref(0)
 const currentFrame = ref<AseFrame>(props.asePreview?.frame ?? emptyFrame())
 
-let chemwebViewer: ChemwebViewerInstance | null = null
+let chemsshViewer: ChemSSHViewerInstance | null = null
 let resizeObserver: ResizeObserver | null = null
 let renderVersion = 0
 let scheduledFrame: number | null = null
@@ -276,7 +276,7 @@ function emptyFrame(): AseFrame {
   }
 }
 
-function loadChemwebViewer() {
+function loadChemSSHViewer() {
   viewerModulePromise ??= import('../viewer')
   return viewerModulePromise
 }
@@ -314,25 +314,25 @@ async function renderStructure(keepView = false) {
   if (!container.value || version !== renderVersion) return
 
   if (!props.asePreview) {
-    disposeChemwebViewer()
+    disposeChemSSHViewer()
     container.value.innerHTML = ''
     return
   }
 
   try {
-    await renderChemwebStructure(keepView)
+    await renderChemSSHStructure(keepView)
   } catch (error) {
-    console.warn('Chemweb viewer failed.', error)
-    disposeChemwebViewer()
+    console.warn('ChemSSH viewer failed.', error)
+    disposeChemSSHViewer()
   }
 }
 
-async function renderChemwebStructure(keepView = false) {
+async function renderChemSSHStructure(keepView = false) {
   if (!container.value || !props.asePreview) return
-  if (!chemwebViewer) {
+  if (!chemsshViewer) {
     container.value.innerHTML = ''
-    const { ChemwebStructureViewer } = await loadChemwebViewer()
-    chemwebViewer = new ChemwebStructureViewer(container.value, {
+    const { ChemSSHStructureViewer } = await loadChemSSHViewer()
+    chemsshViewer = new ChemSSHStructureViewer(container.value, {
       backgroundColor: props.backgroundColor,
       style: viewerStyle(),
       labelOptions: {
@@ -342,23 +342,23 @@ async function renderChemwebStructure(keepView = false) {
     })
   }
 
-  chemwebViewer.setStyle(viewerStyle())
-  chemwebViewer.setLabelOptions({
+  chemsshViewer.setStyle(viewerStyle())
+  chemsshViewer.setLabelOptions({
     showAtomIndex: showAtomIndex.value,
     showAtomTag: showAtomTag.value
   })
-  chemwebViewer.setDisplayOptions(viewerDisplayOptions())
+  chemsshViewer.setDisplayOptions(viewerDisplayOptions())
 
   if (trajectoryStore && props.asePreview.is_trajectory) {
-    chemwebViewer.setTrajectory(trajectoryStore, {
+    chemsshViewer.setTrajectory(trajectoryStore, {
       keepView,
       initialFrameIndex: currentFrame.value.frame_index
     })
-    chemwebViewer.setFrame(currentFrame.value.frame_index)
+    chemsshViewer.setFrame(currentFrame.value.frame_index)
     return
   }
 
-  chemwebViewer.setStructure(frameToViewerFrame(currentFrame.value), { keepView })
+  chemsshViewer.setStructure(frameToViewerFrame(currentFrame.value), { keepView })
 }
 
 function frameToViewerFrame(frame: AseFrame): StructureFrame {
@@ -377,11 +377,11 @@ function frameToViewerFrame(frame: AseFrame): StructureFrame {
 }
 
 function resizeViewer() {
-  chemwebViewer?.resize()
+  chemsshViewer?.resize()
 }
 
 function resetView() {
-  chemwebViewer?.resetView()
+  chemsshViewer?.resetView()
 }
 
 function refreshStructure() {
@@ -389,7 +389,7 @@ function refreshStructure() {
 }
 
 function exportPng() {
-  const uri = chemwebViewer?.screenshot()
+  const uri = chemsshViewer?.screenshot()
   if (!uri) return
   const link = document.createElement('a')
   link.href = uri
@@ -531,7 +531,7 @@ function applyTrajectoryFrame(index: number) {
     fmax: fmax === undefined || Number.isNaN(fmax) ? null : fmax
   }
   frameInput.value = index
-  chemwebViewer?.setFrame(index)
+  chemsshViewer?.setFrame(index)
 }
 
 async function loadFrame(index: number) {
@@ -794,7 +794,7 @@ function writeChunkToStore(chunk: AseFrameChunk) {
   for (let localIndex = 0; localIndex < count; localIndex += 1) {
     if (trajectoryStore.availableFrames) trajectoryStore.availableFrames[start + localIndex] = 1
   }
-  chemwebViewer?.setFrame(currentFrame.value.frame_index)
+  chemsshViewer?.setFrame(currentFrame.value.frame_index)
 }
 
 function updateCachedFrameCount() {
@@ -927,9 +927,9 @@ function resetAseState() {
   void preloadTrajectoryFrames(version)
 }
 
-function disposeChemwebViewer() {
-  chemwebViewer?.dispose()
-  chemwebViewer = null
+function disposeChemSSHViewer() {
+  chemsshViewer?.dispose()
+  chemsshViewer = null
 }
 
 onMounted(() => {
@@ -944,7 +944,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
-  disposeChemwebViewer()
+  disposeChemSSHViewer()
   if (frameRequestHandle) window.cancelAnimationFrame(frameRequestHandle)
 })
 
@@ -962,9 +962,9 @@ watch(
 watch(
   () => [selectedStyle.value, bondScale.value, showAtomIndex.value, showAtomTag.value],
   () => {
-    if (chemwebViewer && props.asePreview) {
-      chemwebViewer.setStyle(viewerStyle())
-      chemwebViewer.setLabelOptions({
+    if (chemsshViewer && props.asePreview) {
+      chemsshViewer.setStyle(viewerStyle())
+      chemsshViewer.setLabelOptions({
         showAtomIndex: showAtomIndex.value,
         showAtomTag: showAtomTag.value
       })
@@ -983,8 +983,8 @@ watch(
       return
     }
     clampSupercell()
-    if (chemwebViewer && props.asePreview) {
-      chemwebViewer.setDisplayOptions(viewerDisplayOptions())
+    if (chemsshViewer && props.asePreview) {
+      chemsshViewer.setDisplayOptions(viewerDisplayOptions())
     } else {
       void renderStructure(true)
     }

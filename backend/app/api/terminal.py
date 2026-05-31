@@ -93,6 +93,8 @@ async def _terminal_reader(websocket: WebSocket, session: TerminalSession, send_
             cwd = session.consume_cwd_update()
             if cwd:
                 await _send_json(websocket, send_lock, {"type": "cwd", "path": cwd})
+            for transfer in session.consume_transfer_requests():
+                await _send_json(websocket, send_lock, transfer.to_message())
             if data:
                 await _send_json(websocket, send_lock, {"type": "output", "data": data})
         await _send_json(websocket, send_lock, {"type": "exit", "code": session.provider.exit_code()})
@@ -126,6 +128,19 @@ async def _handle_terminal_message(
             if not isinstance(path, str):
                 raise AppError("INVALID_PATH", "Terminal cwd path must be a string", 400)
             session.sync_cwd(path)
+        elif message_type == "transfer_result":
+            transfer_id = message.get("transfer_id", "")
+            if not isinstance(transfer_id, str) or not transfer_id:
+                raise AppError("INVALID_TRANSFER", "Terminal transfer id is required", 400)
+            success = bool(message.get("success", False))
+            result_message = message.get("message")
+            if result_message is not None and not isinstance(result_message, str):
+                raise AppError("INVALID_TRANSFER", "Terminal transfer message must be a string", 400)
+            await _send_json(
+                websocket,
+                send_lock,
+                {"type": "output", "data": session.format_transfer_result(transfer_id, success, result_message)},
+            )
         else:
             raise AppError("INVALID_MESSAGE_TYPE", f"Unsupported terminal message type: {message_type}", 400)
     except AppError as exc:

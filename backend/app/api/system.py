@@ -33,7 +33,7 @@ def system_info(settings: Settings = Depends(get_settings_dependency)) -> System
 @router.get("/identity", response_model=SystemIdentity)
 def system_identity(settings: Settings = Depends(get_settings_dependency)) -> SystemIdentity:
     return SystemIdentity(
-        app="chemweb",
+        app="chemssh",
         project_version=__version__,
         pid=os.getpid(),
         scheduler=settings.scheduler.type,

@@ -44,7 +44,7 @@ class IdleShutdownManager:
             return
 
         self._last_activity_at = self.clock()
-        self._task = asyncio.create_task(self._monitor(), name="chemweb-idle-shutdown")
+        self._task = asyncio.create_task(self._monitor(), name="chemssh-idle-shutdown")
 
     async def stop(self) -> None:
         task = self._task

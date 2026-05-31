@@ -1,19 +1,19 @@
 import type { FileItem } from './files'
 import { downloadSelectionUrl } from './http'
 
-export const CHEMWEB_FILE_DRAG_MIME = 'application/x-chemweb-files'
-export const CHEMWEB_FILE_PATHS_MIME = 'application/x-chemweb-file-paths'
+export const CHEMSSH_FILE_DRAG_MIME = 'application/x-chemssh-files'
+export const CHEMSSH_FILE_PATHS_MIME = 'application/x-chemssh-file-paths'
 
-export interface ChemwebFileDragPayload {
-  source: 'chemweb:file-manager'
+export interface ChemSSHFileDragPayload {
+  source: 'chemssh:file-manager'
   version: 1
   paths: string[]
   items: Pick<FileItem, 'name' | 'path' | 'type' | 'size' | 'mtime' | 'extension' | 'preview_type' | 'format'>[]
 }
 
-export function createChemwebFileDragPayload(items: FileItem[]): ChemwebFileDragPayload {
+export function createChemSSHFileDragPayload(items: FileItem[]): ChemSSHFileDragPayload {
   return {
-    source: 'chemweb:file-manager',
+    source: 'chemssh:file-manager',
     version: 1,
     paths: items.map(item => item.path),
     items: items.map(item => ({
@@ -38,31 +38,31 @@ export function getFileDragDownloadUrl(paths: string[], options: { forceArchive?
   return new URL(relative, window.location.href).href
 }
 
-export function writeChemwebFileDrag(dataTransfer: DataTransfer, items: FileItem[]) {
-  const payload = createChemwebFileDragPayload(items)
+export function writeChemSSHFileDrag(dataTransfer: DataTransfer, items: FileItem[]) {
+  const payload = createChemSSHFileDragPayload(items)
   const paths = payload.paths
   const downloadUrl = getFileDragDownloadUrl(paths, { forceArchive: paths.length === 1 && items[0]?.type === 'directory' })
-  const filename = paths.length === 1 ? items[0]?.name ?? 'chemweb-file' : 'chemweb-selection.zip'
+  const filename = paths.length === 1 ? items[0]?.name ?? 'chemssh-file' : 'chemssh-selection.zip'
 
   dataTransfer.effectAllowed = 'copy'
-  dataTransfer.setData(CHEMWEB_FILE_DRAG_MIME, JSON.stringify(payload))
-  dataTransfer.setData(CHEMWEB_FILE_PATHS_MIME, JSON.stringify(paths))
+  dataTransfer.setData(CHEMSSH_FILE_DRAG_MIME, JSON.stringify(payload))
+  dataTransfer.setData(CHEMSSH_FILE_PATHS_MIME, JSON.stringify(paths))
   dataTransfer.setData('text/plain', formatFileDragTerminalInput(paths))
   dataTransfer.setData('text/uri-list', downloadUrl)
   const mediaType = paths.length === 1 && items[0]?.type === 'file' ? 'application/octet-stream' : 'application/zip'
   dataTransfer.setData('DownloadURL', `${mediaType}:${filename}:${downloadUrl}`)
 }
 
-export function readChemwebFileDrag(dataTransfer: DataTransfer | null): ChemwebFileDragPayload | null {
+export function readChemSSHFileDrag(dataTransfer: DataTransfer | null): ChemSSHFileDragPayload | null {
   if (!dataTransfer) return null
 
-  const payload = readJson(dataTransfer.getData(CHEMWEB_FILE_DRAG_MIME))
-  if (isChemwebFileDragPayload(payload)) return payload
+  const payload = readJson(dataTransfer.getData(CHEMSSH_FILE_DRAG_MIME))
+  if (isChemSSHFileDragPayload(payload)) return payload
 
-  const paths = readJson(dataTransfer.getData(CHEMWEB_FILE_PATHS_MIME))
+  const paths = readJson(dataTransfer.getData(CHEMSSH_FILE_PATHS_MIME))
   if (Array.isArray(paths) && paths.every(path => typeof path === 'string')) {
     return {
-      source: 'chemweb:file-manager',
+      source: 'chemssh:file-manager',
       version: 1,
       paths,
       items: paths.map(path => ({
@@ -80,8 +80,8 @@ export function readChemwebFileDrag(dataTransfer: DataTransfer | null): ChemwebF
   return null
 }
 
-export function hasChemwebFileDrag(event: DragEvent) {
-  return Array.from(event.dataTransfer?.types ?? []).includes(CHEMWEB_FILE_DRAG_MIME)
+export function hasChemSSHFileDrag(event: DragEvent) {
+  return Array.from(event.dataTransfer?.types ?? []).includes(CHEMSSH_FILE_DRAG_MIME)
 }
 
 function readJson(value: string) {
@@ -93,10 +93,10 @@ function readJson(value: string) {
   }
 }
 
-function isChemwebFileDragPayload(value: unknown): value is ChemwebFileDragPayload {
+function isChemSSHFileDragPayload(value: unknown): value is ChemSSHFileDragPayload {
   if (!value || typeof value !== 'object') return false
-  const payload = value as Partial<ChemwebFileDragPayload>
-  return payload.source === 'chemweb:file-manager'
+  const payload = value as Partial<ChemSSHFileDragPayload>
+  return payload.source === 'chemssh:file-manager'
     && payload.version === 1
     && Array.isArray(payload.paths)
     && payload.paths.every(path => typeof path === 'string')

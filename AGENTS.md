@@ -2,7 +2,7 @@
 
 ## Project Quick Start
 
-- chemweb is a FastAPI + Vue 3 workspace app for computational chemistry workflows.
+- chemssh is a FastAPI + Vue 3 workspace app for computational chemistry workflows.
 - Backend code lives in `backend/app`; frontend code lives in `frontend/src`; tests live in `tests`; API and interaction notes live in `docs/API.md`.
 - Read `docs/API.md` before adding a new window/module. It documents backend endpoints, frontend API wrappers, and window-to-window file drag behavior.
 
@@ -58,11 +58,11 @@ If sandboxed `npm` fails on Windows, rerun the same command with approval outsid
 
 - The file manager supports normal drag selection and long-press file drag.
 - Long-press file drag protocol is implemented in `frontend/src/api/fileDrag.ts`.
-- Internal file drag MIME: `application/x-chemweb-files`.
+- Internal file drag MIME: `application/x-chemssh-files`.
 - Terminal drops insert selected absolute paths as text, prefixed by one space and joined by spaces.
 - Preview drops open only the first selected path.
-- External browser drops use download URLs; multiple files or directories download as `chemweb-selection.zip`.
-- New modules that accept dragged files should use `hasChemwebFileDrag` and `readChemwebFileDrag` from `frontend/src/api/fileDrag.ts`.
+- External browser drops use download URLs; multiple files or directories download as `chemssh-selection.zip`.
+- New modules that accept dragged files should use `hasChemSSHFileDrag` and `readChemSSHFileDrag` from `frontend/src/api/fileDrag.ts`.
 
 ## Documentation Expectations
 

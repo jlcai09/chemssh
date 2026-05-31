@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 
 class TerminalProvider(ABC):
@@ -39,6 +40,9 @@ class TerminalProvider(ABC):
 
     def build_cd_command(self, path: str) -> str:
         return f"cd -- {shlex.quote(path)}\n"
+
+    def resolve_transfer_ack_path(self, raw_path: str) -> Path | None:
+        return None
 
     def exit_code(self) -> int | None:
         return None

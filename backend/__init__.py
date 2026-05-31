@@ -1,1 +1,1 @@
-"""chemweb backend package."""
+"""chemssh backend package."""

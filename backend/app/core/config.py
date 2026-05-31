@@ -124,7 +124,7 @@ def load_settings(
         config_file = Path(config_path).expanduser().resolve()
         data = _load_yaml(config_file)
 
-    env_root = os.getenv("CHEMWEB_WORKSPACE")
+    env_root = os.getenv("CHEMSSH_WORKSPACE")
     if workspace_root or env_root:
         data.setdefault("workspace", {})
         data["workspace"]["root"] = str(workspace_root or env_root)

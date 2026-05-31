@@ -34,6 +34,7 @@
         :show-hidden-files="showHiddenFiles"
         @refresh="loadDirectory(currentPath)"
         @go-up="goUp"
+        @create-file="promptCreateFile"
         @mkdir="promptMkdir"
         @upload="handleUpload"
         @download="downloadSelected"
@@ -69,6 +70,7 @@
         :initial-cwd="terminalInitialPath"
         :current-file-manager-path="currentPath"
         :layout-version="terminalLayoutVersion"
+        :transfer-upload-handler="handleTerminalTransferUpload"
         @cwd-change="openDirectoryFromTerminal"
       />
     </section>
@@ -237,7 +239,12 @@
         @click.stop
         @contextmenu.prevent
       >
-        <div class="context-menu-item has-submenu" role="menuitem" tabindex="0">
+        <button class="context-menu-item" type="button" role="menuitem" @click="copyContextPath">
+          <el-icon><CopyDocument /></el-icon>
+          <span>{{ t('context.copyPath') }}</span>
+          <span />
+        </button>
+        <div v-if="contextMenu.item?.type === 'file'" class="context-menu-item has-submenu" role="menuitem" tabindex="0">
           <el-icon><Promotion /></el-icon>
           <span>{{ t('context.submitQueue') }}</span>
           <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
@@ -258,7 +265,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Close, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowRight, Close, CopyDocument, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
   deletePath,
   downloadArchive,
@@ -274,7 +281,7 @@ import {
   type UploadProgress
 } from '../api/files'
 import { API_BASE, ApiError, downloadUrl, request } from '../api/http'
-import { hasChemwebFileDrag, readChemwebFileDrag } from '../api/fileDrag'
+import { hasChemSSHFileDrag, readChemSSHFileDrag } from '../api/fileDrag'
 import {
   providerMatchesItem,
   type FilePreviewProvider,
@@ -365,6 +372,19 @@ type UploadEntry = {
   displayPath: string
   rootName: string
 }
+type PreparedUploadEntries = {
+  entries: UploadEntry[]
+  invalidCount: number
+  renamedCount: number
+  cancelled: boolean
+}
+type UploadBatchResult = {
+  uploaded: number
+  failed: number
+  total: number
+  cancelled: boolean
+  message: string
+}
 type FileSystemEntryLike = {
   isFile: boolean
   isDirectory: boolean
@@ -425,7 +445,8 @@ const MIN_SIDE_WIDTH = 300
 const MIN_QUEUE_HEIGHT = 180
 const MIN_LOG_HEIGHT = 120
 const CONTEXT_MENU_WIDTH = 190
-const CONTEXT_MENU_HEIGHT = 48
+const CONTEXT_MENU_HEIGHT = 88
+const SAFE_UPLOAD_SEGMENT_RE = /^[A-Za-z0-9._-]+$/
 
 const workspaceStyle = computed<Record<string, string | undefined>>(() => ({
   '--workspace-left': leftPaneWidth.value === null ? undefined : `${leftPaneWidth.value}px`,
@@ -588,7 +609,7 @@ function resetSideLayout() {
 
 function notifyTerminalLayoutChanged() {
   terminalLayoutVersion.value += 1
-  window.requestAnimationFrame(() => window.dispatchEvent(new Event('chemweb:terminal-fit')))
+  window.requestAnimationFrame(() => window.dispatchEvent(new Event('chemssh:terminal-fit')))
 }
 
 function setSelection(items: FileItem[], primary: FileItem | null) {
@@ -662,18 +683,18 @@ function closeWorkPanel(panelId: string) {
 function onWorkPanelDragStart(panelId: string, event: DragEvent) {
   if (!event.dataTransfer) return
   event.dataTransfer.effectAllowed = 'move'
-  event.dataTransfer.setData('application/x-chemweb-work-panel', panelId)
+  event.dataTransfer.setData('application/x-chemssh-work-panel', panelId)
 }
 
 function onWorkPanelDragOver(panelId: string, event: DragEvent) {
   const types = Array.from(event.dataTransfer?.types ?? [])
-  if (!types.includes('application/x-chemweb-work-panel')) return
+  if (!types.includes('application/x-chemssh-work-panel')) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
 }
 
 function onWorkPanelDrop(panelId: string, event: DragEvent) {
-  const fromId = event.dataTransfer?.getData('application/x-chemweb-work-panel')
+  const fromId = event.dataTransfer?.getData('application/x-chemssh-work-panel')
   if (!fromId) return
   event.preventDefault()
   moveWorkPanel(fromId, panelId)
@@ -736,7 +757,7 @@ function handlePluginFrameLoad(event: Event, panel: WorkPanel | null) {
   const frame = event.target instanceof HTMLIFrameElement ? event.target : null
   if (!frame?.contentWindow || !panel || !panel.pluginId || !panel.panelId) return
   frame.contentWindow.postMessage({
-    type: 'chemweb:plugin:init',
+    type: 'chemssh:plugin:init',
     version: 1,
     pluginId: panel.pluginId,
     panelId: panel.panelId,
@@ -754,9 +775,9 @@ function handlePluginFrameLoad(event: Event, panel: WorkPanel | null) {
 function handlePluginMessage(event: MessageEvent) {
   if (!isTrustedPluginOrigin(event.origin)) return
   const data = event.data as { type?: string; provider?: FilePreviewProvider; providerId?: string }
-  if (data?.type === 'chemweb:file-manager:register-preview-provider' && data.provider) {
+  if (data?.type === 'chemssh:file-manager:register-preview-provider' && data.provider) {
     registerPreviewProvider(data.provider)
-  } else if (data?.type === 'chemweb:file-manager:unregister-preview-provider' && data.providerId) {
+  } else if (data?.type === 'chemssh:file-manager:unregister-preview-provider' && data.providerId) {
     unregisterPreviewProvider(data.providerId)
   }
 }
@@ -1067,7 +1088,7 @@ async function savePreview(content: string) {
   if (!preview.value) return
   const path = preview.value.path
   try {
-    await writeFile(path, content)
+    await writeFile(path, normalizeTextLineEndings(content))
     ElMessage.success(t('message.saved'))
     const file = await readTextPreviewWithLargeConfirmation(path)
     if (file) preview.value = file
@@ -1076,12 +1097,11 @@ async function savePreview(content: string) {
   }
 }
 
-function openFileContextMenu(item: FileItem, event: MouseEvent) {
-  if (item.type !== 'file') {
-    closeContextMenu()
-    return
-  }
+function normalizeTextLineEndings(content: string) {
+  return content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
 
+function openFileContextMenu(item: FileItem, event: MouseEvent) {
   contextMenu.value = {
     visible: true,
     x: clamp(event.clientX, 8, window.innerWidth - CONTEXT_MENU_WIDTH - 8),
@@ -1118,9 +1138,67 @@ async function submitContextJob(command: SubmitCommand) {
   }
 }
 
+async function copyContextPath() {
+  const path = selectedItems.value[0]?.path ?? contextMenu.value.item?.path
+  if (!path) return
+  closeContextMenu()
+  try {
+    await copyTextToClipboard(path)
+    ElMessage.success(t('message.pathCopied'))
+  } catch {
+    ElMessage.error(t('message.clipboardFailed'))
+  }
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    if (!document.execCommand('copy')) throw new Error('copy failed')
+  } finally {
+    textarea.remove()
+  }
+}
+
+async function promptCreateFile() {
+  let result: { value: string }
+  try {
+    result = await ElMessageBox.prompt(t('prompt.fileName'), t('prompt.newFile'), {
+      inputPattern: SAFE_UPLOAD_SEGMENT_RE,
+      inputErrorMessage: t('message.namePattern'),
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel')
+    })
+  } catch {
+    return
+  }
+  const name = result.value
+  if ((listing.value?.items ?? []).some(item => item.name === name)) {
+    ElMessage.error(t('message.pathExists'))
+    return
+  }
+  try {
+    await writeFile(joinDisplayPath(currentPath.value, name), '')
+    await loadDirectory(currentPath.value)
+    ElMessage.success(t('message.fileCreated'))
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('message.createFailed'))
+  }
+}
+
 async function promptMkdir() {
   const result = await ElMessageBox.prompt(t('prompt.folderName'), t('prompt.newFolder'), {
-    inputPattern: /^[A-Za-z0-9._-]+$/,
+    inputPattern: SAFE_UPLOAD_SEGMENT_RE,
     inputErrorMessage: t('message.namePattern'),
     confirmButtonText: t('common.confirm'),
     cancelButtonText: t('common.cancel')
@@ -1136,7 +1214,21 @@ async function promptMkdir() {
 
 async function handleUpload(files: File[]) {
   const entries = filesToUploadEntries(files)
-  await handleUploadEntries(entries)
+  await handleUploadEntries(entries, currentPath.value)
+}
+
+async function handleTerminalTransferUpload(path: string, files: File[]) {
+  const entries = filesToUploadEntries(files)
+  const result = await handleUploadEntries(entries, path)
+  if (result.cancelled) throw new Error(t('terminal.transferCancelled'))
+  if (result.failed > 0) {
+    throw new Error(t('message.uploadPartial', {
+      message: result.message || t('message.uploadFailed'),
+      uploaded: result.uploaded,
+      failed: result.failed
+    }))
+  }
+  if (entries.length > 0 && result.uploaded === 0) throw new Error(t('message.uploadFailed'))
 }
 
 function filesToUploadEntries(files: File[]) {
@@ -1153,11 +1245,27 @@ function filesToUploadEntries(files: File[]) {
     })
 }
 
-async function handleUploadEntries(entries: UploadEntry[]) {
-  if (entries.length === 0) return
+async function handleUploadEntries(entries: UploadEntry[], targetPath = currentPath.value): Promise<UploadBatchResult> {
+  const emptyResult: UploadBatchResult = {
+    uploaded: 0,
+    failed: 0,
+    total: entries.length,
+    cancelled: false,
+    message: ''
+  }
+  if (entries.length === 0) return emptyResult
 
-  const prepared = await prepareUploadEntries(entries)
-  if (!prepared || prepared.length === 0) return
+  const preparedResult = await prepareUploadEntries(entries, targetPath)
+  const prepared = preparedResult.entries
+  if (prepared.length === 0) {
+    return {
+      uploaded: 0,
+      failed: preparedResult.invalidCount,
+      total: entries.length,
+      cancelled: preparedResult.cancelled,
+      message: preparedResult.invalidCount > 0 ? t('message.uploadInvalidPath', { count: preparedResult.invalidCount }) : ''
+    }
+  }
 
   let uploaded = 0
   let firstError: unknown = null
@@ -1180,7 +1288,7 @@ async function handleUploadEntries(entries: UploadEntry[]) {
       uploadState.value.currentFile = entry.displayPath
       let lastProgressLoaded = 0
       let lastProgressAt = performance.now()
-      await uploadFile(currentPath.value, file, {
+      await uploadFile(targetPath, file, {
         relativePath: entry.relativePath,
         onProgress: (progress: UploadProgress) => {
         const fileLoaded = Math.min(progress.loaded, progress.total || file.size)
@@ -1211,14 +1319,27 @@ async function handleUploadEntries(entries: UploadEntry[]) {
   uploadState.value.active = false
   uploadProgressOpen.value = false
 
-  if (uploaded === prepared.length) {
+  const failed = prepared.length - uploaded + preparedResult.invalidCount
+  const message = firstError instanceof Error
+    ? firstError.message
+    : preparedResult.invalidCount > 0
+      ? t('message.uploadInvalidPath', { count: preparedResult.invalidCount })
+      : t('message.uploadFailed')
+
+  if (failed === 0) {
     ElMessage.success(
       prepared.length === 1 ? t('message.uploadComplete') : t('message.uploadCompleteMany', { count: prepared.length })
     )
   } else {
-    const failed = prepared.length - uploaded
-    const message = firstError instanceof Error ? firstError.message : t('message.uploadFailed')
     ElMessage.error(t('message.uploadPartial', { message, uploaded, failed }))
+  }
+
+  return {
+    uploaded,
+    failed,
+    total: entries.length,
+    cancelled: false,
+    message
   }
 }
 
@@ -1226,18 +1347,20 @@ function sanitizeRelativePath(path: string) {
   return path.replace(/\\/g, '/').split('/').filter(part => part && part !== '.' && part !== '..').join('/')
 }
 
-async function prepareUploadEntries(entries: UploadEntry[]) {
-  const normalized = entries
-    .map(entry => ({
-      ...entry,
-      relativePath: sanitizeRelativePath(entry.relativePath),
-      displayPath: sanitizeRelativePath(entry.displayPath || entry.relativePath)
-    }))
-    .filter(entry => entry.relativePath)
+async function prepareUploadEntries(entries: UploadEntry[], targetPath = currentPath.value): Promise<PreparedUploadEntries> {
+  const { entries: normalized, invalidCount, renamedCount } = normalizeUploadEntries(entries)
 
-  if (normalized.length === 0) return []
+  if (invalidCount > 0) {
+    ElMessage.error(t('message.uploadInvalidPath', { count: invalidCount }))
+  }
 
-  const topLevelItems = new Map((await listFiles(currentPath.value)).items.map(item => [item.name, item] as const))
+  if (renamedCount > 0) {
+    ElMessage.info(t('message.uploadPathRenamed', { count: renamedCount }))
+  }
+
+  if (normalized.length === 0) return { entries: [], invalidCount, renamedCount, cancelled: false }
+
+  const topLevelItems = new Map((await listFiles(targetPath)).items.map(item => [item.name, item] as const))
   const resolved: UploadEntry[] = []
   let applyAllAction: UploadConflictAction | null = null
 
@@ -1262,7 +1385,7 @@ async function prepareUploadEntries(entries: UploadEntry[]) {
       action = resolution.action
     }
 
-    if (action === 'cancel') return null
+    if (action === 'cancel') return { entries: [], invalidCount, renamedCount, cancelled: true }
     if (action === 'skip') continue
 
     let finalRootName = rootName
@@ -1283,7 +1406,7 @@ async function prepareUploadEntries(entries: UploadEntry[]) {
 
     topLevelItems.set(finalRootName, {
       name: finalRootName,
-      path: joinDisplayPath(currentPath.value, finalRootName),
+      path: joinDisplayPath(targetPath, finalRootName),
       type: isFolderUpload ? 'directory' : 'file',
       size: null,
       mtime: '',
@@ -1293,7 +1416,48 @@ async function prepareUploadEntries(entries: UploadEntry[]) {
     })
   }
 
-  return resolved
+  return { entries: resolved, invalidCount, renamedCount, cancelled: false }
+}
+
+function normalizeUploadEntries(entries: UploadEntry[]) {
+  let invalidCount = 0
+  let renamedCount = 0
+  const normalized: UploadEntry[] = []
+
+  for (const entry of entries) {
+    const originalPath = sanitizeRelativePath(entry.relativePath)
+    const originalDisplayPath = sanitizeRelativePath(entry.displayPath || entry.relativePath)
+    const relativePath = normalizeUploadRelativePath(originalPath)
+    const displayPath = normalizeUploadRelativePath(originalDisplayPath)
+    if (!relativePath || !isSafeUploadRelativePath(relativePath)) {
+      invalidCount += 1
+      continue
+    }
+    if (relativePath !== originalPath || displayPath !== originalDisplayPath) {
+      renamedCount += 1
+    }
+    normalized.push({
+      ...entry,
+      relativePath,
+      displayPath,
+      rootName: relativePath.split('/')[0] ?? entry.file.name
+    })
+  }
+
+  return { entries: normalized, invalidCount, renamedCount }
+}
+
+function normalizeUploadRelativePath(path: string) {
+  return sanitizeRelativePath(path)
+    .split('/')
+    .map(part => part.replace(/\s+/g, '_'))
+    .filter(Boolean)
+    .join('/')
+}
+
+function isSafeUploadRelativePath(path: string) {
+  const parts = path.split('/').filter(Boolean)
+  return parts.length > 0 && parts.every(part => SAFE_UPLOAD_SEGMENT_RE.test(part))
 }
 
 function uniqueSuffixedName(name: string, existing: Map<string, FileItem>) {
@@ -1444,13 +1608,13 @@ async function readAllDirectoryEntries(entry: FileSystemEntryLike) {
 }
 
 function handlePreviewDragOver(event: DragEvent) {
-  if (!hasChemwebFileDrag(event)) return
+  if (!hasChemSSHFileDrag(event)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
 function handlePreviewDrop(event: DragEvent) {
-  const payload = readChemwebFileDrag(event.dataTransfer)
+  const payload = readChemSSHFileDrag(event.dataTransfer)
   const path = payload?.paths[0]
   if (!path) return
   event.preventDefault()
@@ -1485,7 +1649,7 @@ async function downloadSelected() {
 
   try {
     const response = await downloadArchive(targets.map(item => item.path))
-    triggerBlobDownload(response.blob, response.filename ?? 'chemweb-selection.zip')
+    triggerBlobDownload(response.blob, response.filename ?? 'chemssh-selection.zip')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.downloadFailed'))
   }
@@ -1496,7 +1660,7 @@ async function promptRename() {
   const oldPath = selectedItem.value.path
   const result = await ElMessageBox.prompt(t('prompt.newName'), t('prompt.rename'), {
     inputValue: selectedItem.value.name,
-    inputPattern: /^[A-Za-z0-9._-]+$/,
+    inputPattern: SAFE_UPLOAD_SEGMENT_RE,
     inputErrorMessage: t('message.namePattern'),
     confirmButtonText: t('common.confirm'),
     cancelButtonText: t('common.cancel')

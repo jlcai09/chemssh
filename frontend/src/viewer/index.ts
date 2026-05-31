@@ -1,4 +1,4 @@
-export { ChemwebStructureViewer } from './ChemwebStructureViewer'
+export { ChemSSHStructureViewer } from './ChemSSHStructureViewer'
 export { frameFromTrajectoryStore, isFrameAvailable } from './TrajectoryStore'
 export type {
   FixedAtomOptions,

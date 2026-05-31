@@ -128,12 +128,23 @@ import {
   terminalWebSocketUrl,
   type TerminalSession
 } from '../../api/terminal'
-import { formatFileDragTerminalInput, hasChemwebFileDrag, readChemwebFileDrag } from '../../api/fileDrag'
+import { uploadFile } from '../../api/files'
+import { requestBlob } from '../../api/http'
+import { formatFileDragTerminalInput, hasChemSSHFileDrag, readChemSSHFileDrag } from '../../api/fileDrag'
 import { t } from '../../i18n'
 
 type TerminalMessage =
   | { type: 'output'; data: string }
   | { type: 'cwd'; path: string }
+  | {
+      type: 'transfer_request'
+      transfer_id: string
+      direction: 'upload' | 'download'
+      cwd: string
+      argv: string[]
+      paths?: string[]
+      error?: string
+    }
   | { type: 'error'; code?: string; message?: string }
   | { type: 'exit'; code?: number | null }
 
@@ -160,7 +171,7 @@ type TerminalTab = {
   fitFrame: number
 }
 
-const TERMINAL_FONT_SIZE_STORAGE_KEY = 'chemweb.terminal.fontSize'
+const TERMINAL_FONT_SIZE_STORAGE_KEY = 'chemssh.terminal.fontSize'
 const DEFAULT_TERMINAL_FONT_SIZE = 13
 const TERMINAL_FONT_SIZE_MIN = 10
 const TERMINAL_FONT_SIZE_MAX = 24
@@ -169,6 +180,7 @@ const props = defineProps<{
   initialCwd?: string | null
   currentFileManagerPath?: string | null
   layoutVersion?: number
+  transferUploadHandler?: (path: string, files: File[]) => Promise<void>
 }>()
 
 const emit = defineEmits<{
@@ -187,14 +199,14 @@ const terminalFontSizeModel = computed({
 const terminalHosts = new Map<string, HTMLElement>()
 let tabsResizeObserver: ResizeObserver | null = null
 let tabSerial = 0
-const TERMINAL_TAB_DRAG_MIME = 'application/x-chemweb-terminal-tab'
+const TERMINAL_TAB_DRAG_MIME = 'application/x-chemssh-terminal-tab'
 
 const preferredCwd = computed(() => props.currentFileManagerPath || props.initialCwd || undefined)
 const activeTab = computed(() => tabs.value.find(tab => tab.localId === activeTabId.value) ?? null)
 
 onMounted(async () => {
   window.addEventListener('resize', handleLayoutChange)
-  window.addEventListener('chemweb:terminal-fit', handleLayoutChange)
+  window.addEventListener('chemssh:terminal-fit', handleLayoutChange)
   await nextTick()
   await document.fonts?.ready
   if (tabsRef.value && typeof ResizeObserver !== 'undefined') {
@@ -207,7 +219,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleLayoutChange)
-  window.removeEventListener('chemweb:terminal-fit', handleLayoutChange)
+  window.removeEventListener('chemssh:terminal-fit', handleLayoutChange)
   tabsResizeObserver?.disconnect()
   tabsResizeObserver = null
   for (const tab of [...tabs.value]) {
@@ -470,6 +482,8 @@ function handleTabSocketMessage(tab: TerminalTab, raw: string) {
     if (!tab.interactiveReady && hasVisibleTerminalContent(message.data)) markTabInteractive(tab)
   } else if (message.type === 'cwd') {
     applyTabCwd(tab, message.path)
+  } else if (message.type === 'transfer_request') {
+    void handleTransferRequest(tab, message)
   } else if (message.type === 'error') {
     tab.awaitingVisibleShellOutput = false
     tab.terminal.writeln(`\r\n[${message.code ?? 'ERROR'}] ${message.message ?? ''}`)
@@ -478,6 +492,133 @@ function handleTabSocketMessage(tab: TerminalTab, raw: string) {
     resetTabInteraction(tab)
     tab.terminal.writeln(`\r\n${t('terminal.exited')}`)
   }
+}
+
+async function handleTransferRequest(tab: TerminalTab, message: Extract<TerminalMessage, { type: 'transfer_request' }>) {
+  if (!tab.terminal) return
+  if (message.error) {
+    tab.terminal.writeln(`\r\n${t('terminal.transferFailed')}: ${message.error}`)
+    sendTabSocketMessage(tab, {
+      type: 'transfer_result',
+      transfer_id: message.transfer_id,
+      success: false,
+      message: message.error
+    })
+    return
+  }
+
+  try {
+    if (message.direction === 'upload') {
+      const files = await chooseTransferFiles()
+      if (files.length === 0) {
+        sendTabSocketMessage(tab, {
+          type: 'transfer_result',
+          transfer_id: message.transfer_id,
+          success: false,
+          message: t('terminal.transferCancelled')
+        })
+        return
+      }
+
+      tab.terminal.writeln(`\r\n${t('terminal.transferUploading', { count: files.length })}`)
+      if (props.transferUploadHandler) {
+        await props.transferUploadHandler(message.cwd, files)
+      } else {
+        for (const file of files) {
+          await uploadFile(message.cwd, file)
+        }
+      }
+      sendTabSocketMessage(tab, {
+        type: 'transfer_result',
+        transfer_id: message.transfer_id,
+        success: true,
+        message: t('terminal.transferUploaded', { count: files.length })
+      })
+      return
+    }
+
+    const paths = message.paths ?? []
+    if (paths.length === 0) {
+      throw new Error(t('terminal.transferNoFiles'))
+    }
+    await triggerTransferDownload(paths)
+    sendTabSocketMessage(tab, {
+      type: 'transfer_result',
+      transfer_id: message.transfer_id,
+      success: true,
+      message: t('terminal.transferDownloadStarted')
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    tab.terminal.writeln(`\r\n${t('terminal.transferFailed')}: ${detail}`)
+    sendTabSocketMessage(tab, {
+      type: 'transfer_result',
+      transfer_id: message.transfer_id,
+      success: false,
+      message: detail
+    })
+  }
+}
+
+function chooseTransferFiles(): Promise<File[]> {
+  return new Promise(resolve => {
+    const input = document.createElement('input')
+    let settled = false
+    input.type = 'file'
+    input.multiple = true
+    input.style.position = 'fixed'
+    input.style.left = '-9999px'
+    input.style.top = '-9999px'
+    const cleanup = () => {
+      input.removeEventListener('change', handleChange)
+      input.removeEventListener('cancel', handleCancel)
+      window.removeEventListener('focus', handleFocus)
+      window.setTimeout(() => input.remove(), 0)
+    }
+    const settle = (files: File[]) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(files)
+    }
+    const handleChange = () => {
+      settle(Array.from(input.files ?? []))
+    }
+    const handleCancel = () => {
+      settle([])
+    }
+    const handleFocus = () => {
+      window.setTimeout(() => {
+        if (!settled && (!input.files || input.files.length === 0)) settle([])
+      }, 300)
+    }
+    input.addEventListener('change', handleChange)
+    input.addEventListener('cancel', handleCancel)
+    window.addEventListener('focus', handleFocus)
+    document.body.appendChild(input)
+    input.click()
+  })
+}
+
+async function triggerTransferDownload(paths: string[]) {
+  const query = paths.length === 1
+    ? `/api/files/download?path=${encodeURIComponent(paths[0])}`
+    : `/api/files/download-selection?${downloadSelectionQuery(paths)}`
+  const response = await requestBlob(query)
+  const url = URL.createObjectURL(response.blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = response.filename ?? (paths.length === 1 ? pathBaseName(paths[0]) : 'chemssh-selection.zip')
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function downloadSelectionQuery(paths: string[]) {
+  const query = new URLSearchParams()
+  for (const path of paths) query.append('path', path)
+  return query.toString()
 }
 
 async function closeTab(tabId: string) {
@@ -602,13 +743,13 @@ function sendTabSyncCwd(tab: TerminalTab, path: string) {
 }
 
 function handleFileDragOver(event: DragEvent) {
-  if (!hasChemwebFileDrag(event)) return
+  if (!hasChemSSHFileDrag(event)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
 function handleFileDrop(event: DragEvent) {
-  const payload = readChemwebFileDrag(event.dataTransfer)
+  const payload = readChemSSHFileDrag(event.dataTransfer)
   if (!payload || payload.paths.length === 0) return
   event.preventDefault()
   const tab = activeTab.value

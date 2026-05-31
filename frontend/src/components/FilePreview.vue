@@ -49,13 +49,17 @@
       @refresh="$emit('refresh')"
     />
 
-    <MonacoTextEditor
-      v-else-if="mode === 'text' && file"
-      v-model="draft"
-      class="text-editor"
-      :path="file.path"
-      :readonly="!editingEnabled"
-    />
+    <div v-else-if="mode === 'text' && file" class="text-editor-wrap">
+      <MonacoTextEditor
+        v-model="draft"
+        class="text-editor"
+        :path="file.path"
+        :readonly="!editingEnabled"
+      />
+      <div class="editor-status-badge" :class="editorStatusClass" aria-live="polite">
+        {{ editorStatusLabel }}
+      </div>
+    </div>
 
     <div v-else class="empty-state">
       <el-empty :description="t('preview.empty')" />
@@ -127,6 +131,14 @@ watch(
 
 const canEditText = computed(() => props.mode === 'text' && Boolean(props.file))
 const dirty = computed(() => props.mode === 'text' && Boolean(props.file) && draft.value !== props.file?.content)
+const editorStatusClass = computed(() => {
+  if (!editingEnabled.value) return 'is-readonly'
+  return dirty.value ? 'is-unsaved' : 'is-saved'
+})
+const editorStatusLabel = computed(() => {
+  if (!editingEnabled.value) return t('preview.readonly')
+  return dirty.value ? t('preview.statusUnsaved') : t('preview.statusSaved')
+})
 
 const modeOptions = computed(() => [
   { label: t('preview.type.structure'), value: 'structure' },

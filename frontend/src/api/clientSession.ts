@@ -1,6 +1,6 @@
-export const CLIENT_ID_HEADER = 'X-Chemweb-Client-Id'
+export const CLIENT_ID_HEADER = 'X-ChemSSH-Client-Id'
 
-const CLIENT_ID_STORAGE_KEY = 'chemweb.clientId.v1'
+const CLIENT_ID_STORAGE_KEY = 'chemssh.clientId.v1'
 const CLIENT_ID_PATTERN = /^client_[A-Za-z0-9_.-]+$/
 
 export function getClientId() {

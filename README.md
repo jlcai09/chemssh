@@ -1,8 +1,8 @@
-# chemweb
+# chemssh
 
 English | [中文](README.zh-CN.md)
 
-`chemweb` is a lightweight web workspace for computational catalysis, computational chemistry, and materials simulation directories. It is designed to run on a remote Linux server or HPC login node and be accessed locally through SSH port forwarding.
+`chemssh` is a lightweight web workspace for computational catalysis, computational chemistry, and materials simulation directories. It is designed to run on a remote Linux server or HPC login node and be accessed locally through SSH port forwarding.
 
 The current version provides file management, text/log preview, custom 3D structure preview, Slurm queue inspection, `sbatch` submission, and `scancel` cancellation.
 
@@ -14,7 +14,7 @@ The current version provides file management, text/log preview, custom 3D struct
 
 ## Install
 
-Create a virtual environment in the project root, such as `D:\path\to\chemweb` on Windows or the project directory on a remote server.
+Create a virtual environment in the project root, such as `D:\path\to\chemssh` on Windows or the project directory on a remote server.
 
 Windows PowerShell:
 
@@ -43,7 +43,7 @@ npm --prefix frontend run build
 After installation, the command-line entry point is:
 
 ```bash
-chemweb --help
+chemssh --help
 ```
 
 ## Configuration
@@ -60,26 +60,26 @@ All file reads, writes, uploads, downloads, deletes, renames, and job submission
 ## Start
 
 ```bash
-chemweb --config config.yaml --host 127.0.0.1 --port 8888
+chemssh --config config.yaml --host 127.0.0.1 --port 8888
 ```
 
-Before starting, the CLI checks whether the target port is already in use. If it finds an existing Chemweb server on the same port and with the same `workspace.root`, it reuses that server and prints the existing URL instead of failing. If the port is occupied by another application, or by Chemweb serving a different workspace, startup fails with a clear error.
+Before starting, the CLI checks whether the target port is already in use. If it finds an existing ChemSSH server on the same port and with the same `workspace.root`, it reuses that server and prints the existing URL instead of failing. If the port is occupied by another application, or by ChemSSH serving a different workspace, startup fails with a clear error.
 
 Reuse behavior can be adjusted with:
 
 ```bash
-chemweb --config config.yaml --reuse-existing auto
-chemweb --config config.yaml --reuse-existing never
-chemweb --config config.yaml --reuse-existing any-chemweb
+chemssh --config config.yaml --reuse-existing auto
+chemssh --config config.yaml --reuse-existing never
+chemssh --config config.yaml --reuse-existing any-chemssh
 ```
 
 To check the port without starting a server, use:
 
 ```bash
-chemweb --config config.yaml --check-port
+chemssh --config config.yaml --check-port
 ```
 
-This exits with code `0` when the port is free or points to a reusable Chemweb server, and exits with code `1` when the port is occupied by something that should not be reused.
+This exits with code `0` when the port is free or points to a reusable ChemSSH server, and exits with code `1` when the port is occupied by something that should not be reused.
 
 For development, run the backend and frontend separately:
 
@@ -92,10 +92,10 @@ On Linux or macOS, use `npm` instead of `npm.cmd`.
 
 ## Server PID Checks
 
-If the server was started with `chemweb --config config.yaml`, check the server-side process with:
+If the server was started with `chemssh --config config.yaml`, check the server-side process with:
 
 ```bash
-pgrep -af 'chemweb'
+pgrep -af 'chemssh'
 ```
 
 If it was started directly with `uvicorn`, use:
@@ -106,10 +106,10 @@ pgrep -af 'uvicorn'
 
 ## SSH Port Forwarding
 
-Start Chemweb on the remote server:
+Start ChemSSH on the remote server:
 
 ```bash
-chemweb --config config.yaml --host 127.0.0.1 --port 8888
+chemssh --config config.yaml --host 127.0.0.1 --port 8888
 ```
 
 Forward the remote port from your local machine:

@@ -95,7 +95,7 @@ def download_archive(
     return FileResponse(
         archive,
         media_type="application/zip",
-        filename="chemweb-selection.zip",
+        filename="chemssh-selection.zip",
         background=BackgroundTask(lambda: archive.unlink(missing_ok=True)),
     )
 
@@ -116,7 +116,7 @@ def download_selection(
     return FileResponse(
         archive,
         media_type="application/zip",
-        filename="chemweb-selection.zip",
+        filename="chemssh-selection.zip",
         background=BackgroundTask(lambda: archive.unlink(missing_ok=True)),
     )
 

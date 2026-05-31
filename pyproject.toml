@@ -3,13 +3,13 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "chemweb"
+name = "chemssh"
 dynamic = ["version"]
 description = "计算催化与计算化学场景的文件、作业和结构可视化 Web 工作台。"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "GPL-3.0-or-later" }
-authors = [{ name = "chemweb contributors" }]
+authors = [{ name = "chemssh contributors" }]
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.34",
@@ -31,7 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-chemweb = "backend.app.cli:main"
+chemssh = "backend.app.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

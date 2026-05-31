@@ -17,7 +17,7 @@ from backend.app.main import create_app
 
 
 @dataclass(frozen=True)
-class ExistingChemwebServer:
+class ExistingChemSSHServer:
     url: str
     project_version: str | None
     workspace_root: str | None
@@ -26,24 +26,24 @@ class ExistingChemwebServer:
 @dataclass(frozen=True)
 class PortProbeResult:
     occupied: bool
-    chemweb: ExistingChemwebServer | None = None
+    chemssh: ExistingChemSSHServer | None = None
     detail: str | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="chemweb")
+    parser = argparse.ArgumentParser(prog="chemssh")
     parser.add_argument("--config", help="Path to YAML config file")
     parser.add_argument("--workspace-root", help="Workspace root directory")
     parser.add_argument("--host", help="Bind host, defaults to config server.host")
     parser.add_argument("--port", type=int, help="Bind port, defaults to config server.port")
     parser.add_argument(
         "--reuse-existing",
-        choices=["auto", "never", "any-chemweb"],
+        choices=["auto", "never", "any-chemssh"],
         default="auto",
         help=(
             "How to handle an occupied port before startup. "
-            "'auto' reuses an existing Chemweb server with the same workspace, "
-            "'any-chemweb' reuses any Chemweb server on that port, and 'never' fails."
+            "'auto' reuses an existing ChemSSH server with the same workspace, "
+            "'any-chemssh' reuses any ChemSSH server on that port, and 'never' fails."
         ),
     )
     parser.add_argument(
@@ -103,12 +103,12 @@ def _probe_existing_server(host: str, port: int, *, timeout: float = 1.0) -> Por
     except (OSError, URLError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         return PortProbeResult(occupied=True, detail=str(exc))
 
-    if not isinstance(payload, dict) or payload.get("app") != "chemweb":
-        return PortProbeResult(occupied=True, detail=f"{identity_url} did not return a Chemweb identity")
+    if not isinstance(payload, dict) or payload.get("app") != "chemssh":
+        return PortProbeResult(occupied=True, detail=f"{identity_url} did not return a ChemSSH identity")
 
     return PortProbeResult(
         occupied=True,
-        chemweb=ExistingChemwebServer(
+        chemssh=ExistingChemSSHServer(
             url=base_url,
             project_version=payload.get("project_version") if isinstance(payload.get("project_version"), str) else None,
             workspace_root=payload.get("workspace_root") if isinstance(payload.get("workspace_root"), str) else None,
@@ -124,18 +124,18 @@ def _handle_existing_server(args: argparse.Namespace, host: str, port: int, work
     if args.reuse_existing == "never":
         raise RuntimeError(f"Port {port} on {host} is already occupied.")
 
-    if probe.chemweb is None:
-        message = f"Port {port} on {host} is occupied, but it is not a reusable Chemweb server."
+    if probe.chemssh is None:
+        message = f"Port {port} on {host} is occupied, but it is not a reusable ChemSSH server."
         if probe.detail:
             message = f"{message} Detail: {probe.detail}"
         raise RuntimeError(message)
 
-    existing = probe.chemweb
+    existing = probe.chemssh
     if args.reuse_existing == "auto" and not _same_workspace(existing.workspace_root, workspace_root):
         raise RuntimeError(
-            "Port {port} on {host} is already used by Chemweb, but with a different workspace: "
+            "Port {port} on {host} is already used by ChemSSH, but with a different workspace: "
             "{existing_workspace}. Current workspace: {current_workspace}. "
-            "Use --reuse-existing any-chemweb only if you intentionally want to connect to it.".format(
+            "Use --reuse-existing any-chemssh only if you intentionally want to connect to it.".format(
                 port=port,
                 host=host,
                 existing_workspace=existing.workspace_root or "<unknown>",
@@ -143,7 +143,7 @@ def _handle_existing_server(args: argparse.Namespace, host: str, port: int, work
             )
         )
 
-    print(f"Chemweb is already running at {existing.url}; reusing the existing server.")
+    print(f"ChemSSH is already running at {existing.url}; reusing the existing server.")
     if existing.workspace_root:
         print(f"Workspace: {existing.workspace_root}")
     return True
@@ -159,17 +159,17 @@ def _check_port_only(args: argparse.Namespace, host: str, port: int, workspace_r
         print(f"Port {port} on {host} is occupied and --reuse-existing is never.", file=sys.stderr)
         return 1
 
-    if probe.chemweb is None:
-        message = f"Port {port} on {host} is occupied, but it is not a reusable Chemweb server."
+    if probe.chemssh is None:
+        message = f"Port {port} on {host} is occupied, but it is not a reusable ChemSSH server."
         if probe.detail:
             message = f"{message} Detail: {probe.detail}"
         print(message, file=sys.stderr)
         return 1
 
-    existing = probe.chemweb
+    existing = probe.chemssh
     if args.reuse_existing == "auto" and not _same_workspace(existing.workspace_root, workspace_root):
         print(
-            "Port {port} on {host} is used by Chemweb with a different workspace: "
+            "Port {port} on {host} is used by ChemSSH with a different workspace: "
             "{existing_workspace}. Current workspace: {current_workspace}.".format(
                 port=port,
                 host=host,
@@ -180,7 +180,7 @@ def _check_port_only(args: argparse.Namespace, host: str, port: int, workspace_r
         )
         return 1
 
-    print(f"Port {port} on {host} is used by a reusable Chemweb server.")
+    print(f"Port {port} on {host} is used by a reusable ChemSSH server.")
     print(f"URL: {existing.url}")
     if existing.workspace_root:
         print(f"Workspace: {existing.workspace_root}")
@@ -200,7 +200,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         if _handle_existing_server(args, host, port, settings.workspace.root):
             return
     except RuntimeError as exc:
-        print(f"chemweb: {exc}", file=sys.stderr)
+        print(f"chemssh: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
     if args.reload:

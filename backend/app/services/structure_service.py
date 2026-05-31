@@ -17,7 +17,7 @@ from backend.app.core.security import WorkspaceSecurity
 from backend.app.models.structure import AseFrame, AseFrameChunkResponse, AsePreviewResponse
 
 
-STRUCTURE_BINARY_MEDIA_TYPE = "application/vnd.chemweb.structure+bin"
+STRUCTURE_BINARY_MEDIA_TYPE = "application/vnd.chemssh.structure+bin"
 STRUCTURE_BINARY_MAGIC = b"CWB1"
 
 

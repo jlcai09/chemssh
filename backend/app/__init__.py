@@ -1,3 +1,3 @@
-"""FastAPI application for chemweb."""
+"""FastAPI application for chemssh."""
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"

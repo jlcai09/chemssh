@@ -1,6 +1,6 @@
-# chemweb API 与窗口交互指南
+# chemssh API 与窗口交互指南
 
-本文档面向后续维护者和 coding agent。目标是让新模块可以快速接入 chemweb 的后端接口、文件管理器、终端、预览器和队列窗口。
+本文档面向后续维护者和 coding agent。目标是让新模块可以快速接入 chemssh 的后端接口、文件管理器、终端、预览器和队列窗口。
 
 所有后端接口都以 `/api` 开头。错误统一返回：
 
@@ -38,11 +38,11 @@
 
 ### `GET /api/system/identity`
 
-返回当前服务的轻量身份信息。`chemweb` CLI 启动前会用此接口判断目标端口是否已由可复用的 Chemweb 服务占用。
+返回当前服务的轻量身份信息。`chemssh` CLI 启动前会用此接口判断目标端口是否已由可复用的 ChemSSH 服务占用。
 
 ```json
 {
-  "app": "chemweb",
+  "app": "chemssh",
   "project_version": "0.2.0",
   "pid": 12345,
   "scheduler": "slurm",
@@ -53,14 +53,14 @@
 启动复用规则：
 
 - 端口未占用：正常启动新服务。
-- 端口占用且 `/api/system/identity` 返回 `app="chemweb"`：默认仅当 `workspace_root` 与当前配置一致时复用已有服务。
-- 端口占用但不是 Chemweb，或无法读取身份信息：启动失败并报告端口占用。
+- 端口占用且 `/api/system/identity` 返回 `app="chemssh"`：默认仅当 `workspace_root` 与当前配置一致时复用已有服务。
+- 端口占用但不是 ChemSSH，或无法读取身份信息：启动失败并报告端口占用。
 
 CLI 参数：
 
-- `--reuse-existing auto`：默认值，复用同工作区的已有 Chemweb 服务。
+- `--reuse-existing auto`：默认值，复用同工作区的已有 ChemSSH 服务。
 - `--reuse-existing never`：不复用已有服务；端口已占用时直接失败。
-- `--reuse-existing any-chemweb`：复用该端口上的任意 Chemweb 服务，即使工作区不同。
+- `--reuse-existing any-chemssh`：复用该端口上的任意 ChemSSH 服务，即使工作区不同。
 - `--check-port`：只检测目标端口并退出，不启动服务。端口空闲或可复用时退出码为 `0`；端口被不可复用服务占用时退出码为 `1`。
 
 ## 文件管理
@@ -128,6 +128,7 @@ CLI 参数：
 
 前端封装：`uploadFile(path, file, { relativePath, onProgress })`。文件夹上传由 `Workspace.vue` 在上传前检查当前目录顶层重名项，并按用户选择逐文件调用该接口：
 
+- 上传前会先规范化 `relative_path`：路径段中的空白字符自动替换为 `_`，然后按后端规则预检每个路径段是否只含字母、数字、点、下划线和短横线。不合规项目会在开始传输前跳过并提示，不等待后端上传失败。
 - `overwrite`：同名文件写入覆盖；同名目录只合并目录树，内部仅覆盖实际上传且同名的文件，远程额外文件保留。
 - `skip`：跳过该顶层冲突项。
 - `suffix`：把冲突顶层文件或文件夹自动改名为 `.new` 后缀，例如 `A` -> `A.new`。
@@ -139,7 +140,7 @@ CLI 参数：
 
 ### `POST /api/files/download-archive`
 
-将多个文件或目录打包为 `chemweb-selection.zip`。工具栏“下载”使用此接口。
+将多个文件或目录打包为 `chemssh-selection.zip`。工具栏“下载”使用此接口。
 
 ```json
 {
@@ -189,7 +190,7 @@ CLI 参数：
 
 读取轨迹二进制帧块。
 
-支持格式由 `backend/app/services/file_types.py` 与 ASE 能力共同决定。当前常见格式包括 `xyz`、`extxyz`、`traj`、`pdb`、`mol`、`sdf`、`cif`、`db`，并强制识别 `POSCAR`、`CONTCAR`、`XDATCAR`、`OUTCAR` 等 VASP 文件名。
+支持格式由 `backend/app/services/file_types.py` 与 ASE 能力共同决定。当前常见格式包括 `xyz`、`extxyz`、`traj`、`pdb`、`mol`、`sdf`、`cif`、`xsd`、`db`，并强制识别 `POSCAR`、`CONTCAR`、`XDATCAR`、`OUTCAR` 等 VASP 文件名。
 
 前端封装：`frontend/src/api/structures.ts`。
 
@@ -210,11 +211,11 @@ CLI 参数：
 - `GET {apiBase}/frames`
 - `GET {apiBase}/frames.bin`
 
-`frames.bin` 继续使用 `application/vnd.chemweb.structure+bin`，由现有 Brotli middleware 自动压缩。
+`frames.bin` 继续使用 `application/vnd.chemssh.structure+bin`，由现有 Brotli middleware 自动压缩。
 
 ## 插件
 
-插件目录默认扫描项目根目录下的 `plugins/`。扫描阶段只读取 `chemweb-plugin.json`，不会导入插件后端或加载插件 UI。用户从工作区右侧功能区的 `+` 菜单打开插件面板后，前端才调用激活接口。
+插件目录默认扫描项目根目录下的 `plugins/`。扫描阶段只读取 `chemssh-plugin.json`，不会导入插件后端或加载插件 UI。用户从工作区右侧功能区的 `+` 菜单打开插件面板后，前端才调用激活接口。
 
 ### `GET /api/plugins`
 
@@ -273,8 +274,8 @@ CLI 参数：
   "python": {
     "mode": "host",
     "manifest_mode": "host",
-    "python": "D:/Git/chemweb/.venv/Scripts/python.exe",
-    "requirements": "D:/Git/chemweb/plugins/cclib/backend/requirements.txt",
+    "python": "D:/Git/chemssh/.venv/Scripts/python.exe",
+    "requirements": "D:/Git/chemssh/plugins/cclib/backend/requirements.txt",
     "packages": [
       { "name": "cclib", "version": "1.8.1" }
     ],
@@ -303,7 +304,7 @@ CLI 参数：
 }
 ```
 
-`host` 会修改运行 chemweb 的当前 Python 环境；`venv` 会创建或复用插件目录内的虚拟环境。安装结果会写入插件状态文件，不改写插件清单。
+`host` 会修改运行 chemssh 的当前 Python 环境；`venv` 会创建或复用插件目录内的虚拟环境。安装结果会写入插件状态文件，不改写插件清单。
 
 ### `POST /api/plugins/{plugin_id}/dependencies/external`
 
@@ -385,10 +386,10 @@ CLI 参数：
 
 终端后端接口见 `frontend/src/api/terminal.ts` 和 `backend/app/api/terminal.py`。前端组件为 `frontend/src/components/terminal/TerminalPanel.vue`。
 
-终端会话按浏览器 client id 轻量隔离。前端通过 `frontend/src/api/clientSession.ts` 在 `localStorage` 中保存 `chemweb.clientId.v1`，并在终端 HTTP 请求中发送：
+终端会话按浏览器 client id 轻量隔离。前端通过 `frontend/src/api/clientSession.ts` 在 `localStorage` 中保存 `chemssh.clientId.v1`，并在终端 HTTP 请求中发送：
 
 ```http
-X-Chemweb-Client-Id: client_xxx
+X-ChemSSH-Client-Id: client_xxx
 ```
 
 WebSocket 连接使用 query 参数：
@@ -415,6 +416,59 @@ WebSocket 连接使用 query 参数：
 }
 ```
 
+### 终端 `rz` / `sz` 接管
+
+终端会话启动时，后端会创建临时 `rz`、`sz` shim，并把 shim 目录放到该终端进程的 `PATH` 最前面。脚本或用户命令通过普通 `PATH` 查找调用 `rz` / `sz` 时，不会进入原生 ZMODEM 传输；shim 会向 pty 输出 ChemSSH 私有 OSC 标记，后端读取终端输出时吞掉该标记并转成 WebSocket 传输请求。shim 会阻塞等待前端回传 `transfer_result`，收到成功后以 `0` 退出，收到失败或取消后以非零码退出；这让脚本中位于 `sz` 后面的 `rm` 等清理命令在浏览器下载请求完成后才继续执行。
+
+后端发送上传请求：
+
+```json
+{
+  "type": "transfer_request",
+  "transfer_id": "transfer_xxx",
+  "direction": "upload",
+  "cwd": "/workspace/project",
+  "argv": ["rz", "-y"]
+}
+```
+
+前端收到 `direction="upload"` 后打开浏览器文件选择器，并走与文件管理器相同的上传准备流程上传到该终端当前目录：空白字符会先改为 `_`，路径段预检失败的文件不会开始传输。
+
+后端发送下载请求：
+
+```json
+{
+  "type": "transfer_request",
+  "transfer_id": "transfer_xxx",
+  "direction": "download",
+  "cwd": "/workspace/project",
+  "argv": ["sz", "result.out"],
+  "paths": ["/workspace/project/result.out"]
+}
+```
+
+前端收到 `direction="download"` 后，单文件使用 `downloadUrl(path)`，多文件或目录使用 `downloadSelectionUrl(paths, { forceArchive: true })`。
+
+前端完成、失败或取消后回传结果：
+
+```json
+{
+  "type": "transfer_result",
+  "transfer_id": "transfer_xxx",
+  "success": true,
+  "message": "Uploaded 1 file(s)"
+}
+```
+
+后端收到 `transfer_result` 后，会写入 shim 专属临时 ack 文件释放正在等待的 `rz` / `sz` 进程。ack 路径只允许位于该终端会话创建的临时 shim 目录内，不能由前端任意指定。
+
+安全规则：
+
+- shim 只影响当前终端会话子进程的 `PATH`，不会修改系统环境。
+- `rz` 上传目标目录来自终端 shim 上报的 cwd，后端会按 workspace 安全规则解析。
+- `sz` 参数由后端解析为 workspace 内路径；越界、缺失或不存在的路径会以 `transfer_request.error` 返回，前端显示失败并回传 `transfer_result`。
+- 如果脚本显式调用 `/usr/bin/rz`、`/usr/bin/sz` 等绝对路径，会绕过 shim。后端会在 pty 输出流中识别常见原生 ZMODEM 起始特征并发送 `Ctrl+C` 中断，避免终端继续卡死。原生 `rz` 可继续接管为浏览器上传；原生 `sz` 在协议流中通常无法可靠恢复原始文件参数，因此会提示改用 PATH 解析到的 `sz` shim，除非后续实现完整 ZMODEM 接收器。
+
 ## 前端窗口交互协议
 
 ### 文件拖拽 payload
@@ -430,8 +484,8 @@ WebSocket 连接使用 query 参数：
 
 | 类型 | 内容 | 用途 |
 | --- | --- | --- |
-| `application/x-chemweb-files` | JSON payload | chemweb 内部窗口优先读取 |
-| `application/x-chemweb-file-paths` | JSON string array | 轻量路径列表备用 |
+| `application/x-chemssh-files` | JSON payload | chemssh 内部窗口优先读取 |
+| `application/x-chemssh-file-paths` | JSON string array | 轻量路径列表备用 |
 | `text/plain` | ` /abs/a /abs/b` | 拖到终端或其他文本输入 |
 | `text/uri-list` | 下载 URL | 拖到浏览器外部触发下载 |
 | `DownloadURL` | Chrome 下载拖拽格式 | 外部下载兼容增强 |
@@ -440,7 +494,7 @@ JSON payload：
 
 ```json
 {
-  "source": "chemweb:file-manager",
+  "source": "chemssh:file-manager",
   "version": 1,
   "paths": ["/workspace/project/a.xyz"],
   "items": [
@@ -461,16 +515,16 @@ JSON payload：
 新增窗口如果要接收文件拖拽，推荐这样写：
 
 ```ts
-import { hasChemwebFileDrag, readChemwebFileDrag } from '../api/fileDrag'
+import { hasChemSSHFileDrag, readChemSSHFileDrag } from '../api/fileDrag'
 
 function handleDragOver(event: DragEvent) {
-  if (!hasChemwebFileDrag(event)) return
+  if (!hasChemSSHFileDrag(event)) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
 function handleDrop(event: DragEvent) {
-  const payload = readChemwebFileDrag(event.dataTransfer)
+  const payload = readChemSSHFileDrag(event.dataTransfer)
   if (!payload) return
   event.preventDefault()
   // payload.paths 是绝对路径列表；payload.items 带文件类型与预览类型。
@@ -485,7 +539,8 @@ function handleDrop(event: DragEvent) {
 - 文件管理器 -> 预览：只打开第一个路径，并切换到预览面板。
 - 文件管理器 -> 插件结构 provider：如果插件 UI 已加载并注册 active preview provider，文件管理器可先调用插件 `probe`，匹配成功后把插件 `StructureSource` 和文件路径发送到现有预览窗口。
 - 文件管理器图标：已加载插件注册 active preview provider 后，文件列表会用 `accepts.extensions`、`accepts.filenames`、`accepts.preview_types` 做轻量匹配；匹配到的文件显示与结构文件一致的小眼睛图标。列表渲染阶段不调用 `probe`，真实可预览性仍在双击打开时确认。
-- 文件管理器 -> 新模块：默认读取 `application/x-chemweb-files`。如果模块只需要路径，使用 `payload.paths`；如果需要判断结构/文本/目录，使用 `payload.items[*].preview_type` 和 `type`。
+- 文件管理器 -> 新模块：默认读取 `application/x-chemssh-files`。如果模块只需要路径，使用 `payload.paths`；如果需要判断结构/文本/目录，使用 `payload.items[*].preview_type` 和 `type`。
+- 文件管理器右键菜单：第一项复制当前选择的第一个绝对路径到剪贴板；右键未选中项时先选中该项再复制。
 - 外部文件 -> 工作区：根 `Workspace.vue` 只在 `DataTransfer.types` 包含 `Files` 时触发上传，避免和内部文件拖拽冲突。
 
 ### 给新增模块的实现提示

@@ -160,7 +160,7 @@ class FileService:
             seen_paths.add(path)
             paths.append(path)
 
-        temp_file = tempfile.NamedTemporaryFile(prefix="chemweb-download-", suffix=".zip", delete=False)
+        temp_file = tempfile.NamedTemporaryFile(prefix="chemssh-download-", suffix=".zip", delete=False)
         archive_path = Path(temp_file.name)
         temp_file.close()
 

@@ -52,7 +52,7 @@ def test_system_info_and_file_roundtrip(tmp_path: Path) -> None:
 
     identity = client.get("/api/system/identity")
     assert identity.status_code == 200
-    assert identity.json()["app"] == "chemweb"
+    assert identity.json()["app"] == "chemssh"
     assert identity.json()["project_version"] == __version__
     assert identity.json()["workspace_root"] == str(tmp_path.resolve())
 
@@ -148,7 +148,7 @@ def test_plugin_get_routes_take_precedence_over_spa_fallback(tmp_path: Path) -> 
     plugin_dir = plugins_dir / "dummy-get"
     backend_dir = plugin_dir / "backend"
     backend_dir.mkdir(parents=True)
-    (plugin_dir / "chemweb-plugin.json").write_text(
+    (plugin_dir / "chemssh-plugin.json").write_text(
         json.dumps(
             {
                 "schema_version": 1,

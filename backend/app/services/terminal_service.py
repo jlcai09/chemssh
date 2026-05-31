@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import threading
 import uuid
+import base64
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from backend.app.core.config import Settings
 from backend.app.core.errors import AppError
@@ -14,10 +18,44 @@ from backend.app.providers.terminal.local_pty import LocalPtyTerminalProvider
 
 
 CWD_MARKER_PREFIX = "\x1b]633;P;Cwd="
+TRANSFER_MARKER_PREFIX = "\x1b]777;chemssh-transfer;"
+CONTROL_MARKER_PREFIXES = (CWD_MARKER_PREFIX, TRANSFER_MARKER_PREFIX)
+ZMODEM_SIGNATURES = (
+    "rz waiting to receive",
+    "**B00000000000000",
+    "**B0100",
+    "**\x18B00000000000000",
+    "**\x18B0100",
+)
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@dataclass
+class TerminalTransferRequest:
+    transfer_id: str
+    direction: str
+    cwd: str
+    argv: list[str]
+    paths: list[str] = field(default_factory=list)
+    ack_path: str | None = None
+    error: str | None = None
+
+    def to_message(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "type": "transfer_request",
+            "transfer_id": self.transfer_id,
+            "direction": self.direction,
+            "cwd": self.cwd,
+            "argv": self.argv,
+        }
+        if self.paths:
+            payload["paths"] = self.paths
+        if self.error:
+            payload["error"] = self.error
+        return payload
 
 
 @dataclass
@@ -32,7 +70,11 @@ class TerminalSession:
     allow_sync_cwd: bool
     clients: int = 0
     _pending_cwd: str | None = field(default=None, init=False, repr=False)
-    _cwd_marker_buffer: str = field(default="", init=False, repr=False)
+    _control_marker_buffer: str = field(default="", init=False, repr=False)
+    _zmodem_signature_buffer: str = field(default="", init=False, repr=False)
+    _native_zmodem_intercepted: bool = field(default=False, init=False, repr=False)
+    _pending_transfers: list[TerminalTransferRequest] = field(default_factory=list, init=False, repr=False)
+    _active_transfers: dict[str, TerminalTransferRequest] = field(default_factory=dict, init=False, repr=False)
 
     @property
     def shell(self) -> str:
@@ -42,8 +84,8 @@ class TerminalSession:
         data = self.provider.read(size)
         if data:
             self.touch()
-            return self._extract_cwd_markers(data)
-        return self._extract_cwd_markers("")
+            return self._extract_control_markers(data)
+        return self._extract_control_markers("")
 
     def write(self, data: str) -> None:
         self.provider.write(data)
@@ -70,35 +112,56 @@ class TerminalSession:
         self._pending_cwd = None
         return cwd
 
-    def _extract_cwd_markers(self, data: str) -> str:
-        if not data and not self._cwd_marker_buffer:
+    def consume_transfer_requests(self) -> list[TerminalTransferRequest]:
+        transfers = self._pending_transfers
+        self._pending_transfers = []
+        for transfer in transfers:
+            self._active_transfers[transfer.transfer_id] = transfer
+        return transfers
+
+    def format_transfer_result(self, transfer_id: str, success: bool, message: str | None = None) -> str:
+        transfer = self._active_transfers.pop(transfer_id, None)
+        if transfer and transfer.ack_path:
+            self._write_transfer_ack(transfer.ack_path, success, message)
+        status = "complete" if success else "failed"
+        suffix = f": {message}" if message else ""
+        self.touch()
+        return f"\r\nchemssh transfer {status} ({transfer_id}){suffix}\r\n"
+
+    def _extract_control_markers(self, data: str) -> str:
+        if not data and not self._control_marker_buffer:
             return ""
 
-        text = self._cwd_marker_buffer + data
-        self._cwd_marker_buffer = ""
+        text = self._control_marker_buffer + data
+        self._control_marker_buffer = ""
         parts: list[str] = []
         index = 0
         while index < len(text):
-            start = text.find(CWD_MARKER_PREFIX, index)
-            if start < 0:
+            marker = _find_next_control_marker(text, index)
+            if marker is None:
                 remaining, pending = _split_possible_marker_prefix(text[index:])
                 parts.append(remaining)
-                self._cwd_marker_buffer = pending
+                self._control_marker_buffer = pending
                 break
 
+            start, prefix = marker
             parts.append(text[index:start])
-            value_start = start + len(CWD_MARKER_PREFIX)
+            value_start = start + len(prefix)
             bel_end = text.find("\x07", value_start)
             st_end = text.find("\x1b\\", value_start)
             end, terminator_length = _first_marker_end(bel_end, st_end)
             if end < 0:
-                self._cwd_marker_buffer = text[start:]
+                self._control_marker_buffer = text[start:]
                 break
 
-            self._accept_cwd_marker(text[value_start:end])
+            value = text[value_start:end]
+            if prefix == CWD_MARKER_PREFIX:
+                self._accept_cwd_marker(value)
+            elif prefix == TRANSFER_MARKER_PREFIX:
+                self._accept_transfer_marker(value)
             index = end + terminator_length
 
-        return "".join(parts)
+        return self._filter_native_zmodem("".join(parts))
 
     def _accept_cwd_marker(self, raw_path: str) -> None:
         try:
@@ -113,6 +176,119 @@ class TerminalSession:
         self.cwd = normalized
         self._pending_cwd = normalized
         self.touch()
+
+    def _accept_transfer_marker(self, encoded_payload: str) -> None:
+        try:
+            raw_payload = base64.urlsafe_b64decode(_pad_base64(encoded_payload)).decode("utf-8")
+            payload = json.loads(raw_payload)
+        except Exception:
+            return
+
+        if not isinstance(payload, dict):
+            return
+        direction = payload.get("direction")
+        argv = payload.get("argv")
+        raw_cwd = payload.get("cwd")
+        ack_path = payload.get("ack_path")
+        if direction not in {"upload", "download"} or not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+            return
+        argv = [_strip_shell_line_ending(item) for item in argv]
+        if not isinstance(raw_cwd, str):
+            raw_cwd = self.cwd
+        raw_cwd = _strip_shell_line_ending(raw_cwd)
+        if not isinstance(ack_path, str):
+            ack_path = None
+
+        try:
+            cwd_path = self.security.resolve_path(raw_cwd)
+        except AppError:
+            cwd_path = Path(self.cwd)
+
+        transfer_id = f"transfer_{uuid.uuid4().hex[:12]}"
+        paths: list[str] = []
+        error: str | None = None
+        if direction == "download":
+            try:
+                paths = self._resolve_transfer_download_paths(argv, cwd_path)
+            except AppError as exc:
+                error = exc.message
+        self._pending_transfers.append(
+            TerminalTransferRequest(
+                transfer_id=transfer_id,
+                direction=direction,
+                cwd=str(cwd_path),
+                argv=argv,
+                paths=paths,
+                ack_path=ack_path,
+                error=error,
+            )
+        )
+        self.touch()
+
+    def _write_transfer_ack(self, raw_ack_path: str, success: bool, message: str | None) -> None:
+        ack_path = self.provider.resolve_transfer_ack_path(raw_ack_path)
+        if ack_path is None:
+            return
+        ack_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"success": success, "message": message or ""}
+        ack_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def _filter_native_zmodem(self, data: str) -> str:
+        if not data:
+            return ""
+
+        probe = self._zmodem_signature_buffer + data
+        self._zmodem_signature_buffer = probe[-64:]
+        lowered_probe = probe.lower()
+        if self._native_zmodem_intercepted or not any(signature.lower() in lowered_probe for signature in ZMODEM_SIGNATURES):
+            return data
+
+        self._native_zmodem_intercepted = True
+        self.provider.write_control("\x03")
+        if "rz waiting to receive" in lowered_probe:
+            self._pending_transfers.append(
+                TerminalTransferRequest(
+                    transfer_id=f"transfer_{uuid.uuid4().hex[:12]}",
+                    direction="upload",
+                    cwd=self.cwd,
+                    argv=["rz"],
+                )
+            )
+            return "\r\nchemssh: native rz/ZMODEM was intercepted; opening browser upload instead.\r\n"
+
+        return (
+            "\r\nchemssh: native sz/ZMODEM was intercepted to avoid a stuck terminal. "
+            "Use PATH-resolved sz so ChemSSH can receive the requested file list.\r\n"
+        )
+
+    def _resolve_transfer_download_paths(self, argv: list[str], cwd: Path) -> list[str]:
+        candidates: list[str] = []
+        skip_next = False
+        for arg in argv[1:]:
+            arg = _strip_shell_line_ending(arg)
+            if not arg:
+                continue
+            if skip_next:
+                skip_next = False
+                continue
+            if arg in {"-e", "--escape", "-i", "--input-command"}:
+                skip_next = True
+                continue
+            if arg.startswith("-"):
+                continue
+            candidates.append(arg)
+
+        if not candidates:
+            raise AppError("TERMINAL_TRANSFER_NO_PATHS", "sz did not provide any downloadable paths", 400)
+
+        paths: list[str] = []
+        for candidate in candidates:
+            raw_path = candidate if Path(candidate).is_absolute() else str(cwd / candidate)
+            path = self.security.resolve_path(raw_path)
+            if not path.exists():
+                raise AppError("FILE_NOT_FOUND", f"File not found: {path}", 404)
+            paths.append(str(path))
+        return paths
 
     def close(self) -> None:
         self.provider.terminate()
@@ -266,10 +442,25 @@ def _first_marker_end(bel_end: int, st_end: int) -> tuple[int, int]:
     return min(candidates, default=(-1, 0), key=lambda item: item[0])
 
 
+def _find_next_control_marker(text: str, start_index: int) -> tuple[int, str] | None:
+    matches = [(index, prefix) for prefix in CONTROL_MARKER_PREFIXES if (index := text.find(prefix, start_index)) >= 0]
+    if not matches:
+        return None
+    return min(matches, key=lambda item: item[0])
+
+
 def _split_possible_marker_prefix(text: str) -> tuple[str, str]:
-    max_length = min(len(CWD_MARKER_PREFIX) - 1, len(text))
+    max_length = min(max(len(prefix) for prefix in CONTROL_MARKER_PREFIXES) - 1, len(text))
     for length in range(max_length, 0, -1):
         suffix = text[-length:]
-        if CWD_MARKER_PREFIX.startswith(suffix):
+        if any(prefix.startswith(suffix) for prefix in CONTROL_MARKER_PREFIXES):
             return text[:-length], suffix
     return text, ""
+
+
+def _pad_base64(value: str) -> bytes:
+    return (value + "=" * (-len(value) % 4)).encode("ascii")
+
+
+def _strip_shell_line_ending(value: str) -> str:
+    return value.rstrip("\r\n")

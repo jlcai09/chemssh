@@ -5,7 +5,10 @@ import os
 import queue
 import select
 import shutil
+import stat
 import subprocess
+import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -24,6 +27,7 @@ class LocalPtyTerminalProvider(TerminalProvider):
         self._line_buffer = ""
         self._in_escape_sequence = False
         self._pipe_encoding = locale.getpreferredencoding(False) or "utf-8"
+        self._transfer_shim_dir: Path | None = None
 
     @property
     def shell(self) -> str:
@@ -109,6 +113,10 @@ class LocalPtyTerminalProvider(TerminalProvider):
             except subprocess.TimeoutExpired:
                 self._process.kill()
 
+        if self._transfer_shim_dir is not None:
+            shutil.rmtree(self._transfer_shim_dir, ignore_errors=True)
+            self._transfer_shim_dir = None
+
     def is_alive(self) -> bool:
         if self._pty is not None:
             return bool(self._pty.isalive())
@@ -144,6 +152,18 @@ class LocalPtyTerminalProvider(TerminalProvider):
         quoted = path.replace('"', '""')
         return f'cd /d "{quoted}"\r\n'
 
+    def resolve_transfer_ack_path(self, raw_path: str) -> Path | None:
+        if self._transfer_shim_dir is None:
+            return None
+        try:
+            path = Path(raw_path).expanduser().resolve()
+            shim_dir = self._transfer_shim_dir.resolve()
+            if path == shim_dir or shim_dir in path.parents:
+                return path
+        except OSError:
+            return None
+        return None
+
     def _default_shell(self) -> str:
         if os.name == "nt":
             return (
@@ -156,6 +176,13 @@ class LocalPtyTerminalProvider(TerminalProvider):
 
     def _terminal_env(self) -> dict[str, str]:
         env = os.environ.copy()
+        shim_dir = self._ensure_transfer_shims()
+        path_parts = [str(shim_dir)]
+        existing_path = env.get("PATH")
+        if existing_path:
+            path_parts.append(existing_path)
+        env["PATH"] = os.pathsep.join(path_parts)
+        env["CHEMSSH_TRANSFER_SHIM"] = "1"
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("COLORTERM", "truecolor")
         env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -169,6 +196,23 @@ class LocalPtyTerminalProvider(TerminalProvider):
             env["PROMPT_COMMAND"] = f"{cwd_marker}; {existing}" if existing else cwd_marker
         return env
 
+    def _ensure_transfer_shims(self) -> Path:
+        if self._transfer_shim_dir is not None:
+            return self._transfer_shim_dir
+
+        directory = Path(tempfile.mkdtemp(prefix="chemssh-terminal-shim-"))
+        helper = directory / "_chemssh_transfer_shim.py"
+        helper.write_text(_TRANSFER_SHIM_PYTHON, encoding="utf-8", newline="\n")
+        for command, direction in (("rz", "upload"), ("sz", "download")):
+            script = directory / command
+            script.write_text(_posix_transfer_wrapper(direction, helper), encoding="utf-8", newline="\n")
+            script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+            cmd_script = directory / f"{command}.cmd"
+            cmd_script.write_text(_windows_transfer_wrapper(direction, helper), encoding="utf-8", newline="\r\n")
+        self._transfer_shim_dir = directory
+        return directory
+
     def _shell_args(self) -> list[str]:
         args = [self._shell]
         shell_name = Path(self._shell).name.lower()
@@ -180,10 +224,10 @@ class LocalPtyTerminalProvider(TerminalProvider):
             "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
             "$OutputEncoding=[Console]::OutputEncoding; "
             "try { Set-PSReadLineOption -HistorySaveStyle SaveNothing } catch {}; "
-            "$global:__chemweb_original_prompt=(Get-Command prompt -CommandType Function -ErrorAction SilentlyContinue).ScriptBlock; "
+            "$global:__chemssh_original_prompt=(Get-Command prompt -CommandType Function -ErrorAction SilentlyContinue).ScriptBlock; "
             "function global:prompt { "
             "[Console]::Write(\"$([char]27)]633;P;Cwd=$((Get-Location).ProviderPath)$([char]7)\"); "
-            "if ($global:__chemweb_original_prompt) { & $global:__chemweb_original_prompt } "
+            "if ($global:__chemssh_original_prompt) { & $global:__chemssh_original_prompt } "
             "else { \"PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) \" } "
             "}"
         )
@@ -313,3 +357,73 @@ class LocalPtyTerminalProvider(TerminalProvider):
             except queue.Empty:
                 break
         return "".join(chunks)
+
+
+_TRANSFER_SHIM_PYTHON = r'''from __future__ import annotations
+
+import base64
+import json
+import os
+import pathlib
+import sys
+import time
+
+
+def main() -> int:
+    direction = sys.argv[1] if len(sys.argv) > 1 else ""
+    command = "rz" if direction == "upload" else "sz"
+    ack_dir = pathlib.Path(__file__).resolve().parent / "acks"
+    ack_dir.mkdir(parents=True, exist_ok=True)
+    ack_path = ack_dir / f"{os.getpid()}-{time.monotonic_ns()}.json"
+    argv = [command, *sys.argv[2:]]
+    payload = {
+        "direction": direction,
+        "argv": argv,
+        "cwd": os.getcwd(),
+        "ack_path": str(ack_path),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    sys.stdout.write(f"\033]777;chemssh-transfer;{encoded}\007")
+    sys.stdout.flush()
+    deadline = time.monotonic() + 86400
+    while time.monotonic() < deadline:
+        if ack_path.exists():
+            try:
+                ack = json.loads(ack_path.read_text(encoding="utf-8"))
+            except Exception:
+                ack = {}
+            try:
+                ack_path.unlink()
+            except OSError:
+                pass
+            if ack.get("success"):
+                return 0
+            message = ack.get("message")
+            if isinstance(message, str) and message:
+                sys.stderr.write(message + "\n")
+                sys.stderr.flush()
+            return 1
+        time.sleep(0.1)
+    sys.stderr.write("ChemSSH transfer timed out\n")
+    sys.stderr.flush()
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def _posix_transfer_wrapper(direction: str, helper: Path) -> str:
+    python = str(Path(sys.executable))
+    return f"#!/bin/sh\nexec {_shell_quote(python)} {_shell_quote(str(helper))} {_shell_quote(direction)} \"$@\"\n"
+
+
+def _windows_transfer_wrapper(direction: str, helper: Path) -> str:
+    python = str(Path(sys.executable))
+    return f'@"{python}" "{helper}" {direction} %*\r\n'
+
+
+def _shell_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"

@@ -13,7 +13,7 @@ COMPRESSIBLE_TYPES = {
     "application/xml",
     "application/xhtml+xml",
     "image/svg+xml",
-    "application/vnd.chemweb.structure+bin",
+    "application/vnd.chemssh.structure+bin",
 }
 
 

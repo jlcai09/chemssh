@@ -46,7 +46,7 @@ def create_app(settings: Settings | None = None, *, idle_shutdown_callback: Shut
     )
 
     app = FastAPI(
-        title="chemweb",
+        title="chemssh",
         version=__version__,
         lifespan=_build_lifespan(idle_shutdown),
         description="计算催化与计算化学文件、作业和结构可视化工作台。",
@@ -103,7 +103,7 @@ def create_app(settings: Settings | None = None, *, idle_shutdown_callback: Shut
         @app.get("/", include_in_schema=False)
         def health() -> dict[str, str]:
             return {
-                "name": "chemweb",
+                "name": "chemssh",
                 "message": "Backend is running. Build the frontend to serve the web UI.",
             }
 

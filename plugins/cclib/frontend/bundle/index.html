@@ -120,7 +120,7 @@
       <section class="status">
         <span class="eyebrow">plugin</span>
         <h1>cclib</h1>
-        <p id="message">Waiting for chemweb...</p>
+        <p id="message">Waiting for chemssh...</p>
       </section>
       <section class="status">
         <span class="eyebrow">preview provider</span>
@@ -199,7 +199,7 @@
       }
 
       async function install(mode) {
-        if (mode === 'host' && !window.confirm('Install cclib dependencies into the Python environment currently running chemweb?')) {
+        if (mode === 'host' && !window.confirm('Install cclib dependencies into the Python environment currently running chemssh?')) {
           return
         }
         setBusy(true)
@@ -238,7 +238,7 @@
       function registerProvider() {
         if (!context) return
         post({
-          type: 'chemweb:file-manager:register-preview-provider',
+          type: 'chemssh:file-manager:register-preview-provider',
           version: 1,
           provider: {
             id: 'cclib:cclib-output',
@@ -271,7 +271,7 @@
 
       function unregisterProvider() {
         post({
-          type: 'chemweb:file-manager:unregister-preview-provider',
+          type: 'chemssh:file-manager:unregister-preview-provider',
           version: 1,
           providerId: 'cclib:cclib-output'
         })
@@ -279,7 +279,7 @@
 
       window.addEventListener('message', event => {
         const data = event.data || {}
-        if (data.type !== 'chemweb:plugin:init') return
+        if (data.type !== 'chemssh:plugin:init') return
         context = data
         registerProvider()
         refreshDependencies()
@@ -290,7 +290,7 @@
       document.getElementById('install-venv').addEventListener('click', () => install('venv'))
       document.getElementById('save-external').addEventListener('click', saveExternal)
       window.addEventListener('beforeunload', unregisterProvider)
-      post({ type: 'chemweb:plugin:ready', version: 1, pluginId: 'cclib' })
+      post({ type: 'chemssh:plugin:ready', version: 1, pluginId: 'cclib' })
     </script>
   </body>
 </html>

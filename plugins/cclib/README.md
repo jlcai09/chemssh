@@ -1,6 +1,6 @@
 # cclib
 
-`cclib` is a chemweb example plugin. It parses quantum chemistry output files on the backend and sends structure-compatible trajectory data to the existing chemweb preview window.
+`cclib` is a chemssh example plugin. It parses quantum chemistry output files on the backend and sends structure-compatible trajectory data to the existing chemssh preview window.
 
 ## Frontend Assets
 
@@ -8,7 +8,7 @@ The plugin UI is bundled under `frontend/bundle/` and is shipped with the plugin
 
 ## Dependencies
 
-The manifest defaults to `host` mode, which installs `cclib` into the same Python environment that runs chemweb:
+The manifest defaults to `host` mode, which installs `cclib` into the same Python environment that runs chemssh:
 
 ```json
 {
@@ -19,7 +19,7 @@ The manifest defaults to `host` mode, which installs `cclib` into the same Pytho
 }
 ```
 
-Use chemweb's plugin management API or the cclib plugin panel to install dependencies. The equivalent command is:
+Use chemssh's plugin management API or the cclib plugin panel to install dependencies. The equivalent command is:
 
 ```powershell
 .\.venv\Scripts\python -m pip install -r plugins\cclib\backend\requirements.txt

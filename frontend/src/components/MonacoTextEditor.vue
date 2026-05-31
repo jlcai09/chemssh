@@ -74,6 +74,7 @@ function setEditorValue(value: string) {
   const position = editor.getPosition()
   const selections = editor.getSelections()
   editor.setValue(value)
+  model?.setEOL(monaco.editor.EndOfLineSequence.LF)
   if (model && position) {
     editor.setPosition(position)
     editor.revealPositionInCenterIfOutsideViewport(position)
@@ -101,6 +102,7 @@ onMounted(async () => {
     tabSize: 2,
     renderWhitespace: 'selection'
   })
+  editor.getModel()?.setEOL(monaco.editor.EndOfLineSequence.LF)
 
   editor.onDidChangeModelContent(() => {
     if (!editor || syncing) return

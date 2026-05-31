@@ -1,8 +1,8 @@
-# chemweb 中文说明
+# chemssh 中文说明
 
 [English](README.md) | 中文
 
-`chemweb` 是一个面向计算催化、计算化学和材料模拟目录的轻量级 Web 工作台 MVP。它适合部署在远程 Linux 服务器或 HPC 登录节点上，通过 SSH 端口转发在本地浏览器访问。
+`chemssh` 是一个面向计算催化、计算化学和材料模拟目录的轻量级 Web 工作台 MVP。它适合部署在远程 Linux 服务器或 HPC 登录节点上，通过 SSH 端口转发在本地浏览器访问。
 
 当前版本提供文件管理、文本/日志预览、自定义三维结构预览、Slurm 队列查看、`sbatch` 作业提交和 `scancel` 作业取消。
 
@@ -14,7 +14,7 @@
 
 ## 安装
 
-建议在项目根目录 `D:\path\to\chemweb` 或远程服务器上的项目根目录创建虚拟环境。
+建议在项目根目录 `D:\path\to\chemssh` 或远程服务器上的项目根目录创建虚拟环境。
 
 Windows PowerShell:
 
@@ -43,7 +43,7 @@ npm --prefix frontend run build
 安装完成后，命令行入口为：
 
 ```bash
-chemweb --help
+chemssh --help
 ```
 
 ## 配置
@@ -60,26 +60,26 @@ workspace:
 ## 启动
 
 ```bash
-chemweb --config config.yaml --host 127.0.0.1 --port 8888
+chemssh --config config.yaml --host 127.0.0.1 --port 8888
 ```
 
-CLI 在启动前会检查目标端口是否已被占用。如果同一端口上已经有 Chemweb 服务，并且 `workspace.root` 与当前配置一致，CLI 会直接复用已有服务并打印访问 URL，不再启动新的后端。如果端口被其他程序占用，或被不同工作区的 Chemweb 占用，启动会失败并给出明确错误。
+CLI 在启动前会检查目标端口是否已被占用。如果同一端口上已经有 ChemSSH 服务，并且 `workspace.root` 与当前配置一致，CLI 会直接复用已有服务并打印访问 URL，不再启动新的后端。如果端口被其他程序占用，或被不同工作区的 ChemSSH 占用，启动会失败并给出明确错误。
 
 复用策略可以通过参数调整：
 
 ```bash
-chemweb --config config.yaml --reuse-existing auto
-chemweb --config config.yaml --reuse-existing never
-chemweb --config config.yaml --reuse-existing any-chemweb
+chemssh --config config.yaml --reuse-existing auto
+chemssh --config config.yaml --reuse-existing never
+chemssh --config config.yaml --reuse-existing any-chemssh
 ```
 
 如果只想检测端口、不启动服务，可以使用：
 
 ```bash
-chemweb --config config.yaml --check-port
+chemssh --config config.yaml --check-port
 ```
 
-当端口空闲或指向可复用的 Chemweb 服务时，退出码为 `0`；当端口被不可复用的服务占用时，退出码为 `1`。
+当端口空闲或指向可复用的 ChemSSH 服务时，退出码为 `0`；当端口被不可复用的服务占用时，退出码为 `1`。
 
 开发模式可以分别启动后端和前端：
 
@@ -92,10 +92,10 @@ npm.cmd --prefix frontend run dev
 
 ## 服务进程检查
 
-如果是用 `chemweb --config config.yaml` 启动的，在服务端查看进程：
+如果是用 `chemssh --config config.yaml` 启动的，在服务端查看进程：
 
 ```bash
-pgrep -af 'chemweb'
+pgrep -af 'chemssh'
 ```
 
 如果是直接用 `uvicorn` 启动的：
@@ -109,7 +109,7 @@ pgrep -af 'uvicorn'
 在远程服务器上启动：
 
 ```bash
-chemweb --config config.yaml --host 127.0.0.1 --port 8888
+chemssh --config config.yaml --host 127.0.0.1 --port 8888
 ```
 
 在本地机器执行端口转发：
