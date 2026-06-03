@@ -537,6 +537,7 @@ function handleDrop(event: DragEvent) {
 - 文件管理器 -> 浏览器外部拖拽目录时，即使只拖了一个目录，也使用 `download-selection` 返回 zip。
 - 文件管理器 -> 终端：向当前 tab 输入 ` ${paths.join(' ')}`，不自动回车。
 - 文件管理器 -> 预览：只打开第一个路径，并切换到预览面板。
+- 预览面板统一使用结构/文本切换窗口；结构与文本子视图保活，打开普通文件时进入文本视图，只有当前目标可作为结构预览时才显示结构切换入口。结构加载和重绘期间会在旧结构上显示非阻塞半透明遮罩；继续打开下一个结构会取消上一条结构 preview 请求，并且旧响应不能覆盖新状态。
 - 文件管理器 -> 插件结构 provider：如果插件 UI 已加载并注册 active preview provider，文件管理器可先调用插件 `probe`，匹配成功后把插件 `StructureSource` 和文件路径发送到现有预览窗口。
 - 文件管理器图标：已加载插件注册 active preview provider 后，文件列表会用 `accepts.extensions`、`accepts.filenames`、`accepts.preview_types` 做轻量匹配；匹配到的文件显示与结构文件一致的小眼睛图标。列表渲染阶段不调用 `probe`，真实可预览性仍在双击打开时确认。
 - 文件管理器 -> 新模块：默认读取 `application/x-chemssh-files`。如果模块只需要路径，使用 `payload.paths`；如果需要判断结构/文本/目录，使用 `payload.items[*].preview_type` 和 `type`。

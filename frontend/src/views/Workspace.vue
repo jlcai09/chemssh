@@ -21,7 +21,7 @@
           @clear="openDirectory()"
         >
           <template #append>
-            <el-tooltip :content="t('toolbar.go')" placement="bottom">
+            <el-tooltip :content="t('toolbar.go')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
               <el-button :icon="ArrowRight" @click="openPathFromInput" />
             </el-tooltip>
           </template>
@@ -100,7 +100,7 @@
             @drop="onWorkPanelDrop(panel.id, $event)"
           >
             <span>{{ panelTitle(panel) }}</span>
-            <el-tooltip :content="t('panel.close')" placement="bottom">
+            <el-tooltip :content="t('panel.close')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
               <el-button
                 class="side-panel-close"
                 :icon="Close"
@@ -131,7 +131,7 @@
         </div>
         <div class="side-panel-body">
           <FilePreview
-            v-if="activeWorkPanel?.kind === 'preview'"
+            v-show="activeWorkPanel?.kind === 'preview'"
             :file="preview"
             :ase-structure="asePreview"
             :mode="previewMode"
@@ -145,7 +145,7 @@
             @drop="handlePreviewDrop"
           />
           <QueueStatus
-            v-else-if="activeWorkPanel?.kind === 'queue'"
+            v-if="activeWorkPanel?.kind === 'queue'"
             class="side-queue"
             :initial-interval="5"
             :workspace-root="props.systemInfo?.workspace_root"
@@ -158,7 +158,7 @@
             :title="activeWorkPanel.title"
             @load="handlePluginFrameLoad($event, activeWorkPanel)"
           />
-          <div v-else class="empty-state">
+          <div v-if="!activeWorkPanel" class="empty-state">
             <el-empty :description="t('panel.empty')" />
           </div>
         </div>
@@ -437,6 +437,8 @@ const uploadConflictDialog = ref<UploadConflictDialogState>({
 const uploadProgressOpen = ref(false)
 let previousBodyCursor = ''
 let previousBodyUserSelect = ''
+let previewRequestSerial = 0
+let structurePreviewAbortController: AbortController | null = null
 
 const SPLITTER_SIZE = 6
 const MIN_LEFT_WIDTH = 260
@@ -470,7 +472,7 @@ const visibleItems = computed(() => (listing.value?.items ?? []).filter(item => 
 const logPath = computed(() => selectedItems.value.find(item => item.type === 'file')?.path ?? null)
 const structurePreviewCandidate = computed(() => {
   if (previewCandidate.value) return isStructureCandidate(previewCandidate.value) || providerLightMatchExists(previewCandidate.value)
-  if (asePreview.value) return true
+  if (previewMode.value === 'structure') return Boolean(asePreview.value)
   return preview.value?.preview_type === 'structure' || false
 })
 const activeWorkPanel = computed(() => workPanels.value.find(panel => panel.id === activeWorkPanelId.value) ?? null)
@@ -896,6 +898,25 @@ async function openItem(item: FileItem) {
   await previewFile(item)
 }
 
+function abortStructurePreviewRequest() {
+  structurePreviewAbortController?.abort()
+  structurePreviewAbortController = null
+}
+
+function nextStructurePreviewSignal() {
+  abortStructurePreviewRequest()
+  structurePreviewAbortController = new AbortController()
+  return structurePreviewAbortController.signal
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+}
+
 async function previewFile(itemOrPath: FileItem | string) {
   const path = typeof itemOrPath === 'string' ? itemOrPath : itemOrPath.path
   const item = typeof itemOrPath === 'string'
@@ -906,18 +927,22 @@ async function previewFile(itemOrPath: FileItem | string) {
         : null
     : itemOrPath
 
+  const requestId = ++previewRequestSerial
+  const isCurrentRequest = () => requestId === previewRequestSerial
+  abortStructurePreviewRequest()
   previewLoading.value = true
-  preview.value = null
-  asePreview.value = null
   previewCandidate.value = item
   previewError.value = null
   try {
     const provider = item ? await resolvePreviewProvider(item) : null
+    if (!isCurrentRequest()) return
     const providerSource = provider ? providerStructureSource(provider) : null
     if (providerSource) {
       previewMode.value = 'structure'
       currentStructureSource.value = providerSource
-      const structure = await readStructurePreviewWithLargeConfirmation(path, providerSource)
+      if (preview.value?.path !== path) preview.value = null
+      const structure = await readStructurePreviewWithLargeConfirmation(path, providerSource, nextStructurePreviewSignal())
+      if (!isCurrentRequest()) return
       if (structure) {
         asePreview.value = structure
         openBuiltinPanel('preview')
@@ -928,14 +953,17 @@ async function previewFile(itemOrPath: FileItem | string) {
     if (item && isStructureCandidate(item)) {
       previewMode.value = 'structure'
       currentStructureSource.value = ASE_STRUCTURE_SOURCE
+      if (preview.value?.path !== path) preview.value = null
       try {
-        const structure = await readStructurePreviewWithLargeConfirmation(path, ASE_STRUCTURE_SOURCE)
+        const structure = await readStructurePreviewWithLargeConfirmation(path, ASE_STRUCTURE_SOURCE, nextStructurePreviewSignal())
+        if (!isCurrentRequest()) return
         if (structure) {
           asePreview.value = structure
           openBuiltinPanel('preview')
         }
         return
       } catch (error) {
+        if (!isCurrentRequest()) return
         previewError.value = error instanceof Error ? error.message : t('message.previewFailed')
         previewMode.value = 'text'
       }
@@ -943,27 +971,49 @@ async function previewFile(itemOrPath: FileItem | string) {
       previewMode.value = 'text'
     }
 
+    if (preview.value?.path !== path) preview.value = null
     const file = await readTextPreviewWithLargeConfirmation(path)
+    if (!isCurrentRequest()) return
     if (file) {
       preview.value = file
+      previewMode.value = 'text'
       openBuiltinPanel('preview')
     }
   } catch (error) {
-    preview.value = null
-    ElMessage.error(error instanceof Error ? error.message : t('message.previewFailed'))
+    if (isCurrentRequest()) {
+      preview.value = null
+      if (!isAbortError(error)) ElMessage.error(error instanceof Error ? error.message : t('message.previewFailed'))
+    }
   } finally {
-    previewLoading.value = false
+    if (isCurrentRequest()) previewLoading.value = false
   }
 }
 
+function currentPreviewPath() {
+  const candidatePath = previewCandidate.value?.path
+  if (candidatePath) return candidatePath
+  if (previewMode.value === 'structure') return asePreview.value?.path ?? preview.value?.path ?? null
+  return preview.value?.path ?? asePreview.value?.path ?? null
+}
+
+function structurePreviewMatches(path: string, source: StructureSource) {
+  const structure = asePreview.value
+  return Boolean(
+    structure &&
+    structure.path === path &&
+    structure.source?.id === source.id &&
+    structure.source?.apiBase === source.apiBase
+  )
+}
+
 async function loadTextPreview() {
-  const path = asePreview.value?.path ?? preview.value?.path ?? previewCandidate.value?.path
-  if (!path || preview.value) return
+  const path = currentPreviewPath()
+  if (!path || preview.value?.path === path) return
   await readTextPreview(path)
 }
 
 async function refreshTextPreview() {
-  const path = preview.value?.path ?? asePreview.value?.path ?? previewCandidate.value?.path
+  const path = currentPreviewPath()
   if (!path) return
   await readTextPreview(path)
 }
@@ -992,38 +1042,48 @@ async function readTextPreview(path: string) {
 }
 
 async function loadStructurePreview() {
-  const path = asePreview.value?.path ?? preview.value?.path ?? previewCandidate.value?.path
-  if (!path || asePreview.value) return
+  const path = currentPreviewPath()
+  if (!path || structurePreviewMatches(path, currentStructureSource.value)) return
+  const requestId = ++previewRequestSerial
+  const isCurrentRequest = () => requestId === previewRequestSerial
+  const signal = nextStructurePreviewSignal()
   previewLoading.value = true
   previewError.value = null
   try {
-    const structure = await readStructurePreviewWithLargeConfirmation(path, currentStructureSource.value)
+    const structure = await readStructurePreviewWithLargeConfirmation(path, currentStructureSource.value, signal)
+    if (!isCurrentRequest()) return
     if (structure) asePreview.value = structure
   } catch (error) {
+    if (!isCurrentRequest() || isAbortError(error)) return
     previewError.value = error instanceof Error ? error.message : t('message.previewFailed')
     previewMode.value = 'text'
     await loadTextPreview()
   } finally {
-    previewLoading.value = false
+    if (isCurrentRequest()) previewLoading.value = false
   }
 }
 
 async function refreshStructurePreview() {
-  const path = asePreview.value?.path ?? preview.value?.path ?? previewCandidate.value?.path
+  const path = currentPreviewPath()
   if (!path) return
+  const requestId = ++previewRequestSerial
+  const isCurrentRequest = () => requestId === previewRequestSerial
+  const signal = nextStructurePreviewSignal()
   previewLoading.value = true
   previewError.value = null
   try {
-    const structure = await readStructurePreviewWithLargeConfirmation(path, currentStructureSource.value)
+    const structure = await readStructurePreviewWithLargeConfirmation(path, currentStructureSource.value, signal)
+    if (!isCurrentRequest()) return
     if (structure) {
       asePreview.value = structure
       openBuiltinPanel('preview')
     }
   } catch (error) {
+    if (!isCurrentRequest() || isAbortError(error)) return
     previewError.value = error instanceof Error ? error.message : t('message.previewFailed')
     ElMessage.error(previewError.value)
   } finally {
-    previewLoading.value = false
+    if (isCurrentRequest()) previewLoading.value = false
   }
 }
 
@@ -1039,16 +1099,22 @@ async function readTextPreviewWithLargeConfirmation(path: string) {
   }
 }
 
-async function readStructurePreviewWithLargeConfirmation(path: string, source: StructureSource = ASE_STRUCTURE_SOURCE) {
+async function readStructurePreviewWithLargeConfirmation(
+  path: string,
+  source: StructureSource = ASE_STRUCTURE_SOURCE,
+  signal?: AbortSignal
+) {
   const cacheKey = `${source.id}:${path}`
   try {
-    return await readStructurePreview(source, path, undefined, forcedLargeStructurePreviews.has(cacheKey))
+    return await readStructurePreview(source, path, undefined, forcedLargeStructurePreviews.has(cacheKey), { signal })
   } catch (error) {
+    if (isAbortError(error)) throw error
     if (!isLargePreviewError(error, 'STRUCTURE_FILE_TOO_LARGE')) throw error
     const confirmed = await confirmLargePreview(error, 'structure')
+    throwIfAborted(signal)
     if (!confirmed) return null
     forcedLargeStructurePreviews.add(cacheKey)
-    return readStructurePreview(source, path, undefined, true)
+    return readStructurePreview(source, path, undefined, true, { signal })
   }
 }
 
@@ -1111,8 +1177,16 @@ function openFileContextMenu(item: FileItem, event: MouseEvent) {
   }
 }
 
-function closeContextMenu() {
+function closeContextMenu(event?: Event) {
   if (!contextMenu.value.visible) return
+
+  if (event?.type === 'scroll') {
+    const target = event.target
+    if (target instanceof Node && target !== document && leftPaneRef.value && !leftPaneRef.value.contains(target)) {
+      return
+    }
+  }
+
   contextMenu.value = {
     visible: false,
     x: 0,

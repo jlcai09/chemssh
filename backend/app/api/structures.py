@@ -1,26 +1,59 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
-from fastapi import APIRouter, Depends, Query
+import anyio
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 
 from backend.app.dependencies import get_structure_service
 from backend.app.models.structure import AseFrame, AseFrameChunkResponse, AsePreviewResponse
-from backend.app.services.structure_service import STRUCTURE_BINARY_MEDIA_TYPE, StructureService
+from backend.app.services.structure_service import STRUCTURE_BINARY_MEDIA_TYPE, StructureCancellationToken, StructureService
 
 
 router = APIRouter(prefix="/structures", tags=["structures"])
+T = TypeVar("T")
+
+
+async def run_with_disconnect_cancellation(request: Request, operation: Callable[[StructureCancellationToken], T]) -> T:
+    cancellation = StructureCancellationToken()
+    result: T | None = None
+    error: BaseException | None = None
+
+    async def watch_disconnect() -> None:
+        while True:
+            if await request.is_disconnected():
+                cancellation.cancel()
+                return
+            await anyio.sleep(0.1)
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(watch_disconnect)
+        try:
+            result = await anyio.to_thread.run_sync(lambda: operation(cancellation))
+        except BaseException as exc:
+            error = exc
+        finally:
+            cancellation.cancel()
+            task_group.cancel_scope.cancel()
+
+    if error:
+        raise error
+    return result  # type: ignore[return-value]
 
 
 @router.get("/ase/preview", response_model=AsePreviewResponse)
-def read_ase_preview(
+async def read_ase_preview(
+    request: Request,
     path: str,
     format: Optional[str] = Query(default=None),
     force: bool = Query(default=False),
     service: StructureService = Depends(get_structure_service),
 ) -> AsePreviewResponse:
-    return service.preview(path, format, force=force)
+    return await run_with_disconnect_cancellation(
+        request,
+        lambda cancellation: service.preview(path, format, force=force, cancellation=cancellation),
+    )
 
 
 @router.get("/ase/frame", response_model=AseFrame)

@@ -13,9 +13,11 @@
     "@xterm/xterm": "^6.0.0",
     "element-plus": "^2.9.6",
     "monaco-editor": "^0.55.1",
+    "three": "^0.184.0",
     "vue": "^3.5.13"
   },
   "devDependencies": {
+    "@types/three": "^0.184.1",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.7.3",
     "vite": "^6.1.0",

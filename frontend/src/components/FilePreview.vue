@@ -14,10 +14,10 @@
         <span v-if="structureError" class="preview-error">{{ structureError }}</span>
       </div>
       <div class="preview-actions">
-        <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom">
+        <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button :icon="Refresh" circle size="small" @click="refreshText" />
         </el-tooltip>
-        <el-tooltip v-if="canEditText" :content="t('preview.edit')" placement="bottom">
+        <el-tooltip v-if="canEditText" :content="t('preview.edit')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button
             :icon="EditPen"
             circle
@@ -26,7 +26,7 @@
             @click="enableEditing"
           />
         </el-tooltip>
-        <el-tooltip v-if="canEditText" :content="t('preview.save')" placement="bottom">
+        <el-tooltip v-if="canEditText" :content="t('preview.save')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button
             :icon="SaveIcon"
             circle
@@ -39,21 +39,31 @@
       </div>
     </div>
 
-    <div v-if="loading" class="empty-state">
+    <div v-if="loading && !showStructurePane && !showTextPane" class="preview-loading">
       <el-skeleton :rows="7" animated />
     </div>
 
     <MoleculeViewer
-      v-else-if="mode === 'structure' && aseStructure"
+      v-if="structurePaneMounted"
+      v-show="showStructurePane"
+      class="preview-pane"
       :ase-preview="aseStructure"
+      :active="showStructurePane"
       @refresh="$emit('refresh')"
+      @render-start="handleStructureRenderStart"
+      @render-complete="handleStructureRenderComplete"
     />
 
-    <div v-else-if="mode === 'text' && file" class="text-editor-wrap">
+    <div v-if="showStructureLoadingOverlay" class="structure-loading-overlay" aria-live="polite" aria-busy="true">
+      <el-icon class="structure-loading-spinner"><Loading /></el-icon>
+      <span>{{ t('common.loading') }}</span>
+    </div>
+
+    <div v-if="textPaneMounted" v-show="showTextPane" class="preview-pane text-editor-wrap">
       <MonacoTextEditor
         v-model="draft"
         class="text-editor"
-        :path="file.path"
+        :path="file?.path"
         :readonly="!editingEnabled"
       />
       <div class="editor-status-badge" :class="editorStatusClass" aria-live="polite">
@@ -61,7 +71,7 @@
       </div>
     </div>
 
-    <div v-else class="empty-state">
+    <div v-if="showEmptyState" class="empty-state">
       <el-empty :description="t('preview.empty')" />
     </div>
   </div>
@@ -69,7 +79,7 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, ref, watch } from 'vue'
-import { EditPen, Refresh } from '@element-plus/icons-vue'
+import { EditPen, Loading, Refresh } from '@element-plus/icons-vue'
 import type { FileReadResponse } from '../api/files'
 import { t } from '../i18n'
 import type { AsePreviewResponse } from '../types/structure'
@@ -109,6 +119,9 @@ const SaveIcon = defineComponent({
 const draft = ref('')
 const editingEnabled = ref(false)
 const currentFilePath = ref<string | null>(null)
+const structurePaneMounted = ref(false)
+const textPaneMounted = ref(false)
+const structureRenderPending = ref(false)
 
 watch(
   () => props.file,
@@ -131,6 +144,37 @@ watch(
 
 const canEditText = computed(() => props.mode === 'text' && Boolean(props.file))
 const dirty = computed(() => props.mode === 'text' && Boolean(props.file) && draft.value !== props.file?.content)
+const showStructurePane = computed(() => props.mode === 'structure' && Boolean(props.aseStructure))
+const showTextPane = computed(() => props.mode === 'text' && Boolean(props.file))
+const showEmptyState = computed(() => !props.loading && !showStructurePane.value && !showTextPane.value)
+const showStructureLoadingOverlay = computed(() => showStructurePane.value && (props.loading || structureRenderPending.value))
+
+watch(
+  showStructurePane,
+  active => {
+    if (active) structurePaneMounted.value = true
+  },
+  { immediate: true }
+)
+
+watch(
+  showTextPane,
+  active => {
+    if (active) textPaneMounted.value = true
+  },
+  { immediate: true }
+)
+
+watch(
+  () => [props.loading, props.mode, props.aseStructure] as const,
+  ([loading, mode, structure]) => {
+    if (loading && mode === 'structure' && structure) {
+      structureRenderPending.value = true
+    } else if (mode !== 'structure' || !structure) {
+      structureRenderPending.value = false
+    }
+  }
+)
 const editorStatusClass = computed(() => {
   if (!editingEnabled.value) return 'is-readonly'
   return dirty.value ? 'is-unsaved' : 'is-saved'
@@ -145,8 +189,16 @@ const modeOptions = computed(() => [
   { label: t('preview.type.text'), value: 'text' }
 ])
 
-const displayName = computed(() => props.aseStructure?.name ?? props.file?.name ?? t('file.noFileSelected'))
-const displayPath = computed(() => props.aseStructure?.path ?? props.file?.path ?? '')
+const displayName = computed(() => {
+  if (props.mode === 'text') return props.file?.name ?? t('file.noFileSelected')
+  if (props.mode === 'structure') return props.aseStructure?.name ?? t('file.noFileSelected')
+  return props.file?.name ?? props.aseStructure?.name ?? t('file.noFileSelected')
+})
+const displayPath = computed(() => {
+  if (props.mode === 'text') return props.file?.path ?? ''
+  if (props.mode === 'structure') return props.aseStructure?.path ?? ''
+  return props.file?.path ?? props.aseStructure?.path ?? ''
+})
 
 function enableEditing() {
   editingEnabled.value = true
@@ -155,6 +207,14 @@ function enableEditing() {
 function refreshText() {
   editingEnabled.value = false
   emit('refresh')
+}
+
+function handleStructureRenderStart() {
+  if (showStructurePane.value) structureRenderPending.value = true
+}
+
+function handleStructureRenderComplete() {
+  structureRenderPending.value = false
 }
 
 function handleModeChange(value: string | number | boolean) {

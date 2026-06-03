@@ -1,4 +1,5 @@
 import { frameFromTrajectoryStore } from './TrajectoryStore'
+import { ThreeStructureRenderer } from './ThreeStructureRenderer'
 import type {
   FixedAtomOptions,
   LabelOptions,
@@ -13,6 +14,7 @@ import type {
 
 type Vec3 = [number, number, number]
 type ScreenPoint = { x: number; y: number }
+type CellCopies = { x: number; y: number; z: number }
 
 interface InternalFrame {
   frameIndex: number
@@ -26,6 +28,7 @@ interface InternalFrame {
   fixedMask?: Uint8Array
   energy?: number | null
   fmax?: number | null
+  cellCopies?: CellCopies
 }
 
 interface Bond {
@@ -82,8 +85,6 @@ const DEFAULT_DISPLAY_OPTIONS = {
   },
   wrap: false
 }
-
-const MAX_DISPLAY_ATOMS = 120000
 
 const ELEMENT_COLORS: Record<string, string> = {
   H: '#f8fafc',
@@ -374,8 +375,8 @@ export class ChemSSHStructureViewer {
   private readonly root: HTMLDivElement
   private readonly sceneCanvas: HTMLCanvasElement
   private readonly overlayCanvas: HTMLCanvasElement
-  private readonly sceneContext: CanvasRenderingContext2D
   private readonly overlayContext: CanvasRenderingContext2D
+  private readonly renderer: ThreeStructureRenderer
   private style: Required<ViewerStyle>
   private labelOptions: Required<LabelOptions>
   private fixedOptions: Required<FixedAtomOptions>
@@ -421,26 +422,23 @@ export class ChemSSHStructureViewer {
     this.root.style.overflow = 'hidden'
     this.root.style.background = this.style.backgroundColor
 
-    this.sceneCanvas = document.createElement('canvas')
     this.overlayCanvas = document.createElement('canvas')
-    for (const canvas of [this.sceneCanvas, this.overlayCanvas]) {
-      canvas.style.position = 'absolute'
-      canvas.style.inset = '0'
-      canvas.style.width = '100%'
-      canvas.style.height = '100%'
-    }
-    this.sceneCanvas.style.cursor = 'crosshair'
+    this.renderer = new ThreeStructureRenderer(this.root, this.style)
+    this.renderer.setFixedMarkersVisible(this.fixedOptions.show)
+    this.sceneCanvas = this.renderer.canvas
+    this.overlayCanvas.style.position = 'absolute'
+    this.overlayCanvas.style.inset = '0'
+    this.overlayCanvas.style.width = '100%'
+    this.overlayCanvas.style.height = '100%'
     this.overlayCanvas.style.pointerEvents = 'none'
 
-    const sceneContext = this.sceneCanvas.getContext('2d')
     const overlayContext = this.overlayCanvas.getContext('2d')
-    if (!sceneContext || !overlayContext) {
-      throw new Error('Canvas2D is not available')
+    if (!overlayContext) {
+      throw new Error('Canvas2D overlay is not available')
     }
-    this.sceneContext = sceneContext
     this.overlayContext = overlayContext
 
-    this.root.append(this.sceneCanvas, this.overlayCanvas)
+    this.root.append(this.overlayCanvas)
     this.container.append(this.root)
     this.installEvents()
     this.resize()
@@ -480,8 +478,10 @@ export class ChemSSHStructureViewer {
     this.style = { ...this.style, ...style }
     if (this.frame && style.bondScale !== undefined && style.bondScale !== previousBondScale) {
       this.bonds = estimateBonds(this.frame, this.style.bondScale)
+      this.renderer.setStructure(this.frame, this.bonds, this.center)
     }
     this.root.style.background = this.style.backgroundColor
+    this.renderer.setStyle(this.style)
     this.requestRender()
   }
 
@@ -492,6 +492,7 @@ export class ChemSSHStructureViewer {
 
   setFixedAtomOptions(options: FixedAtomOptions) {
     this.fixedOptions = { ...this.fixedOptions, ...options }
+    this.renderer.setFixedMarkersVisible(this.fixedOptions.show)
     this.requestRender()
   }
 
@@ -510,27 +511,47 @@ export class ChemSSHStructureViewer {
     this.frame = buildDisplayFrame(this.sourceFrame, this.displayOptions)
     this.bonds = estimateBonds(this.frame, this.style.bondScale)
     this.updateBounds()
+    this.renderer.setStructure(this.frame, this.bonds, this.center)
     this.syncSelectionForFrame(true)
     this.requestRender()
   }
 
   resize() {
     const rect = this.container.getBoundingClientRect()
-    this.width = Math.max(1, rect.width)
-    this.height = Math.max(1, rect.height)
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2)
-    const pixelWidth = Math.max(1, Math.floor(this.width * this.dpr))
-    const pixelHeight = Math.max(1, Math.floor(this.height * this.dpr))
-    for (const canvas of [this.sceneCanvas, this.overlayCanvas]) {
-      if (canvas.width !== pixelWidth) canvas.width = pixelWidth
-      if (canvas.height !== pixelHeight) canvas.height = pixelHeight
+    const nextWidth = Math.max(1, Math.round(rect.width))
+    const nextHeight = Math.max(1, Math.round(rect.height))
+    const nextDpr = Math.min(window.devicePixelRatio || 1, 2)
+    const pixelWidth = Math.max(1, Math.floor(nextWidth * nextDpr))
+    const pixelHeight = Math.max(1, Math.floor(nextHeight * nextDpr))
+    if (
+      this.width === nextWidth &&
+      this.height === nextHeight &&
+      this.dpr === nextDpr &&
+      this.overlayCanvas.width === pixelWidth &&
+      this.overlayCanvas.height === pixelHeight
+    ) {
+      return
     }
+    this.width = nextWidth
+    this.height = nextHeight
+    this.dpr = nextDpr
+    if (this.overlayCanvas.width !== pixelWidth) this.overlayCanvas.width = pixelWidth
+    if (this.overlayCanvas.height !== pixelHeight) this.overlayCanvas.height = pixelHeight
     this.updateFitScale()
     this.requestRender()
   }
 
   resetView() {
     this.resetCamera()
+    this.requestRender()
+  }
+
+  clearSelection() {
+    this.selectionStart = null
+    this.selectionEnd = null
+    this.hoveredAtom = null
+    this.selectedAtomOrder = []
+    this.renderer.setSelectedAtoms(this.selectedAtomOrder)
     this.requestRender()
   }
 
@@ -544,13 +565,14 @@ export class ChemSSHStructureViewer {
     this.trajectory = null
     this.projectedAtoms = []
     this.selectedAtomOrder = []
+    this.renderer.dispose()
   }
 
   screenshot() {
     this.render()
     const output = document.createElement('canvas')
-    output.width = this.sceneCanvas.width
-    output.height = this.sceneCanvas.height
+    output.width = this.overlayCanvas.width
+    output.height = this.overlayCanvas.height
     const context = output.getContext('2d')
     if (!context) return ''
     context.drawImage(this.sceneCanvas, 0, 0)
@@ -564,6 +586,8 @@ export class ChemSSHStructureViewer {
     this.bonds = estimateBonds(this.frame, this.style.bondScale)
     if (options.updateBounds) this.updateBounds()
     if (!options.keepView) this.resetCamera()
+    this.renderer.setStructure(this.frame, this.bonds, this.center)
+    this.renderer.setSelectedAtoms(this.selectedAtomOrder)
     this.syncSelectionForFrame(options.keepView)
     this.requestRender()
   }
@@ -824,19 +848,25 @@ export class ChemSSHStructureViewer {
 
   private replaceSelection(indices: number[]) {
     this.selectedAtomOrder = this.uniqueValidAtomIndices(indices)
+    this.renderer.setSelectedAtoms(this.selectedAtomOrder)
   }
 
   private appendSelection(indices: number[]) {
     const next = [...this.selectedAtomOrder]
+    const selected = new Set(next)
     for (const index of indices) {
-      if (!next.includes(index)) next.push(index)
+      if (selected.has(index)) continue
+      selected.add(index)
+      next.push(index)
     }
     this.selectedAtomOrder = this.uniqueValidAtomIndices(next)
+    this.renderer.setSelectedAtoms(this.selectedAtomOrder)
   }
 
   private toggleAtomSelection(index: number) {
     if (this.selectedAtomOrder.includes(index)) {
       this.selectedAtomOrder = this.selectedAtomOrder.filter(selected => selected !== index)
+      this.renderer.setSelectedAtoms(this.selectedAtomOrder)
       return
     }
     this.appendSelection([index])
@@ -863,26 +893,32 @@ export class ChemSSHStructureViewer {
   }
 
   private render() {
-    const scene = this.sceneContext
     const overlay = this.overlayContext
-    scene.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
     overlay.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
-    scene.clearRect(0, 0, this.width, this.height)
     overlay.clearRect(0, 0, this.width, this.height)
-    scene.fillStyle = this.style.backgroundColor
-    scene.fillRect(0, 0, this.width, this.height)
+    this.renderer.setView({
+      width: this.width,
+      height: this.height,
+      dpr: this.dpr,
+      center: this.center,
+      sceneRadius: this.sceneRadius,
+      baseScale: this.baseScale,
+      zoom: this.zoom,
+      panX: this.panX,
+      panY: this.panY,
+      transform: this.transform
+    })
 
     if (!this.frame) {
       this.projectedAtoms = []
+      this.renderer.clear()
       return
     }
 
     const atoms = this.projectAtoms()
     this.projectedAtoms = atoms
-    const selectedAtoms = new Set(this.selectedAtomOrder)
-    if (this.style.showCell) this.drawCell(scene)
-    if (this.style.mode !== 'sphere') this.drawBonds(scene, atoms)
-    this.drawAtoms(scene, atoms, selectedAtoms)
+    const selectedAtoms = this.selectedAtomOrder.length ? new Set(this.selectedAtomOrder) : null
+    this.renderer.render()
     this.drawOverlay(overlay, atoms, selectedAtoms)
   }
 
@@ -932,143 +968,29 @@ export class ChemSSHStructureViewer {
     }
   }
 
-  private drawCell(context: CanvasRenderingContext2D) {
-    const source = this.sourceFrame ?? this.frame
-    const cell = source?.cell && hasCell(source.cell) ? source.cell : undefined
-    if (!cell || !source) return
-    const copies = displaySupercellCopies(source, this.displayOptions)
-    const a: Vec3 = [cell[0] ?? 0, cell[1] ?? 0, cell[2] ?? 0]
-    const b: Vec3 = [cell[3] ?? 0, cell[4] ?? 0, cell[5] ?? 0]
-    const c: Vec3 = [cell[6] ?? 0, cell[7] ?? 0, cell[8] ?? 0]
-    context.save()
-    context.strokeStyle = 'rgba(89, 101, 121, 0.7)'
-    context.lineWidth = 1
-    context.setLineDash([5, 4])
-    context.beginPath()
-
-    for (let iy = 0; iy <= copies.y; iy += 1) {
-      for (let iz = 0; iz <= copies.z; iz += 1) {
-        this.drawProjectedSegment(context, latticePoint(a, b, c, 0, iy, iz), latticePoint(a, b, c, copies.x, iy, iz))
-      }
-    }
-    for (let ix = 0; ix <= copies.x; ix += 1) {
-      for (let iz = 0; iz <= copies.z; iz += 1) {
-        this.drawProjectedSegment(context, latticePoint(a, b, c, ix, 0, iz), latticePoint(a, b, c, ix, copies.y, iz))
-      }
-    }
-    for (let ix = 0; ix <= copies.x; ix += 1) {
-      for (let iy = 0; iy <= copies.y; iy += 1) {
-        this.drawProjectedSegment(context, latticePoint(a, b, c, ix, iy, 0), latticePoint(a, b, c, ix, iy, copies.z))
-      }
-    }
-
-    context.stroke()
-    context.restore()
-  }
-
-  private drawProjectedSegment(context: CanvasRenderingContext2D, start: Vec3, end: Vec3) {
-    const left = this.projectPoint(start)
-    const right = this.projectPoint(end)
-    context.moveTo(left.x, left.y)
-    context.lineTo(right.x, right.y)
-  }
-
-  private drawBonds(context: CanvasRenderingContext2D, atoms: ProjectedAtom[]) {
-    if (!this.bonds.length) return
-    const scale = this.baseScale * this.zoom
-    const lineWidth = this.style.mode === 'line' ? 1.15 : Math.max(1, this.style.bondRadius * scale * 2)
-    const sortedBonds = this.bonds
-      .map(bond => ({ bond, depth: ((atoms[bond.a]?.depth ?? 0) + (atoms[bond.b]?.depth ?? 0)) / 2 }))
-      .sort((left, right) => left.depth - right.depth)
-
-    context.save()
-    context.strokeStyle = this.style.mode === 'line' ? 'rgba(72, 84, 99, 0.75)' : 'rgba(80, 91, 107, 0.72)'
-    context.lineCap = 'round'
-    context.lineWidth = lineWidth
-    for (const { bond } of sortedBonds) {
-      const left = atoms[bond.a]
-      const right = atoms[bond.b]
-      if (!left || !right) continue
-      if (isSegmentOffscreen(left, right, this.width, this.height)) continue
-      context.beginPath()
-      context.moveTo(left.x, left.y)
-      context.lineTo(right.x, right.y)
-      context.stroke()
-    }
-    context.restore()
-  }
-
-  private drawAtoms(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], selectedAtoms: Set<number>) {
-    const sortedAtoms = [...atoms].sort((left, right) => left.depth - right.depth)
-    for (const atom of sortedAtoms) {
-      if (atom.x < -atom.radius || atom.y < -atom.radius || atom.x > this.width + atom.radius || atom.y > this.height + atom.radius) {
-        continue
-      }
-      const selected = selectedAtoms.has(atom.index)
-      context.save()
-      const gradient = context.createRadialGradient(
-        atom.x - atom.radius * 0.32,
-        atom.y - atom.radius * 0.38,
-        Math.max(1, atom.radius * 0.1),
-        atom.x,
-        atom.y,
-        atom.radius
-      )
-      gradient.addColorStop(0, lightenColor(atom.color, 0.44))
-      gradient.addColorStop(0.72, atom.color)
-      gradient.addColorStop(1, darkenColor(atom.color, 0.22))
-      context.fillStyle = gradient
-      context.strokeStyle = luminance(atom.color) > 0.72 ? 'rgba(31, 41, 55, 0.35)' : 'rgba(255, 255, 255, 0.26)'
-      context.lineWidth = atom.index === this.hoveredAtom ? 2.2 : 0.7
-      context.beginPath()
-      context.arc(atom.x, atom.y, atom.radius, 0, Math.PI * 2)
-      context.fill()
-      context.stroke()
-      if (selected) {
-        const ringRadius = atom.radius + 4
-        const ringWidth = Math.max(3.2, Math.min(5.2, atom.radius * 0.24))
-        context.shadowColor = 'rgba(250, 255, 0, 0.8)'
-        context.shadowBlur = 8
-        context.strokeStyle = 'rgba(0, 0, 0, 0.82)'
-        context.lineWidth = ringWidth + 2
-        context.beginPath()
-        context.arc(atom.x, atom.y, ringRadius, 0, Math.PI * 2)
-        context.stroke()
-        context.shadowBlur = 0
-        context.strokeStyle = '#faff00'
-        context.lineWidth = ringWidth
-        context.beginPath()
-        context.arc(atom.x, atom.y, ringRadius, 0, Math.PI * 2)
-        context.stroke()
-      }
-      if (this.fixedOptions.show && atom.fixed) {
-        this.drawFixedMarker(context, atom)
-      }
-      context.restore()
-    }
-  }
-
-  private drawOverlay(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], selectedAtoms: Set<number>) {
+  private drawOverlay(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], selectedAtoms: Set<number> | null) {
     this.drawAxes(context)
+    this.drawAtomStateMarkers(context, atoms)
     this.drawLabels(context, atoms)
     this.drawSelectedAtomMarkers(context, atoms, selectedAtoms)
     this.drawSelectionInfo(context)
     this.drawSelectionBox(context)
   }
 
-  private drawFixedMarker(context: CanvasRenderingContext2D, atom: ProjectedAtom) {
-    const size = Math.max(4, Math.min(atom.radius * 0.78, 12))
+  private drawAtomStateMarkers(context: CanvasRenderingContext2D, atoms: ProjectedAtom[]) {
+    if (!atoms.length) return
     context.save()
-    context.strokeStyle = this.fixedOptions.color
-    context.lineWidth = 1.8
-    context.lineCap = 'round'
-    context.globalAlpha = 0.86
-    context.beginPath()
-    context.moveTo(atom.x - size, atom.y - size)
-    context.lineTo(atom.x + size, atom.y + size)
-    context.moveTo(atom.x + size, atom.y - size)
-    context.lineTo(atom.x - size, atom.y + size)
-    context.stroke()
+    for (const atom of atoms) {
+      if (atom.x < -atom.radius || atom.y < -atom.radius || atom.x > this.width + atom.radius || atom.y > this.height + atom.radius) continue
+      const hovered = atom.index === this.hoveredAtom
+      if (hovered) {
+        context.strokeStyle = 'rgba(23, 107, 135, 0.88)'
+        context.lineWidth = 2.2
+        context.beginPath()
+        context.arc(atom.x, atom.y, atom.radius + 3, 0, Math.PI * 2)
+        context.stroke()
+      }
+    }
     context.restore()
   }
 
@@ -1216,9 +1138,10 @@ export class ChemSSHStructureViewer {
     context.restore()
   }
 
-  private drawSelectedAtomMarkers(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], selectedAtoms: Set<number>) {
-    if (!selectedAtoms.size || this.selectedAtomOrder.length > 4) return
+  private drawSelectedAtomMarkers(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], selectedAtoms: Set<number> | null) {
+    if (!selectedAtoms?.size) return
     const atomByIndex = new Map(atoms.map(atom => [atom.index, atom]))
+    const showOrderBadges = this.selectedAtomOrder.length <= 4
     context.save()
     context.font = '800 10px Inter, system-ui, sans-serif'
     context.textAlign = 'center'
@@ -1226,17 +1149,19 @@ export class ChemSSHStructureViewer {
     for (let orderIndex = 0; orderIndex < this.selectedAtomOrder.length; orderIndex += 1) {
       const atom = atomByIndex.get(this.selectedAtomOrder[orderIndex])
       if (!atom) continue
-      const x = atom.x + atom.radius * 0.62
-      const y = atom.y - atom.radius * 0.62
-      context.fillStyle = '#faff00'
-      context.strokeStyle = 'rgba(0, 0, 0, 0.78)'
-      context.lineWidth = 2
-      context.beginPath()
-      context.arc(x, y, 8, 0, Math.PI * 2)
-      context.fill()
-      context.stroke()
-      context.fillStyle = '#111827'
-      context.fillText(String(orderIndex + 1), x, y + 0.5)
+      if (showOrderBadges) {
+        const x = atom.x + atom.radius * 0.72
+        const y = atom.y - atom.radius * 0.72
+        context.fillStyle = '#faff00'
+        context.strokeStyle = 'rgba(0, 0, 0, 0.82)'
+        context.lineWidth = 2.5
+        context.beginPath()
+        context.arc(x, y, 9, 0, Math.PI * 2)
+        context.fill()
+        context.stroke()
+        context.fillStyle = '#111827'
+        context.fillText(String(orderIndex + 1), x, y + 0.5)
+      }
     }
     context.restore()
   }
@@ -1279,6 +1204,9 @@ export class ChemSSHStructureViewer {
   }
 
   private selectionInfoLines() {
+    if (!this.selectedAtomOrder.length) return []
+    if (this.selectedAtomOrder.length > 4) return [this.selectionSummaryLabel(this.selectedAtomOrder)]
+
     const atoms = this.selectedAtomOrder
       .map(index => this.selectedAtomDetails(index))
       .filter((atom): atom is SelectedAtomDetails => Boolean(atom))
@@ -1296,6 +1224,16 @@ export class ChemSSHStructureViewer {
       return [`${label} ${formatMeasurement(dihedralDegrees(atoms[0].position, atoms[1].position, atoms[2].position, atoms[3].position), 1)}\u00b0`]
     }
     return [elementCountSummary(atoms.map(atom => atom.symbol), atoms.length)]
+  }
+
+  private selectionSummaryLabel(indices: number[]) {
+    if (!this.frame) return ''
+    const symbols: string[] = []
+    for (const index of indices) {
+      if (index < 0 || index >= this.frame.nAtoms) continue
+      symbols.push(this.frame.symbols[index] ?? elementFromNumber(this.frame.numbers[index]) ?? 'X')
+    }
+    return elementCountSummary(symbols, symbols.length)
   }
 
   private selectedAtomDetails(index: number): SelectedAtomDetails | null {
@@ -1415,6 +1353,7 @@ export class ChemSSHStructureViewer {
 
   private syncSelectionForFrame(keepSelection: boolean) {
     this.selectedAtomOrder = keepSelection ? this.uniqueValidAtomIndices(this.selectedAtomOrder) : []
+    this.renderer.setSelectedAtoms(this.selectedAtomOrder)
     if (this.hoveredAtom !== null && (this.hoveredAtom < 0 || this.hoveredAtom >= (this.frame?.nAtoms ?? 0))) this.hoveredAtom = null
   }
 
@@ -1584,7 +1523,7 @@ function normalizeDisplayOptions(options?: StructureDisplayOptions) {
 function normalizeSupercellMultiplier(value: number | undefined) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return 1
-  return Math.min(12, Math.max(1, Math.round(numeric)))
+  return Math.min(10, Math.max(1, Math.round(numeric)))
 }
 
 function displayOptionsEqual(left: ReturnType<typeof normalizeDisplayOptions>, right: ReturnType<typeof normalizeDisplayOptions>) {
@@ -1602,7 +1541,8 @@ function buildDisplayFrame(source: InternalFrame, options: ReturnType<typeof nor
   const wrap = options.wrap && Boolean(cell && inverse)
   const { x: copiesX, y: copiesY, z: copiesZ } = displaySupercellCopies(source, options)
   const copyCount = copiesX * copiesY * copiesZ
-  if (!wrap && copyCount === 1) return source
+  const cellCopies = cell ? { x: copiesX, y: copiesY, z: copiesZ } : undefined
+  if (!wrap && copyCount === 1) return cellCopies ? { ...source, cellCopies } : source
 
   const nAtoms = source.nAtoms
   const totalAtoms = nAtoms * copyCount
@@ -1653,7 +1593,8 @@ function buildDisplayFrame(source: InternalFrame, options: ReturnType<typeof nor
     symbols,
     numbers,
     positions,
-    cell: cell ? scaleCell(cell, copiesX, copiesY, copiesZ) : source.cell,
+    cell: cell ?? source.cell,
+    cellCopies,
     tags,
     fixedMask
   }
@@ -1661,14 +1602,9 @@ function buildDisplayFrame(source: InternalFrame, options: ReturnType<typeof nor
 
 function displaySupercellCopies(source: InternalFrame, options: ReturnType<typeof normalizeDisplayOptions>) {
   const cell = source.cell && hasCell(source.cell) ? source.cell : undefined
-  let x = cell ? options.supercell.x : 1
-  let y = cell ? options.supercell.y : 1
-  let z = cell ? options.supercell.z : 1
-  if (source.nAtoms * x * y * z > MAX_DISPLAY_ATOMS) {
-    x = 1
-    y = 1
-    z = 1
-  }
+  const x = cell ? options.supercell.x : 1
+  const y = cell ? options.supercell.y : 1
+  const z = cell ? options.supercell.z : 1
   return { x, y, z }
 }
 
@@ -1709,28 +1645,6 @@ function cellVector(cell: Float32Array | undefined, row: number): Vec3 {
   if (!cell) return [0, 0, 0]
   const offset = row * 3
   return [cell[offset] ?? 0, cell[offset + 1] ?? 0, cell[offset + 2] ?? 0]
-}
-
-function scaleCell(cell: Float32Array, x: number, y: number, z: number) {
-  const output = new Float32Array(9)
-  output[0] = (cell[0] ?? 0) * x
-  output[1] = (cell[1] ?? 0) * x
-  output[2] = (cell[2] ?? 0) * x
-  output[3] = (cell[3] ?? 0) * y
-  output[4] = (cell[4] ?? 0) * y
-  output[5] = (cell[5] ?? 0) * y
-  output[6] = (cell[6] ?? 0) * z
-  output[7] = (cell[7] ?? 0) * z
-  output[8] = (cell[8] ?? 0) * z
-  return output
-}
-
-function latticePoint(a: Vec3, b: Vec3, c: Vec3, x: number, y: number, z: number): Vec3 {
-  return [
-    x * a[0] + y * b[0] + z * c[0],
-    x * a[1] + y * b[1] + z * c[1],
-    x * a[2] + y * b[2] + z * c[2]
-  ]
 }
 
 function invertCell(cell: Float32Array) {
@@ -2011,15 +1925,6 @@ function angleDeltaAround(center: { x: number; y: number }, previous: { x: numbe
   return delta
 }
 
-function isSegmentOffscreen(left: ProjectedAtom, right: ProjectedAtom, width: number, height: number) {
-  return (
-    Math.max(left.x, right.x) < -20 ||
-    Math.min(left.x, right.x) > width + 20 ||
-    Math.max(left.y, right.y) < -20 ||
-    Math.min(left.y, right.y) > height + 20
-  )
-}
-
 function intersectsAny(box: { x: number; y: number; width: number; height: number }, others: Array<{ x: number; y: number; width: number; height: number }>) {
   return others.some(other => !(box.x + box.width < other.x || other.x + other.width < box.x || box.y + box.height < other.y || other.y + other.height < box.y))
 }
@@ -2035,11 +1940,6 @@ function luminance(hex: string) {
     return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
   })
   return 0.2126 * (srgb[0] ?? 0) + 0.7152 * (srgb[1] ?? 0) + 0.0722 * (srgb[2] ?? 0)
-}
-
-function lightenColor(hex: string, amount: number) {
-  const [r, g, b] = hexToRgb(hex)
-  return rgbToHex(mix(r, 255, amount), mix(g, 255, amount), mix(b, 255, amount))
 }
 
 function darkenColor(hex: string, amount: number) {

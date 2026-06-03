@@ -10,23 +10,31 @@
       </div>
 
       <div v-if="asePreview?.is_trajectory" class="trajectory-controls">
-        <span class="frame-label">{{ t('viewer.frame') }}</span>
+        <button
+          class="frame-mode-button"
+          type="button"
+          :aria-label="t('viewer.toggleFrameNumbering')"
+          :aria-pressed="frameNumberMode === 'frame'"
+          @click="toggleFrameNumberMode"
+        >
+          {{ frameNumberModeLabel }}
+        </button>
         <el-input-number
-          v-model="frameInput"
+          v-model="frameDisplayInput"
           class="frame-number"
           size="small"
-          :min="0"
-          :max="asePreview.n_frames - 1"
+          :min="frameDisplayMin"
+          :max="frameDisplayMax"
           :step="1"
           controls-position="right"
           @change="scheduleFrameChange"
         />
-        <span class="frame-total">/ {{ asePreview.n_frames - 1 }}</span>
+        <span class="frame-total">/ {{ frameDisplayMax }}</span>
         <el-slider
-          v-model="frameInput"
+          v-model="frameDisplayInput"
           class="frame-slider"
-          :min="0"
-          :max="asePreview.n_frames - 1"
+          :min="frameDisplayMin"
+          :max="frameDisplayMax"
           :show-tooltip="false"
           size="small"
           @input="scheduleFrameChange"
@@ -34,10 +42,10 @@
       </div>
 
       <div class="viewer-toolbar-actions">
-        <el-tooltip :content="t('toolbar.refresh')" placement="bottom">
+        <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button :icon="Refresh" circle size="small" @click="refreshStructure" />
         </el-tooltip>
-        <el-tooltip :content="t('viewer.exportScreenshot')" placement="bottom">
+        <el-tooltip :content="t('viewer.exportScreenshot')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button :icon="Download" circle size="small" @click="exportPng" />
         </el-tooltip>
       </div>
@@ -78,7 +86,7 @@
           </div>
         </el-popover>
 
-        <el-tooltip :content="t('viewer.resetView')" placement="right">
+        <el-tooltip :content="t('viewer.resetView')" placement="right" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button :aria-label="t('viewer.resetView')" :icon="ResetViewIcon" circle size="small" @click="resetView" />
         </el-tooltip>
 
@@ -146,7 +154,7 @@
           </div>
         </el-popover>
 
-        <el-tooltip :content="t('viewer.wrapAtoms')" placement="right">
+        <el-tooltip :content="t('viewer.wrapAtoms')" placement="right" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button
             :aria-label="t('viewer.wrapAtoms')"
             :class="{ 'is-active': wrapAtoms }"
@@ -159,7 +167,7 @@
         </el-tooltip>
       </div>
       <div v-if="asePreview" class="viewer-overlay">
-        <span>Frame: {{ currentFrame.frame_index + 1 }} / {{ asePreview.n_frames }}</span>
+        <span>{{ frameNumberModeLabel }}: {{ currentFrameDisplayValue }} / {{ frameDisplayMax }}</span>
         <span>Energy: {{ formatMetric(currentFrame.energy, ' eV') }}</span>
         <span>Fmax: {{ formatMetric(currentFrame.fmax, ' eV/A') }}</span>
         <span v-if="cacheStatus">{{ cacheStatus }}</span>
@@ -182,15 +190,18 @@ import type { StructureFrame, TrajectoryStore, ViewerStyleMode } from '../viewer
 type StyleMode = ViewerStyleMode
 type ViewerModule = typeof import('../viewer')
 type ChemSSHViewerInstance = InstanceType<ViewerModule['ChemSSHStructureViewer']>
+type FrameNumberMode = 'index' | 'frame'
 
 const props = withDefaults(
   defineProps<{
     asePreview?: AsePreviewResponse | null
+    active?: boolean
     styleMode?: StyleMode
     backgroundColor?: string
   }>(),
   {
     asePreview: null,
+    active: true,
     styleMode: 'stick',
     backgroundColor: '#ffffff'
   }
@@ -198,6 +209,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   refresh: []
+  'render-start': []
+  'render-complete': []
 }>()
 
 const ResetViewIcon = defineComponent({
@@ -226,6 +239,7 @@ const supercellX = ref(1)
 const supercellY = ref(1)
 const supercellZ = ref(1)
 const wrapAtoms = ref(false)
+const frameNumberMode = ref<FrameNumberMode>('index')
 const frameInput = ref(0)
 const frameLoading = ref(false)
 const cachedFrameCount = ref(0)
@@ -248,8 +262,7 @@ const jsonChunkSize = 16
 const jsonWarmChunkRadius = 1
 const maxLocalTrajectoryBytes = 512 * 1024 * 1024
 const maxLocalJsonTrajectoryBytes = 256 * 1024 * 1024
-const maxSupercellAxis = 12
-const maxDisplayAtoms = 120000
+const maxSupercellAxis = 10
 
 const cacheStatus = computed(() => {
   if (!props.asePreview?.is_trajectory) return ''
@@ -260,6 +273,20 @@ const cacheStatus = computed(() => {
 const hasSupercell = computed(() => supercellX.value > 1 || supercellY.value > 1 || supercellZ.value > 1)
 
 const structureHasCell = computed(() => hasUsableCell(currentFrame.value.cell))
+const effectiveFrameNumberMode = computed<FrameNumberMode>(() => props.asePreview?.is_trajectory ? frameNumberMode.value : 'frame')
+const frameNumberModeLabel = computed(() => effectiveFrameNumberMode.value === 'frame' ? t('viewer.frame') : t('viewer.index'))
+const frameDisplayMin = computed(() => effectiveFrameNumberMode.value === 'frame' ? 1 : 0)
+const frameDisplayMax = computed(() => {
+  const frames = props.asePreview?.n_frames ?? 1
+  return effectiveFrameNumberMode.value === 'frame' ? Math.max(1, frames) : Math.max(0, frames - 1)
+})
+const frameDisplayInput = computed({
+  get: () => frameIndexToDisplayValue(frameInput.value),
+  set: value => {
+    frameInput.value = displayValueToFrameIndex(value)
+  }
+})
+const currentFrameDisplayValue = computed(() => frameIndexToDisplayValue(currentFrame.value.frame_index))
 
 function emptyFrame(): AseFrame {
   return {
@@ -310,12 +337,14 @@ function viewerDisplayOptions() {
 
 async function renderStructure(keepView = false) {
   const version = ++renderVersion
+  emit('render-start')
   await nextTick()
   if (!container.value || version !== renderVersion) return
 
   if (!props.asePreview) {
     disposeChemSSHViewer()
     container.value.innerHTML = ''
+    if (version === renderVersion) emit('render-complete')
     return
   }
 
@@ -324,6 +353,8 @@ async function renderStructure(keepView = false) {
   } catch (error) {
     console.warn('ChemSSH viewer failed.', error)
     disposeChemSSHViewer()
+  } finally {
+    if (version === renderVersion) emit('render-complete')
   }
 }
 
@@ -423,17 +454,31 @@ function resetSupercell() {
   supercellZ.value = 1
 }
 
+function resetStructureSwitchState() {
+  resetSupercell()
+  chemsshViewer?.clearSelection()
+}
+
 function toggleWrapAtoms() {
   wrapAtoms.value = !wrapAtoms.value
 }
 
-function supercellAxisMax(axis: 'x' | 'y' | 'z') {
-  const atomCount = Math.max(1, props.asePreview?.n_atoms ?? currentFrame.value.positions.length)
-  const x = axis === 'x' ? 1 : Math.max(1, Number(supercellX.value) || 1)
-  const y = axis === 'y' ? 1 : Math.max(1, Number(supercellY.value) || 1)
-  const z = axis === 'z' ? 1 : Math.max(1, Number(supercellZ.value) || 1)
-  const otherCopies = Math.max(1, x * y * z)
-  return Math.max(1, Math.min(maxSupercellAxis, Math.floor(maxDisplayAtoms / (atomCount * otherCopies))))
+function toggleFrameNumberMode() {
+  frameNumberMode.value = frameNumberMode.value === 'frame' ? 'index' : 'frame'
+}
+
+function frameIndexToDisplayValue(index: number) {
+  return effectiveFrameNumberMode.value === 'frame' ? index + 1 : index
+}
+
+function displayValueToFrameIndex(value: number | undefined) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return currentFrame.value.frame_index
+  return clampFrameIndex(effectiveFrameNumberMode.value === 'frame' ? numeric - 1 : numeric)
+}
+
+function supercellAxisMax(_axis: 'x' | 'y' | 'z') {
+  return maxSupercellAxis
 }
 
 function clampSupercell() {
@@ -949,14 +994,23 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [props.asePreview?.source?.id, props.asePreview?.path, props.asePreview?.initial_frame_index],
+  () => props.asePreview,
   () => {
+    resetStructureSwitchState()
     resetAseState()
-    bondScale.value = 1.25
-    resetSupercell()
-    wrapAtoms.value = false
-    void renderStructure()
+    void renderStructure(true)
   }
+)
+
+watch(
+  () => props.active,
+  async active => {
+    if (!active) return
+    await nextTick()
+    resizeViewer()
+    if (props.asePreview) void renderStructure(true)
+  },
+  { flush: 'post' }
 )
 
 watch(

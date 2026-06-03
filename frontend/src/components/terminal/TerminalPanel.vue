@@ -26,7 +26,7 @@
       >
         <span class="terminal-tab-label">{{ tabTitle(tab) }}</span>
         <span class="terminal-tab-actions" @click.stop>
-          <el-tooltip :content="syncModeLabel(tab.syncMode)" placement="top">
+          <el-tooltip :content="syncModeLabel(tab.syncMode)" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
             <button
               class="terminal-tab-icon terminal-tab-sync"
               :class="`is-${tab.syncMode}`"
@@ -44,7 +44,7 @@
               </svg>
             </button>
           </el-tooltip>
-          <el-tooltip :content="t('terminal.close')" placement="top">
+          <el-tooltip :content="t('terminal.close')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
             <button
               class="terminal-tab-icon terminal-tab-close"
               type="button"

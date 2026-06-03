@@ -15,6 +15,10 @@ export const ASE_STRUCTURE_SOURCE: StructureSource = {
   apiBase: '/api/structures/ase'
 }
 
+export interface StructureRequestOptions {
+  signal?: AbortSignal
+}
+
 function aseQuery(path: string, format?: string | null, force = false) {
   const params = new URLSearchParams({ path })
   if (format) params.set('format', format)
@@ -26,8 +30,8 @@ function sourceBase(source?: StructureSource | null) {
   return (source?.apiBase || ASE_STRUCTURE_SOURCE.apiBase).replace(/\/+$/, '')
 }
 
-export function readAsePreview(path: string, format?: string | null, force = false) {
-  return readStructurePreview(ASE_STRUCTURE_SOURCE, path, format, force)
+export function readAsePreview(path: string, format?: string | null, force = false, options: StructureRequestOptions = {}) {
+  return readStructurePreview(ASE_STRUCTURE_SOURCE, path, format, force, options)
 }
 
 export function readAseFrame(path: string, index: number, format?: string | null, force = false) {
@@ -42,9 +46,17 @@ export function readAseFrameChunk(path: string, start: number, count: number, fo
   return readStructureFrameChunk(ASE_STRUCTURE_SOURCE, path, start, count, format, force)
 }
 
-export function readStructurePreview(source: StructureSource | null | undefined, path: string, format?: string | null, force = false) {
+export function readStructurePreview(
+  source: StructureSource | null | undefined,
+  path: string,
+  format?: string | null,
+  force = false,
+  options: StructureRequestOptions = {}
+) {
   const activeSource = source ?? ASE_STRUCTURE_SOURCE
-  return request<AsePreviewResponse>(`${sourceBase(activeSource)}/preview?${aseQuery(path, format, force).toString()}`)
+  return request<AsePreviewResponse>(`${sourceBase(activeSource)}/preview?${aseQuery(path, format, force).toString()}`, {
+    signal: options.signal
+  })
     .then(preview => ({ ...preview, source: activeSource }))
 }
 

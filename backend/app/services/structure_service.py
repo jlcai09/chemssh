@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import struct
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,18 @@ STRUCTURE_BINARY_MEDIA_TYPE = "application/vnd.chemssh.structure+bin"
 STRUCTURE_BINARY_MAGIC = b"CWB1"
 
 
+class StructureCancellationToken:
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def check(self) -> None:
+        if self._event.is_set():
+            raise AppError("REQUEST_CANCELLED", "Request was cancelled", 499)
+
+
 @dataclass
 class StructureSummary:
     n_frames: int
@@ -35,9 +48,19 @@ class StructureService:
         self.settings = settings
         self.security = WorkspaceSecurity(settings.workspace.root)
 
-    def preview(self, raw_path: str, fmt: str | None = None, *, force: bool = False) -> AsePreviewResponse:
+    def preview(
+        self,
+        raw_path: str,
+        fmt: str | None = None,
+        *,
+        force: bool = False,
+        cancellation: StructureCancellationToken | None = None,
+    ) -> AsePreviewResponse:
         path = self._resolve_structure_file(raw_path, force=force)
-        summary = self._scan_structure(path, fmt)
+        cancellation = cancellation or StructureCancellationToken()
+        cancellation.check()
+        summary = self._scan_structure(path, fmt, cancellation)
+        cancellation.check()
         frame_index = summary.n_frames - 1
         frame = self._frame_from_atoms(summary.last_atoms, frame_index)
         points = summary.n_atoms * summary.n_frames
@@ -144,7 +167,8 @@ class StructureService:
             )
         return path
 
-    def _scan_structure(self, path: Path, fmt: str | None) -> StructureSummary:
+    def _scan_structure(self, path: Path, fmt: str | None, cancellation: StructureCancellationToken | None = None) -> StructureSummary:
+        cancellation = cancellation or StructureCancellationToken()
         frames_seen = 0
         first_numbers: tuple[int, ...] | None = None
         n_atoms = 0
@@ -154,6 +178,7 @@ class StructureService:
         try:
             iterator = iread(str(path), index=":", format=fmt, do_not_split_by_at_sign=True)
             for atoms in iterator:
+                cancellation.check()
                 self._validate_atoms(atoms, path)
                 numbers = tuple(int(value) for value in atoms.get_atomic_numbers())
                 if first_numbers is None:
@@ -169,6 +194,7 @@ class StructureService:
                         413,
                     )
                 last_atoms = atoms
+                cancellation.check()
         except AppError:
             raise
         except Exception as exc:

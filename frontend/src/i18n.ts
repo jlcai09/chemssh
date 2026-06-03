@@ -180,6 +180,7 @@ const en = {
   'viewer.bondSettings': 'Bond settings',
   'viewer.displaySettings': 'Display settings',
   'viewer.frame': 'Frame',
+  'viewer.index': 'Index',
   'viewer.nextFrame': 'Next frame',
   'viewer.prevFrame': 'Previous frame',
   'viewer.resetBondScale': 'Reset',
@@ -190,6 +191,7 @@ const en = {
   'viewer.styleStick': 'Stick',
   'viewer.supercell': 'Supercell',
   'viewer.supercellSettings': 'Supercell display',
+  'viewer.toggleFrameNumbering': 'Toggle frame numbering',
   'viewer.wrapAtoms': 'Wrap atoms'
 } as const
 
@@ -369,6 +371,7 @@ const zh: Record<keyof typeof en, string> = {
   'viewer.bondSettings': '键设置',
   'viewer.displaySettings': '显示设置',
   'viewer.frame': 'Frame',
+  'viewer.index': 'Index',
   'viewer.nextFrame': '下一帧',
   'viewer.prevFrame': '上一帧',
   'viewer.resetBondScale': '重置',
@@ -379,6 +382,7 @@ const zh: Record<keyof typeof en, string> = {
   'viewer.resetSupercell': '\u91cd\u7f6e',
   'viewer.supercell': '\u8d85\u80de',
   'viewer.supercellSettings': '\u8d85\u80de\u663e\u793a',
+  'viewer.toggleFrameNumbering': 'Toggle Frame/Index',
   'viewer.wrapAtoms': 'Wrap'
 }
 

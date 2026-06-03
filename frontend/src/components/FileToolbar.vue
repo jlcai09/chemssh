@@ -1,27 +1,27 @@
 <template>
   <div class="file-toolbar">
-    <el-tooltip :content="t('toolbar.refresh')" placement="bottom">
+    <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
       <el-button :icon="Refresh" circle @click="$emit('refresh')" />
     </el-tooltip>
-    <el-tooltip :content="t('toolbar.up')" placement="bottom">
+    <el-tooltip :content="t('toolbar.up')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
       <el-button :icon="Back" circle :disabled="!canGoUp" @click="$emit('go-up')" />
     </el-tooltip>
     <div class="toolbar-menu">
       <el-button :icon="Plus" circle aria-haspopup="menu" @click.prevent />
       <div class="toolbar-submenu" role="menu">
-        <el-tooltip :content="t('toolbar.newFile')" placement="bottom">
+        <el-tooltip :content="t('toolbar.newFile')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <button class="toolbar-submenu-button" type="button" role="menuitem" :aria-label="t('toolbar.newFile')" @click="emit('create-file')">
             <el-icon><DocumentAdd /></el-icon>
           </button>
         </el-tooltip>
-        <el-tooltip :content="t('toolbar.newFolder')" placement="bottom">
+        <el-tooltip :content="t('toolbar.newFolder')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <button class="toolbar-submenu-button" type="button" role="menuitem" :aria-label="t('toolbar.newFolder')" @click="emit('mkdir')">
             <el-icon><FolderAdd /></el-icon>
           </button>
         </el-tooltip>
       </div>
     </div>
-    <el-tooltip :content="props.showHiddenFiles ? t('toolbar.hideHidden') : t('toolbar.showHidden')" placement="bottom">
+    <el-tooltip :content="props.showHiddenFiles ? t('toolbar.hideHidden') : t('toolbar.showHidden')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
       <el-button
         :icon="props.showHiddenFiles ? View : Hide"
         circle
@@ -35,12 +35,12 @@
     <div class="toolbar-menu">
       <el-button :icon="Upload" circle aria-haspopup="menu" @click.prevent />
       <div class="toolbar-submenu" role="menu">
-        <el-tooltip :content="t('toolbar.uploadFile')" placement="bottom">
+        <el-tooltip :content="t('toolbar.uploadFile')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <button class="toolbar-submenu-button" type="button" role="menuitem" :aria-label="t('toolbar.uploadFile')" @click="pickFile">
             <el-icon><Upload /></el-icon>
           </button>
         </el-tooltip>
-        <el-tooltip :content="t('toolbar.uploadFolder')" placement="bottom">
+        <el-tooltip :content="t('toolbar.uploadFolder')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <button class="toolbar-submenu-button" type="button" role="menuitem" :aria-label="t('toolbar.uploadFolder')" @click="pickFolder">
             <el-icon><FolderOpened /></el-icon>
           </button>
@@ -57,13 +57,13 @@
       directory
       @change="handleUpload"
     />
-    <el-tooltip :content="t('toolbar.download')" placement="bottom">
+    <el-tooltip :content="t('toolbar.download')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
       <el-button :icon="Download" circle :disabled="selectedCount === 0" @click="$emit('download')" />
     </el-tooltip>
-    <el-tooltip :content="t('toolbar.rename')" placement="bottom">
+    <el-tooltip :content="t('toolbar.rename')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
       <el-button :icon="Edit" circle :disabled="selectedCount !== 1" @click="$emit('rename')" />
     </el-tooltip>
-    <el-tooltip :content="t('toolbar.delete')" placement="bottom">
+    <el-tooltip :content="t('toolbar.delete')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
       <el-button :icon="Delete" circle :disabled="selectedCount === 0" type="danger" @click="$emit('delete')" />
     </el-tooltip>
   </div>
