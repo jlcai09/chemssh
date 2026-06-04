@@ -14,6 +14,9 @@
         <span v-if="structureError" class="preview-error">{{ structureError }}</span>
       </div>
       <div class="preview-actions">
+        <el-tooltip v-if="canOpenPopout" :content="t('preview.openExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-button :icon="FullScreen" circle size="small" @click="popoutOpen = true" />
+        </el-tooltip>
         <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button :icon="Refresh" circle size="small" @click="refreshText" />
         </el-tooltip>
@@ -48,7 +51,7 @@
       v-show="showStructurePane"
       class="preview-pane"
       :ase-preview="aseStructure"
-      :active="showStructurePane"
+      :active="showStructurePane && !showPopoutStructurePane"
       @refresh="$emit('refresh')"
       @render-start="handleStructureRenderStart"
       @render-complete="handleStructureRenderComplete"
@@ -74,12 +77,97 @@
     <div v-if="showEmptyState" class="empty-state">
       <el-empty :description="t('preview.empty')" />
     </div>
+
+    <el-dialog
+      v-model="popoutOpen"
+      append-to-body
+      class="preview-popout-dialog"
+      destroy-on-close
+      fullscreen
+      :title="displayName"
+    >
+      <div class="preview-popout-body">
+        <div class="preview-popout-toolbar">
+          <el-segmented
+            v-if="structureCandidate && displayPath"
+            :model-value="mode"
+            :options="modeOptions"
+            size="small"
+            @update:model-value="handleModeChange"
+          />
+          <div class="preview-title">
+            <span class="eyebrow">{{ previewTypeLabel }}</span>
+            <strong>{{ displayName }}</strong>
+            <span v-if="structureError" class="preview-error">{{ structureError }}</span>
+          </div>
+          <div class="preview-actions">
+            <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+              <el-button :icon="Refresh" circle size="small" @click="refreshText" />
+            </el-tooltip>
+            <el-tooltip v-if="canEditText" :content="t('preview.edit')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+              <el-button
+                :icon="EditPen"
+                circle
+                size="small"
+                :type="editingEnabled ? 'success' : 'default'"
+                @click="enableEditing"
+              />
+            </el-tooltip>
+            <el-tooltip v-if="canEditText" :content="t('preview.save')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+              <el-button
+                :icon="SaveIcon"
+                circle
+                type="primary"
+                size="small"
+                :disabled="!editingEnabled || !dirty"
+                @click="$emit('save', draft)"
+              />
+            </el-tooltip>
+          </div>
+        </div>
+
+        <div class="preview-popout-content">
+          <div v-if="showPopoutLoadingOverlay" class="preview-popout-loading" aria-live="polite" aria-busy="true">
+            <el-icon class="structure-loading-spinner"><Loading /></el-icon>
+            <span>{{ t('common.loading') }}</span>
+          </div>
+
+          <MoleculeViewer
+            v-if="popoutStructurePaneMounted"
+            v-show="showPopoutStructurePane"
+            class="preview-popout-pane"
+            :ase-preview="aseStructure"
+            :active="showPopoutStructurePane"
+            @refresh="$emit('refresh')"
+            @render-start="handleStructureRenderStart"
+            @render-complete="handleStructureRenderComplete"
+          />
+
+          <div v-if="showPopoutStructureLoadingOverlay" class="structure-loading-overlay" aria-live="polite" aria-busy="true">
+            <el-icon class="structure-loading-spinner"><Loading /></el-icon>
+            <span>{{ t('common.loading') }}</span>
+          </div>
+
+          <div v-if="popoutTextPaneMounted" v-show="showPopoutTextPane" class="preview-popout-pane text-editor-wrap">
+            <MonacoTextEditor
+              v-model="draft"
+              class="text-editor"
+              :path="file?.path"
+              :readonly="!editingEnabled"
+            />
+            <div class="editor-status-badge" :class="editorStatusClass" aria-live="polite">
+              {{ editorStatusLabel }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, defineComponent, h, ref, watch } from 'vue'
-import { EditPen, Loading, Refresh } from '@element-plus/icons-vue'
+import { EditPen, FullScreen, Loading, Refresh } from '@element-plus/icons-vue'
 import type { FileReadResponse } from '../api/files'
 import { t } from '../i18n'
 import type { AsePreviewResponse } from '../types/structure'
@@ -121,7 +209,10 @@ const editingEnabled = ref(false)
 const currentFilePath = ref<string | null>(null)
 const structurePaneMounted = ref(false)
 const textPaneMounted = ref(false)
+const popoutStructurePaneMounted = ref(false)
+const popoutTextPaneMounted = ref(false)
 const structureRenderPending = ref(false)
+const popoutOpen = ref(false)
 
 watch(
   () => props.file,
@@ -146,8 +237,17 @@ const canEditText = computed(() => props.mode === 'text' && Boolean(props.file))
 const dirty = computed(() => props.mode === 'text' && Boolean(props.file) && draft.value !== props.file?.content)
 const showStructurePane = computed(() => props.mode === 'structure' && Boolean(props.aseStructure))
 const showTextPane = computed(() => props.mode === 'text' && Boolean(props.file))
+const showPopoutStructurePane = computed(() => popoutOpen.value && showStructurePane.value)
+const showPopoutTextPane = computed(() => popoutOpen.value && showTextPane.value)
 const showEmptyState = computed(() => !props.loading && !showStructurePane.value && !showTextPane.value)
 const showStructureLoadingOverlay = computed(() => showStructurePane.value && (props.loading || structureRenderPending.value))
+const showPopoutStructureLoadingOverlay = computed(() => showPopoutStructurePane.value && (props.loading || structureRenderPending.value))
+const showPopoutLoadingOverlay = computed(() => popoutOpen.value && props.loading && !showPopoutStructurePane.value && !showPopoutTextPane.value)
+const canOpenPopout = computed(() =>
+  showStructurePane.value ||
+  showTextPane.value ||
+  (popoutOpen.value && props.loading && Boolean(props.file || props.aseStructure))
+)
 
 watch(
   showStructurePane,
@@ -166,6 +266,31 @@ watch(
 )
 
 watch(
+  showPopoutStructurePane,
+  active => {
+    if (active) popoutStructurePaneMounted.value = true
+  },
+  { immediate: true }
+)
+
+watch(
+  showPopoutTextPane,
+  active => {
+    if (active) popoutTextPaneMounted.value = true
+  },
+  { immediate: true }
+)
+
+watch(
+  popoutOpen,
+  open => {
+    if (open) return
+    popoutStructurePaneMounted.value = false
+    popoutTextPaneMounted.value = false
+  }
+)
+
+watch(
   () => [props.loading, props.mode, props.aseStructure] as const,
   ([loading, mode, structure]) => {
     if (loading && mode === 'structure' && structure) {
@@ -173,6 +298,13 @@ watch(
     } else if (mode !== 'structure' || !structure) {
       structureRenderPending.value = false
     }
+  }
+)
+
+watch(
+  canOpenPopout,
+  canOpen => {
+    if (!canOpen) popoutOpen.value = false
   }
 )
 const editorStatusClass = computed(() => {

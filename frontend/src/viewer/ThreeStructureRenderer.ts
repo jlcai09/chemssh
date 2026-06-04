@@ -55,7 +55,11 @@ export class ThreeStructureRenderer {
   private readonly selectionFrontMaterial = new THREE.MeshBasicMaterial({ color: 0xfaff00, side: THREE.BackSide })
   private atomMeshes: THREE.InstancedMesh[] = []
   private atomMaterials: THREE.Material[] = []
+  private atomPointCloud: THREE.Points | null = null
+  private readonly atomPointMaterial = createAtomPointMaterial()
   private selectionMeshes: THREE.InstancedMesh[] = []
+  private selectionPointCloud: THREE.Points | null = null
+  private readonly selectionPointMaterial = createSelectionPointMaterial()
   private bondMesh: THREE.InstancedMesh | null = null
   private cellLines: THREE.LineSegments | null = null
   private frame: RenderAtomFrame | null = null
@@ -153,6 +157,8 @@ export class ThreeStructureRenderer {
     }
 
     const scale = Math.max(1e-6, view.baseScale * view.zoom)
+    this.atomPointMaterial.uniforms.pixelScale.value = scale * view.dpr
+    this.selectionPointMaterial.uniforms.pixelScale.value = scale * view.dpr
     this.camera.left = -width / (2 * scale)
     this.camera.right = width / (2 * scale)
     this.camera.top = height / (2 * scale)
@@ -191,12 +197,15 @@ export class ThreeStructureRenderer {
   dispose() {
     for (const mesh of this.atomMeshes) this.disposeObject(mesh)
     for (const mesh of this.selectionMeshes) this.disposeObject(mesh)
+    this.disposeObject(this.selectionPointCloud)
     this.disposeObject(this.bondMesh)
     this.disposeObject(this.cellLines)
     for (const geometry of this.atomGeometries) geometry.dispose()
     this.selectionGeometry.dispose()
     this.bondGeometry.dispose()
     for (const material of this.atomMaterials) material.dispose()
+    this.atomPointMaterial.dispose()
+    this.selectionPointMaterial.dispose()
     this.bondMaterial.dispose()
     this.cellMaterial.dispose()
     this.lightAtomOutlineMaterial.dispose()
@@ -208,10 +217,17 @@ export class ThreeStructureRenderer {
   private updateAtoms() {
     for (const mesh of this.atomMeshes) this.disposeObject(mesh)
     for (const material of this.atomMaterials) material.dispose()
+    this.disposeObject(this.atomPointCloud)
+    this.atomPointCloud = null
     this.atomMeshes = []
     this.atomMaterials = []
     const frame = this.frame
     if (!frame?.nAtoms) return
+
+    if (this.shouldUseAtomPointCloud(frame.nAtoms)) {
+      this.updateAtomPointCloud(frame)
+      return
+    }
 
     const atomGeometry = this.atomGeometryForFrame(frame.nAtoms)
     const groups = new Map<string, number[]>()
@@ -272,12 +288,19 @@ export class ThreeStructureRenderer {
 
   private updateSelection() {
     for (const mesh of this.selectionMeshes) this.disposeObject(mesh)
+    this.disposeObject(this.selectionPointCloud)
     this.selectionMeshes = []
+    this.selectionPointCloud = null
     const frame = this.frame
     if (!frame?.nAtoms || !this.selectedAtoms.length) return
 
     const valid = this.selectedAtoms.filter(index => Number.isInteger(index) && index >= 0 && index < frame.nAtoms)
     if (!valid.length) return
+
+    if (valid.length >= SELECTION_POINT_CLOUD_THRESHOLD) {
+      this.updateSelectionPointCloud(frame, valid)
+      return
+    }
 
     const back = new THREE.InstancedMesh(this.selectionGeometry, this.selectionBackMaterial, valid.length)
     const front = new THREE.InstancedMesh(this.selectionGeometry, this.selectionFrontMaterial, valid.length)
@@ -307,11 +330,48 @@ export class ThreeStructureRenderer {
     this.model.add(back, front)
   }
 
+  private updateSelectionPointCloud(frame: RenderAtomFrame, indices: number[]) {
+    const positions = new Float32Array(indices.length * 3)
+    const backRadii = new Float32Array(indices.length)
+    const atomRatios = new Float32Array(indices.length)
+    const frontRatios = new Float32Array(indices.length)
+
+    for (let instanceIndex = 0; instanceIndex < indices.length; instanceIndex += 1) {
+      const atomIndex = indices[instanceIndex]
+      const offset = atomIndex * 3
+      const targetOffset = instanceIndex * 3
+      positions[targetOffset] = (frame.positions[offset] ?? 0) - this.center[0]
+      positions[targetOffset + 1] = (frame.positions[offset + 1] ?? 0) - this.center[1]
+      positions[targetOffset + 2] = (frame.positions[offset + 2] ?? 0) - this.center[2]
+
+      const symbol = frame.symbols[atomIndex] ?? elementFromNumber(frame.numbers[atomIndex]) ?? 'X'
+      const atomRadius = atomWorldRadius(symbol, this.style)
+      const frontRadius = selectionFrontRadius(atomRadius)
+      const backRadius = selectionBackRadius(atomRadius, frontRadius)
+      backRadii[instanceIndex] = backRadius
+      atomRatios[instanceIndex] = clampRatio(atomRadius / backRadius)
+      frontRatios[instanceIndex] = clampRatio(frontRadius / backRadius)
+    }
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('selectionRadius', new THREE.Float32BufferAttribute(backRadii, 1))
+    geometry.setAttribute('atomRatio', new THREE.Float32BufferAttribute(atomRatios, 1))
+    geometry.setAttribute('frontRatio', new THREE.Float32BufferAttribute(frontRatios, 1))
+    geometry.computeBoundingSphere()
+
+    const points = new THREE.Points(geometry, this.selectionPointMaterial)
+    points.frustumCulled = false
+    points.renderOrder = 10
+    this.selectionPointCloud = points
+    this.model.add(points)
+  }
+
   private updateBonds() {
     this.disposeObject(this.bondMesh)
     this.bondMesh = null
     const frame = this.frame
-    if (!frame?.nAtoms || this.style.mode === 'sphere' || !this.bonds.length) return
+    if (!frame?.nAtoms || this.atomPointCloud || this.style.mode === 'sphere' || !this.bonds.length) return
 
     const mesh = new THREE.InstancedMesh(this.bondGeometry, this.bondMaterial, this.bonds.length)
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
@@ -375,6 +435,45 @@ export class ThreeStructureRenderer {
     if (atomCount >= 30000) return this.atomGeometries[2]
     if (atomCount >= 8000) return this.atomGeometries[1]
     return this.atomGeometries[0]
+  }
+
+  private shouldUseAtomPointCloud(atomCount: number) {
+    return atomCount >= POINT_CLOUD_ATOM_THRESHOLD
+  }
+
+  private updateAtomPointCloud(frame: RenderAtomFrame) {
+    const positions = new Float32Array(frame.nAtoms * 3)
+    const colors = new Float32Array(frame.nAtoms * 3)
+    const radii = new Float32Array(frame.nAtoms)
+    const fixedFlags = new Float32Array(frame.nAtoms)
+    const color = new THREE.Color()
+
+    for (let index = 0; index < frame.nAtoms; index += 1) {
+      const sourceOffset = index * 3
+      positions[sourceOffset] = (frame.positions[sourceOffset] ?? 0) - this.center[0]
+      positions[sourceOffset + 1] = (frame.positions[sourceOffset + 1] ?? 0) - this.center[1]
+      positions[sourceOffset + 2] = (frame.positions[sourceOffset + 2] ?? 0) - this.center[2]
+
+      const symbol = frame.symbols[index] ?? elementFromNumber(frame.numbers[index]) ?? 'X'
+      color.set(elementColor(symbol))
+      colors[sourceOffset] = color.r
+      colors[sourceOffset + 1] = color.g
+      colors[sourceOffset + 2] = color.b
+      radii[index] = atomWorldRadius(symbol, this.style)
+      fixedFlags[index] = this.fixedMarkersVisible && frame.fixedMask?.[index] === 1 ? 1 : 0
+    }
+
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('atomColor', new THREE.Float32BufferAttribute(colors, 3))
+    geometry.setAttribute('atomRadius', new THREE.Float32BufferAttribute(radii, 1))
+    geometry.setAttribute('fixedFlag', new THREE.Float32BufferAttribute(fixedFlags, 1))
+    geometry.computeBoundingSphere()
+
+    const points = new THREE.Points(geometry, this.atomPointMaterial)
+    points.frustumCulled = false
+    this.atomPointCloud = points
+    this.model.add(points)
   }
 
   private isSharedGeometry(geometry: THREE.BufferGeometry) {
@@ -450,12 +549,127 @@ function createAtomMaterial(color: string) {
   })
 }
 
+function createAtomPointMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      pixelScale: { value: 1 }
+    },
+    depthTest: true,
+    depthWrite: true,
+    vertexShader: `
+      uniform float pixelScale;
+      attribute vec3 atomColor;
+      attribute float atomRadius;
+      attribute float fixedFlag;
+      varying vec3 vColor;
+      varying float vFixed;
+
+      void main() {
+        vColor = atomColor;
+        vFixed = fixedFlag;
+        gl_PointSize = max(2.0, atomRadius * pixelScale * 2.0);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      varying float vFixed;
+
+      vec3 lighten(vec3 color, float amount) {
+        return mix(color, vec3(1.0), amount);
+      }
+
+      vec3 darken(vec3 color, float amount) {
+        return mix(color, vec3(0.0), amount);
+      }
+
+      void main() {
+        vec2 p = gl_PointCoord * 2.0 - 1.0;
+        float radiusSquared = dot(p, p);
+        if (radiusSquared > 1.0) discard;
+
+        float z = sqrt(max(0.0, 1.0 - radiusSquared));
+        vec3 normal = normalize(vec3(p, z));
+        float luminance = dot(vColor, vec3(0.2126, 0.7152, 0.0722));
+        float brightAtom = smoothstep(0.66, 0.94, luminance);
+        float highlight = pow(max(dot(normal, normalize(vec3(-0.42, 0.50, 0.76))), 0.0), 2.1);
+        float rim = pow(1.0 - max(normal.z, 0.0), 1.35);
+        vec3 brightBase = mix(vColor, vec3(1.0), mix(0.16, 0.06, brightAtom));
+        vec3 color = mix(brightBase, darken(brightBase, mix(0.12, 0.34, brightAtom)), rim * 0.7);
+        color = mix(color, lighten(brightBase, 0.58), highlight * 0.94);
+        color = mix(color, mix(darken(brightBase, 0.3), vec3(0.32, 0.39, 0.48), brightAtom), smoothstep(0.42, 0.94, rim) * 0.78);
+        color = mix(color, vec3(0.23, 0.29, 0.36), smoothstep(0.74, 0.99, rim) * brightAtom * 0.82);
+
+        if (vFixed > 0.5) {
+          float lineWidth = 0.105;
+          float softness = 0.035;
+          float diagonalA = 1.0 - smoothstep(lineWidth, lineWidth + softness, abs(p.x - p.y));
+          float diagonalB = 1.0 - smoothstep(lineWidth, lineWidth + softness, abs(p.x + p.y));
+          float mask = max(diagonalA, diagonalB) * smoothstep(0.18, 0.42, normal.z) * (1.0 - smoothstep(0.82, 0.98, length(p)));
+          color = mix(color, vec3(0.13, 0.17, 0.22), mask * 0.82);
+        }
+
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `
+  })
+}
+
+function createSelectionPointMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      pixelScale: { value: 1 }
+    },
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    vertexShader: `
+      uniform float pixelScale;
+      attribute float selectionRadius;
+      attribute float atomRatio;
+      attribute float frontRatio;
+      varying float vAtomRatio;
+      varying float vFrontRatio;
+
+      void main() {
+        vAtomRatio = atomRatio;
+        vFrontRatio = frontRatio;
+        gl_PointSize = max(4.0, selectionRadius * pixelScale * 2.0);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying float vAtomRatio;
+      varying float vFrontRatio;
+
+      void main() {
+        vec2 p = gl_PointCoord * 2.0 - 1.0;
+        float distanceFromCenter = length(p);
+        if (distanceFromCenter > 1.0) discard;
+
+        float inner = smoothstep(vAtomRatio - 0.018, vAtomRatio + 0.018, distanceFromCenter);
+        float outer = 1.0 - smoothstep(0.97, 1.0, distanceFromCenter);
+        float alpha = inner * outer;
+        if (alpha <= 0.01) discard;
+
+        float border = smoothstep(vFrontRatio - 0.012, vFrontRatio + 0.012, distanceFromCenter);
+        vec3 color = mix(vec3(0.980, 1.000, 0.000), vec3(0.035, 0.047, 0.062), border);
+        gl_FragColor = vec4(color, alpha);
+      }
+    `
+  })
+}
+
 function selectionFrontRadius(atomRadius: number) {
   return Math.max(atomRadius * 1.34, atomRadius + MIN_SELECTION_HALO_THICKNESS)
 }
 
 function selectionBackRadius(atomRadius: number, frontRadius: number) {
   return Math.max(atomRadius * 1.42, frontRadius + MIN_SELECTION_BORDER_THICKNESS)
+}
+
+function clampRatio(value: number) {
+  return Math.min(0.96, Math.max(0.1, value))
 }
 
 function cellLineVertices(cell: Float32Array, copies: CellCopies | undefined, center: Vec3) {
@@ -699,6 +913,8 @@ const NUMBER_SYMBOLS = [
 ]
 
 const DEFAULT_COVALENT_RADIUS = 0.76
+const POINT_CLOUD_ATOM_THRESHOLD = 50001
+const SELECTION_POINT_CLOUD_THRESHOLD = 5000
 const CELL_DASH_LENGTH = 0.18
 const CELL_DASH_GAP = 0.12
 const MIN_SELECTION_HALO_THICKNESS = 0.12

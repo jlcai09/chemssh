@@ -855,11 +855,6 @@ async function loadDirectory(path?: string | null) {
     currentPath.value = listing.value.path
     pathInput.value = listing.value.path
     setSelection([], null)
-    preview.value = null
-    asePreview.value = null
-    previewCandidate.value = null
-    previewError.value = null
-    currentStructureSource.value = ASE_STRUCTURE_SOURCE
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.directoryLoadFailed'))
   } finally {
@@ -964,7 +959,7 @@ async function previewFile(itemOrPath: FileItem | string) {
         return
       } catch (error) {
         if (!isCurrentRequest()) return
-        previewError.value = error instanceof Error ? error.message : t('message.previewFailed')
+        previewError.value = previewApiErrorMessage(error)
         previewMode.value = 'text'
       }
     } else {
@@ -982,7 +977,7 @@ async function previewFile(itemOrPath: FileItem | string) {
   } catch (error) {
     if (isCurrentRequest()) {
       preview.value = null
-      if (!isAbortError(error)) ElMessage.error(error instanceof Error ? error.message : t('message.previewFailed'))
+      if (!isAbortError(error)) ElMessage.error(previewApiErrorMessage(error))
     }
   } finally {
     if (isCurrentRequest()) previewLoading.value = false
@@ -1035,7 +1030,7 @@ async function readTextPreview(path: string) {
       openBuiltinPanel('preview')
     }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('message.previewFailed'))
+    ElMessage.error(previewApiErrorMessage(error))
   } finally {
     previewLoading.value = false
   }
@@ -1055,7 +1050,7 @@ async function loadStructurePreview() {
     if (structure) asePreview.value = structure
   } catch (error) {
     if (!isCurrentRequest() || isAbortError(error)) return
-    previewError.value = error instanceof Error ? error.message : t('message.previewFailed')
+    previewError.value = previewApiErrorMessage(error)
     previewMode.value = 'text'
     await loadTextPreview()
   } finally {
@@ -1080,7 +1075,7 @@ async function refreshStructurePreview() {
     }
   } catch (error) {
     if (!isCurrentRequest() || isAbortError(error)) return
-    previewError.value = error instanceof Error ? error.message : t('message.previewFailed')
+    previewError.value = previewApiErrorMessage(error)
     ElMessage.error(previewError.value)
   } finally {
     if (isCurrentRequest()) previewLoading.value = false
@@ -1123,7 +1118,7 @@ function isLargePreviewError(error: unknown, code: 'FILE_TOO_LARGE' | 'STRUCTURE
 }
 
 async function confirmLargePreview(error: unknown, kind: 'text' | 'structure') {
-  const message = error instanceof Error ? error.message : t('message.previewFailed')
+  const message = previewApiErrorMessage(error)
   const title = kind === 'structure' ? t('preview.largeStructureTitle') : t('preview.largeFileTitle')
   const body = kind === 'structure'
     ? t('preview.largeStructureMessage', { message })
@@ -1139,6 +1134,48 @@ async function confirmLargePreview(error: unknown, kind: 'text' | 'structure') {
   } catch {
     return false
   }
+}
+
+function previewApiErrorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    if (error.code === 'FILE_TOO_LARGE') return fileSizeLimitMessage(error.message, 'text') ?? t('error.fileTooLarge')
+    if (error.code === 'STRUCTURE_FILE_TOO_LARGE') return fileSizeLimitMessage(error.message, 'structure') ?? t('error.structureFileTooLarge')
+    if (error.code === 'STRUCTURE_TOO_MANY_FRAMES') return frameLimitMessage(error.message) ?? t('error.structureTooManyFrames')
+    if (error.code === 'STRUCTURE_TOO_MANY_ATOMS') return atomLimitMessage(error.message) ?? t('error.structureTooManyAtoms')
+    if (error.code === 'INVALID_FRAME_RANGE') return t('error.invalidFrameRange')
+    if (error.code === 'FRAME_INDEX_OUT_OF_RANGE') return t('error.frameIndexOutOfRange')
+  }
+  return error instanceof Error ? error.message : t('message.previewFailed')
+}
+
+function fileSizeLimitMessage(message: string, kind: 'text' | 'structure') {
+  const match = message.match(/File is (\d+) bytes;.*?(?:larger than|limit is) (\d+) bytes/i)
+  if (!match) return null
+  const size = formatByteCount(Number(match[1]))
+  const limit = formatByteCount(Number(match[2]))
+  return kind === 'structure'
+    ? t('error.structureFileTooLargeDetail', { size, limit })
+    : t('error.fileTooLargeDetail', { size, limit })
+}
+
+function frameLimitMessage(message: string) {
+  const match = message.match(/more than (\d+) frames/i)
+  if (!match) return null
+  return t('error.structureTooManyFramesDetail', { limit: Number(match[1]) })
+}
+
+function atomLimitMessage(message: string) {
+  const match = message.match(/Structure has (\d+) atoms; limit is (\d+)/i)
+  if (!match) return null
+  return t('error.structureTooManyAtomsDetail', { count: Number(match[1]), limit: Number(match[2]) })
+}
+
+function formatByteCount(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
 }
 
 function setPreviewMode(mode: PreviewMode) {

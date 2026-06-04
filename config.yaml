@@ -21,7 +21,7 @@ viewer:
     prefer_binary: true
     json_round_digits: 6
     max_atoms: 200000
-    max_frames: 2000
+    max_frames: 5000
     max_points_json: 200000
     binary_chunk_frames: 64
     cache_ttl_minutes: 30

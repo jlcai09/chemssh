@@ -166,11 +166,72 @@
           />
         </el-tooltip>
       </div>
-      <div v-if="asePreview" class="viewer-overlay">
-        <span>{{ frameNumberModeLabel }}: {{ currentFrameDisplayValue }} / {{ frameDisplayMax }}</span>
-        <span>Energy: {{ formatMetric(currentFrame.energy, ' eV') }}</span>
-        <span>Fmax: {{ formatMetric(currentFrame.fmax, ' eV/A') }}</span>
-        <span v-if="cacheStatus">{{ cacheStatus }}</span>
+      <div v-if="asePreview" class="viewer-overlay" :class="{ 'is-collapsed': overlayCollapsed }">
+        <button
+          class="viewer-overlay-toggle"
+          type="button"
+          :aria-label="overlayCollapsed ? t('viewer.expandOverlay') : t('viewer.collapseOverlay')"
+          :title="overlayCollapsed ? t('viewer.expandOverlay') : t('viewer.collapseOverlay')"
+          @click="overlayCollapsed = !overlayCollapsed"
+        >
+          <el-icon>
+            <CaretBottom v-if="overlayCollapsed" />
+            <CaretTop v-else />
+          </el-icon>
+        </button>
+        <el-tooltip
+          v-if="!overlayCollapsed && trajectoryMetricsChart?.sampled"
+          :content="t('viewer.sampledMetrics')"
+          placement="left"
+          popper-class="chemssh-passive-tooltip"
+          :enterable="false"
+        >
+          <span class="viewer-metric-sampled-warning" :aria-label="t('viewer.sampledMetrics')">
+            <el-icon><WarningFilled /></el-icon>
+          </span>
+        </el-tooltip>
+        <div v-if="!overlayCollapsed" class="viewer-overlay-content">
+          <span class="viewer-overlay-row">{{ frameNumberModeLabel }}: {{ currentFrameDisplayValue }} / {{ frameDisplayMax }}</span>
+          <span class="viewer-overlay-row">Energy: {{ formatMetric(currentFrame.energy, ' eV') }}</span>
+          <span class="viewer-overlay-row">Fmax: {{ formatMetric(currentFrame.fmax, ' eV/A') }}</span>
+          <div v-if="trajectoryMetricsChart" class="viewer-metrics-chart">
+            <div
+              v-for="curve in trajectoryMetricsChart.curves"
+              :key="curve.key"
+              class="viewer-metric-plot"
+            >
+              <div class="viewer-metric-plot-header">
+                <span>{{ curve.label }}</span>
+                <span>min {{ trajectoryMetricsChart.xAxisLabel }} {{ curve.min.display }}</span>
+              </div>
+              <svg
+                aria-hidden="true"
+                class="viewer-metric-svg"
+                :viewBox="`0 0 ${trajectoryMetricsChart.width} ${trajectoryMetricsChart.height}`"
+              >
+                <line
+                  class="viewer-metric-axis"
+                  :x1="trajectoryMetricsChart.padding.left"
+                  :y1="trajectoryMetricsChart.axisY"
+                  :x2="trajectoryMetricsChart.width - trajectoryMetricsChart.padding.right"
+                  :y2="trajectoryMetricsChart.axisY"
+                />
+                <path class="viewer-metric-area" :d="curve.areaPath" :style="{ fill: curve.areaColor }" />
+                <path class="viewer-metric-line" :d="curve.path" :style="{ stroke: curve.color }" />
+                <circle class="viewer-metric-min-dot" :cx="curve.min.x" :cy="curve.min.y" r="2.4" :style="{ fill: curve.color }" />
+                <text
+                  class="viewer-metric-min-label"
+                  :x="curve.min.labelX"
+                  :y="curve.min.labelY"
+                  :text-anchor="curve.min.anchor"
+                >
+                  {{ curve.min.display }}
+                </text>
+              </svg>
+            </div>
+          </div>
+          <span v-if="cacheStatus">{{ cacheStatus }}</span>
+        </div>
       </div>
       <div v-if="frameLoading" class="viewer-loading">
         <el-skeleton :rows="2" animated />
@@ -181,7 +242,7 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Connection, Crop, Download, Grid, Refresh, View } from '@element-plus/icons-vue'
+import { CaretBottom, CaretTop, Connection, Crop, Download, Grid, Refresh, View, WarningFilled } from '@element-plus/icons-vue'
 import { readStructureFrame, readStructureFrameChunk, readStructureFrameJsonChunk } from '../api/structures'
 import { t } from '../i18n'
 import type { AseFrame, AseFrameChunk, AsePreviewResponse } from '../types/structure'
@@ -191,6 +252,35 @@ type StyleMode = ViewerStyleMode
 type ViewerModule = typeof import('../viewer')
 type ChemSSHViewerInstance = InstanceType<ViewerModule['ChemSSHStructureViewer']>
 type FrameNumberMode = 'index' | 'frame'
+type TrajectoryMetricKey = 'energy' | 'fmax'
+
+interface TrajectoryMetricPoint {
+  index: number
+  value: number
+  display: number
+  x: number
+  y: number
+}
+
+interface TrajectoryMetricSample {
+  index: number
+  value: number
+}
+
+interface TrajectoryMetricCurve {
+  key: TrajectoryMetricKey
+  label: string
+  color: string
+  areaColor: string
+  sampled: boolean
+  path: string
+  areaPath: string
+  min: TrajectoryMetricPoint & {
+    labelX: number
+    labelY: number
+    anchor: 'start' | 'end'
+  }
+}
 
 const props = withDefaults(
   defineProps<{
@@ -244,6 +334,7 @@ const frameInput = ref(0)
 const frameLoading = ref(false)
 const cachedFrameCount = ref(0)
 const currentFrame = ref<AseFrame>(props.asePreview?.frame ?? emptyFrame())
+const overlayCollapsed = ref(false)
 
 let chemsshViewer: ChemSSHViewerInstance | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -263,11 +354,16 @@ const jsonWarmChunkRadius = 1
 const maxLocalTrajectoryBytes = 512 * 1024 * 1024
 const maxLocalJsonTrajectoryBytes = 256 * 1024 * 1024
 const maxSupercellAxis = 10
+const metricChartWidth = 132
+const metricChartHeight = 44
+const metricChartPadding = { left: 8, right: 8, top: 7, bottom: 12 }
+const maxMetricPlotPoints = 180
+const metricSamplingFrameThreshold = 1000
 
 const cacheStatus = computed(() => {
   if (!props.asePreview?.is_trajectory) return ''
   if (cachedFrameCount.value >= props.asePreview.n_frames) return ''
-  return `Frames: ${cachedFrameCount.value} / ${props.asePreview.n_frames}`
+  return t('viewer.cachedFrames', { cached: cachedFrameCount.value, total: props.asePreview.n_frames })
 })
 
 const hasSupercell = computed(() => supercellX.value > 1 || supercellY.value > 1 || supercellZ.value > 1)
@@ -287,6 +383,27 @@ const frameDisplayInput = computed({
   }
 })
 const currentFrameDisplayValue = computed(() => frameIndexToDisplayValue(currentFrame.value.frame_index))
+const trajectoryMetricsChart = computed(() => {
+  const preview = props.asePreview
+  if (!preview?.is_trajectory || preview.n_frames < 2) return null
+
+  const reactiveTick = cachedFrameCount.value + currentFrame.value.frame_index
+  void reactiveTick
+
+  const energy = buildMetricCurve('energy', 'Energy', '#176b87', 'rgba(23, 107, 135, 0.12)')
+  const fmax = buildMetricCurve('fmax', 'Fmax', '#9a5b13', 'rgba(154, 91, 19, 0.12)')
+  if (!energy || !fmax) return null
+
+  return {
+    width: metricChartWidth,
+    height: metricChartHeight,
+    padding: metricChartPadding,
+    axisY: metricChartHeight - metricChartPadding.bottom,
+    xAxisLabel: frameNumberModeLabel.value,
+    sampled: energy.sampled || fmax.sampled,
+    curves: [energy, fmax]
+  }
+})
 
 function emptyFrame(): AseFrame {
   return {
@@ -429,8 +546,136 @@ function exportPng() {
 }
 
 function formatMetric(value: number | null | undefined, unit: string) {
-  if (value === null || value === undefined || Number.isNaN(value)) return 'N/A'
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'N/A'
   return `${value.toFixed(6)}${unit}`
+}
+
+function buildMetricCurve(
+  key: TrajectoryMetricKey,
+  label: string,
+  color: string,
+  areaColor: string
+): TrajectoryMetricCurve | null {
+  const preview = props.asePreview
+  if (!preview?.is_trajectory || preview.n_frames < 2) return null
+
+  const series = collectMetricSamples(key, preview.n_frames)
+  if (!series || series.count < 2 || series.samples.length < 2) return null
+
+  const minValue = series.min
+  const maxValue = series.max
+  const span = maxValue - minValue
+  const yMin = span === 0 ? minValue - 1 : minValue - span * 0.08
+  const yMax = span === 0 ? maxValue + 1 : maxValue + span * 0.08
+  const plotWidth = metricChartWidth - metricChartPadding.left - metricChartPadding.right
+  const plotHeight = metricChartHeight - metricChartPadding.top - metricChartPadding.bottom
+
+  const points = series.samples.map(sample => {
+    const x = metricChartPadding.left + (sample.index / (preview.n_frames - 1)) * plotWidth
+    const y = metricChartPadding.top + (1 - (sample.value - yMin) / (yMax - yMin)) * plotHeight
+    return { index: sample.index, value: sample.value, display: frameIndexToDisplayValue(sample.index), x, y }
+  })
+  const minX = metricChartPadding.left + (series.minPoint.index / (preview.n_frames - 1)) * plotWidth
+  const minY = metricChartPadding.top + (1 - (series.minPoint.value - yMin) / (yMax - yMin)) * plotHeight
+  const min: TrajectoryMetricPoint = {
+    index: series.minPoint.index,
+    value: series.minPoint.value,
+    display: frameIndexToDisplayValue(series.minPoint.index),
+    x: minX,
+    y: minY
+  }
+  if (!points.some(point => point.index === min.index)) {
+    points.push(min)
+    points.sort((left, right) => left.index - right.index)
+  }
+  if (points.length < 2) return null
+
+  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${roundSvg(point.x)} ${roundSvg(point.y)}`).join(' ')
+  const axisY = metricChartHeight - metricChartPadding.bottom
+  const areaPath = `${path} L ${roundSvg(points[points.length - 1].x)} ${axisY} L ${roundSvg(points[0].x)} ${axisY} Z`
+  const anchor = min.x > metricChartWidth - 42 ? 'end' : 'start'
+  const labelX = anchor === 'end' ? min.x - 4 : min.x + 4
+  const labelY = min.y > metricChartPadding.top + 9 ? min.y - 4 : min.y + 10
+
+  return {
+    key,
+    label,
+    color,
+    areaColor,
+    sampled: series.sampled,
+    path,
+    areaPath,
+    min: {
+      ...min,
+      labelX: clampNumber(labelX, metricChartPadding.left, metricChartWidth - metricChartPadding.right),
+      labelY: clampNumber(labelY, metricChartPadding.top + 6, axisY - 2),
+      anchor
+    }
+  }
+}
+
+function collectMetricSamples(key: TrajectoryMetricKey, nFrames: number) {
+  const samples = new Map<number, TrajectoryMetricSample>()
+  const sampled = nFrames > metricSamplingFrameThreshold
+  const sampleEvery = sampled ? Math.max(1, Math.floor(nFrames / maxMetricPlotPoints)) : 1
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+  let count = 0
+  let minPoint: TrajectoryMetricSample | null = null
+  let firstPoint: TrajectoryMetricSample | null = null
+  let lastPoint: TrajectoryMetricSample | null = null
+
+  const visit = (index: number, rawValue: number | null | undefined) => {
+    const value = finiteOrNaN(rawValue)
+    if (!Number.isFinite(value) || index < 0 || index >= nFrames) return false
+    const point = { index, value }
+    count += 1
+    min = Math.min(min, value)
+    max = Math.max(max, value)
+    if (!minPoint || value < minPoint.value) minPoint = point
+    if (!firstPoint || index < firstPoint.index) firstPoint = point
+    if (!lastPoint || index > lastPoint.index) lastPoint = point
+    if (index === 0 || index === nFrames - 1 || index % sampleEvery === 0) samples.set(index, point)
+    return true
+  }
+
+  const storeValues = trajectoryStore?.[key]
+  if (storeValues) {
+    for (let index = 0; index < Math.min(nFrames, storeValues.length); index += 1) {
+      visit(index, storeValues[index])
+    }
+  } else {
+    const visited = new Set<number>()
+    for (const frame of jsonFrameCache.values()) {
+      if (visit(frame.frame_index, frame[key])) visited.add(frame.frame_index)
+    }
+    const currentIndex = currentFrame.value.frame_index
+    if (!visited.has(currentIndex)) visit(currentIndex, currentFrame.value[key])
+  }
+
+  const firstSample = firstPoint as TrajectoryMetricSample | null
+  const lastSample = lastPoint as TrajectoryMetricSample | null
+  const minSample = minPoint as TrajectoryMetricSample | null
+  if (!minSample || !firstSample || !lastSample) return null
+  samples.set(firstSample.index, firstSample)
+  samples.set(lastSample.index, lastSample)
+  samples.set(minSample.index, minSample)
+  return {
+    min,
+    max,
+    count,
+    minPoint: minSample,
+    sampled,
+    samples: [...samples.values()].sort((left, right) => left.index - right.index)
+  }
+}
+
+function roundSvg(value: number) {
+  return Number(value.toFixed(2))
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function scheduleFrameChange() {
@@ -457,6 +702,7 @@ function resetSupercell() {
 function resetStructureSwitchState() {
   resetSupercell()
   chemsshViewer?.clearSelection()
+  chemsshViewer?.resetView()
 }
 
 function toggleWrapAtoms() {
@@ -948,7 +1194,7 @@ function flattenCell(cell: Float32Array | number[][]) {
 }
 
 function finiteOrNaN(value: number | null | undefined) {
-  return value === null || value === undefined || Number.isNaN(value) ? Number.NaN : value
+  return value === null || value === undefined || !Number.isFinite(value) ? Number.NaN : value
 }
 
 function clampFrameIndex(index: number) {
@@ -998,7 +1244,7 @@ watch(
   () => {
     resetStructureSwitchState()
     resetAseState()
-    void renderStructure(true)
+    void renderStructure()
   }
 )
 
@@ -1008,7 +1254,6 @@ watch(
     if (!active) return
     await nextTick()
     resizeViewer()
-    if (props.asePreview) void renderStructure(true)
   },
   { flush: 'post' }
 )

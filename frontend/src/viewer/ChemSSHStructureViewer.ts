@@ -69,7 +69,7 @@ const DEFAULT_STYLE: Required<ViewerStyle> = {
 const DEFAULT_LABELS: Required<LabelOptions> = {
   showAtomIndex: false,
   showAtomTag: false,
-  maxLabels: 300
+  maxLabels: 600
 }
 
 const DEFAULT_FIXED: Required<FixedAtomOptions> = {
@@ -245,6 +245,12 @@ const NUMBER_SYMBOLS = [
 ]
 
 const DEFAULT_COVALENT_RADIUS = 0.8
+const PICK_BUCKET_SIZE = 48
+const PICK_BUCKET_MARGIN = 48
+const LABEL_GRID_WIDTH = 54
+const LABEL_GRID_HEIGHT = 18
+const LABEL_GRID_MARGIN = 48
+const LABEL_SCAN_TARGET_ATOMS = 120000
 const COVALENT_RADII_BY_NUMBER: Array<number | null> = [
   null,
   0.31,
@@ -398,6 +404,9 @@ export class ChemSSHStructureViewer {
   private rafHandle = 0
   private hoveredAtom: number | null = null
   private projectedAtoms: ProjectedAtom[] = []
+  private projectedPickBuckets: ProjectedAtom[][] = []
+  private projectedPickColumns = 0
+  private projectedPickRows = 0
   private isDragging = false
   private dragMode: 'select' | 'pan' | 'orbit' | 'roll' = 'select'
   private lastPointerX = 0
@@ -406,6 +415,7 @@ export class ChemSSHStructureViewer {
   private selectionStart: ScreenPoint | null = null
   private selectionEnd: ScreenPoint | null = null
   private selectedAtomOrder: number[] = []
+  private projectedAtomsDirty = true
 
   constructor(container: HTMLElement, options: ViewerOptions = {}) {
     this.container = container
@@ -474,6 +484,7 @@ export class ChemSSHStructureViewer {
   }
 
   setStyle(style: ViewerStyle) {
+    const previous = this.style
     const previousBondScale = this.style.bondScale
     this.style = { ...this.style, ...style }
     if (this.frame && style.bondScale !== undefined && style.bondScale !== previousBondScale) {
@@ -482,6 +493,7 @@ export class ChemSSHStructureViewer {
     }
     this.root.style.background = this.style.backgroundColor
     this.renderer.setStyle(this.style)
+    if (previous.mode !== this.style.mode || previous.atomScale !== this.style.atomScale) this.invalidateProjectedAtoms()
     this.requestRender()
   }
 
@@ -513,6 +525,7 @@ export class ChemSSHStructureViewer {
     this.updateBounds()
     this.renderer.setStructure(this.frame, this.bonds, this.center)
     this.syncSelectionForFrame(true)
+    this.invalidateProjectedAtoms()
     this.requestRender()
   }
 
@@ -538,6 +551,7 @@ export class ChemSSHStructureViewer {
     if (this.overlayCanvas.width !== pixelWidth) this.overlayCanvas.width = pixelWidth
     if (this.overlayCanvas.height !== pixelHeight) this.overlayCanvas.height = pixelHeight
     this.updateFitScale()
+    this.invalidateProjectedAtoms()
     this.requestRender()
   }
 
@@ -564,6 +578,7 @@ export class ChemSSHStructureViewer {
     this.frame = null
     this.trajectory = null
     this.projectedAtoms = []
+    this.clearProjectedPickBuckets()
     this.selectedAtomOrder = []
     this.renderer.dispose()
   }
@@ -589,6 +604,7 @@ export class ChemSSHStructureViewer {
     this.renderer.setStructure(this.frame, this.bonds, this.center)
     this.renderer.setSelectedAtoms(this.selectedAtomOrder)
     this.syncSelectionForFrame(options.keepView)
+    this.invalidateProjectedAtoms()
     this.requestRender()
   }
 
@@ -643,18 +659,23 @@ export class ChemSSHStructureViewer {
       const previousY = this.lastPointerY
       const dx = event.clientX - previousX
       const dy = event.clientY - previousY
+      let viewChanged = false
       if (this.dragMode === 'pan') {
         this.panX += dx
         this.panY += dy
+        viewChanged = true
       } else if (this.dragMode === 'orbit') {
         this.rotateOrbit(dx * 0.01, dy * 0.01)
+        viewChanged = true
       } else if (this.dragMode === 'roll') {
         this.rotateRoll(-angleDeltaAround(this.viewCenter(), { x: previousX, y: previousY }, { x: event.clientX, y: event.clientY }))
+        viewChanged = true
       } else {
         this.selectionEnd = this.pointerPoint(event)
       }
       this.lastPointerX = event.clientX
       this.lastPointerY = event.clientY
+      if (viewChanged) this.invalidateProjectedAtoms()
       this.requestRender()
       return
     }
@@ -697,6 +718,7 @@ export class ChemSSHStructureViewer {
     event.preventDefault()
     const factor = Math.exp(-event.deltaY * 0.001)
     this.zoom = clamp(this.zoom * factor, 0.05, 80)
+    this.invalidateProjectedAtoms()
     this.requestRender()
   }
 
@@ -729,12 +751,13 @@ export class ChemSSHStructureViewer {
   }
 
   private structureScreenBounds() {
-    if (!this.projectedAtoms.length) return null
+    const atoms = this.ensureProjectedAtoms()
+    if (!atoms.length) return null
     let left = Number.POSITIVE_INFINITY
     let right = Number.NEGATIVE_INFINITY
     let top = Number.POSITIVE_INFINITY
     let bottom = Number.NEGATIVE_INFINITY
-    for (const atom of this.projectedAtoms) {
+    for (const atom of atoms) {
       left = Math.min(left, atom.x - atom.radius)
       right = Math.max(right, atom.x + atom.radius)
       top = Math.min(top, atom.y - atom.radius)
@@ -758,7 +781,7 @@ export class ChemSSHStructureViewer {
     const normalizedY = (point.y - centerY) / Math.max(60, structureHeight * 0.72)
     if (normalizedX * normalizedX + normalizedY * normalizedY <= 1) return true
 
-    for (const atom of this.projectedAtoms) {
+    for (const atom of this.ensureProjectedAtoms()) {
       const dx = point.x - atom.x
       const dy = point.y - atom.y
       const limit = Math.max(26, atom.radius + 14)
@@ -789,10 +812,12 @@ export class ChemSSHStructureViewer {
   }
 
   private pickAtomAt(x: number, y: number) {
+    const atoms = this.ensureProjectedAtoms()
+    const candidates = this.projectedPickCandidates(x, y, atoms)
     let bestIndex: number | null = null
     let bestDistance = Number.POSITIVE_INFINITY
     let bestDepth = Number.NEGATIVE_INFINITY
-    for (const atom of this.projectedAtoms) {
+    for (const atom of candidates) {
       const dx = atom.x - x
       const dy = atom.y - y
       const limit = Math.max(atom.radius + 6, 9)
@@ -840,7 +865,7 @@ export class ChemSSHStructureViewer {
     const right = Math.max(start.x, end.x)
     const top = Math.min(start.y, end.y)
     const bottom = Math.max(start.y, end.y)
-    return this.projectedAtoms
+    return this.ensureProjectedAtoms()
       .filter(atom => atom.x >= left && atom.x <= right && atom.y >= top && atom.y <= bottom)
       .map(atom => atom.index)
       .sort((leftIndex, rightIndex) => leftIndex - rightIndex)
@@ -892,6 +917,10 @@ export class ChemSSHStructureViewer {
     })
   }
 
+  private invalidateProjectedAtoms() {
+    this.projectedAtomsDirty = true
+  }
+
   private render() {
     const overlay = this.overlayContext
     overlay.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
@@ -911,45 +940,149 @@ export class ChemSSHStructureViewer {
 
     if (!this.frame) {
       this.projectedAtoms = []
+      this.clearProjectedPickBuckets()
+      this.projectedAtomsDirty = false
       this.renderer.clear()
       return
     }
 
-    const atoms = this.projectAtoms()
-    this.projectedAtoms = atoms
-    const selectedAtoms = this.selectedAtomOrder.length ? new Set(this.selectedAtomOrder) : null
+    const atoms = this.labelsVisible() ? this.projectLabelAtoms() : []
+    const hoveredAtom = this.hoveredAtom === null ? null : this.projectAtom(this.hoveredAtom)
+    const selectedAtoms = this.selectedAtomOrder.length <= 4
+      ? this.selectedAtomOrder.map(index => this.projectAtom(index)).filter((atom): atom is ProjectedAtom => Boolean(atom))
+      : []
     this.renderer.render()
-    this.drawOverlay(overlay, atoms, selectedAtoms)
+    this.drawOverlay(overlay, atoms, hoveredAtom, selectedAtoms)
   }
 
   private projectAtoms() {
-    if (!this.frame) return []
-    const atoms: ProjectedAtom[] = []
-    const scale = this.baseScale * this.zoom
-    for (let index = 0; index < this.frame.nAtoms; index += 1) {
-      const offset = index * 3
-      const world: Vec3 = [
-        this.frame.positions[offset] ?? 0,
-        this.frame.positions[offset + 1] ?? 0,
-        this.frame.positions[offset + 2] ?? 0
-      ]
-      const projected = this.projectPoint(world)
-      const symbol = this.frame.symbols[index] ?? elementFromNumber(this.frame.numbers[index]) ?? 'X'
-      const radius = atomScreenRadius(symbol, this.style, scale)
-      atoms.push({
-        index,
-        x: projected.x,
-        y: projected.y,
-        depth: projected.depth,
-        radius,
-        color: elementColor(symbol),
-        symbol,
-        tag: this.frame.tags?.[index] ?? 0,
-        fixed: this.frame.fixedMask?.[index] === 1,
-        position: world
-      })
+    if (!this.frame) {
+      this.projectedAtoms = []
+      this.clearProjectedPickBuckets()
+      this.projectedAtomsDirty = false
+      return []
     }
+    const atoms: ProjectedAtom[] = []
+    for (let index = 0; index < this.frame.nAtoms; index += 1) {
+      const atom = this.projectAtom(index)
+      if (atom) atoms.push(atom)
+    }
+    this.projectedAtoms = atoms
+    this.rebuildProjectedPickBuckets(atoms)
+    this.projectedAtomsDirty = false
     return atoms
+  }
+
+  private rebuildProjectedPickBuckets(atoms: ProjectedAtom[]) {
+    const columns = Math.max(1, Math.ceil((this.width + PICK_BUCKET_MARGIN * 2) / PICK_BUCKET_SIZE))
+    const rows = Math.max(1, Math.ceil((this.height + PICK_BUCKET_MARGIN * 2) / PICK_BUCKET_SIZE))
+    const buckets = Array.from({ length: columns * rows }, () => [] as ProjectedAtom[])
+
+    for (const atom of atoms) {
+      const column = Math.floor((atom.x + PICK_BUCKET_MARGIN) / PICK_BUCKET_SIZE)
+      const row = Math.floor((atom.y + PICK_BUCKET_MARGIN) / PICK_BUCKET_SIZE)
+      if (column < 0 || row < 0 || column >= columns || row >= rows) continue
+      buckets[row * columns + column]?.push(atom)
+    }
+
+    this.projectedPickBuckets = buckets
+    this.projectedPickColumns = columns
+    this.projectedPickRows = rows
+  }
+
+  private projectedPickCandidates(x: number, y: number, fallback: ProjectedAtom[]) {
+    if (!this.projectedPickBuckets.length || !this.projectedPickColumns || !this.projectedPickRows) return fallback
+    const centerColumn = Math.floor((x + PICK_BUCKET_MARGIN) / PICK_BUCKET_SIZE)
+    const centerRow = Math.floor((y + PICK_BUCKET_MARGIN) / PICK_BUCKET_SIZE)
+    const candidates: ProjectedAtom[] = []
+    for (let row = centerRow - 1; row <= centerRow + 1; row += 1) {
+      if (row < 0 || row >= this.projectedPickRows) continue
+      for (let column = centerColumn - 1; column <= centerColumn + 1; column += 1) {
+        if (column < 0 || column >= this.projectedPickColumns) continue
+        const bucket = this.projectedPickBuckets[row * this.projectedPickColumns + column]
+        if (!bucket?.length) continue
+        for (const atom of bucket) candidates.push(atom)
+      }
+    }
+    return candidates
+  }
+
+  private clearProjectedPickBuckets() {
+    this.projectedPickBuckets = []
+    this.projectedPickColumns = 0
+    this.projectedPickRows = 0
+  }
+
+  private ensureProjectedAtoms() {
+    if (this.projectedAtomsDirty) return this.projectAtoms()
+    return this.projectedAtoms
+  }
+
+  private projectAtom(index: number): ProjectedAtom | null {
+    if (!this.frame || index < 0 || index >= this.frame.nAtoms) return null
+    const offset = index * 3
+    const world: Vec3 = [
+      this.frame.positions[offset] ?? 0,
+      this.frame.positions[offset + 1] ?? 0,
+      this.frame.positions[offset + 2] ?? 0
+    ]
+    const projected = this.projectPoint(world)
+    return this.projectedAtomFromScreen(index, world, projected.x, projected.y, projected.depth)
+  }
+
+  private projectLabelAtoms() {
+    const frame = this.frame
+    if (!frame?.nAtoms) return []
+    const columns = Math.max(1, Math.ceil(this.width / LABEL_GRID_WIDTH))
+    const rows = Math.max(1, Math.ceil(this.height / LABEL_GRID_HEIGHT))
+    const candidates = new Array<ProjectedAtom | null>(columns * rows).fill(null)
+    const stride = labelProjectionStride(frame.nAtoms)
+    const m = this.transform
+    const scale = this.baseScale * this.zoom
+    const screenCenterX = this.width / 2 + this.panX
+    const screenCenterY = this.height / 2 + this.panY
+
+    for (let index = 0; index < frame.nAtoms; index += stride) {
+      const offset = index * 3
+      const x = (frame.positions[offset] ?? 0) - this.center[0]
+      const y = (frame.positions[offset + 1] ?? 0) - this.center[1]
+      const z = (frame.positions[offset + 2] ?? 0) - this.center[2]
+      const x2 = m[0] * x + m[1] * y + m[2] * z
+      const y2 = m[3] * x + m[4] * y + m[5] * z
+      const z2 = m[6] * x + m[7] * y + m[8] * z
+      const screenX = screenCenterX + x2 * scale
+      const screenY = screenCenterY - y2 * scale
+      if (screenX < -LABEL_GRID_MARGIN || screenY < -LABEL_GRID_MARGIN || screenX > this.width + LABEL_GRID_MARGIN || screenY > this.height + LABEL_GRID_MARGIN) continue
+
+      const column = Math.floor(clamp(screenX, 0, this.width - 1) / LABEL_GRID_WIDTH)
+      const row = Math.floor(clamp(screenY, 0, this.height - 1) / LABEL_GRID_HEIGHT)
+      const candidateIndex = row * columns + column
+      const current = candidates[candidateIndex]
+      if (current && current.depth >= z2) continue
+      candidates[candidateIndex] = this.projectedAtomFromScreen(index, [x + this.center[0], y + this.center[1], z + this.center[2]], screenX, screenY, z2)
+    }
+
+    return candidates
+      .filter((atom): atom is ProjectedAtom => Boolean(atom))
+      .sort((left, right) => right.depth - left.depth)
+  }
+
+  private projectedAtomFromScreen(index: number, world: Vec3, x: number, y: number, depth: number): ProjectedAtom | null {
+    if (!this.frame || index < 0 || index >= this.frame.nAtoms) return null
+    const symbol = this.frame.symbols[index] ?? elementFromNumber(this.frame.numbers[index]) ?? 'X'
+    const radius = atomScreenRadius(symbol, this.style, this.baseScale * this.zoom)
+    return {
+      index,
+      x,
+      y,
+      depth,
+      radius,
+      color: elementColor(symbol),
+      symbol,
+      tag: this.frame.tags?.[index] ?? 0,
+      fixed: this.frame.fixedMask?.[index] === 1,
+      position: world
+    }
   }
 
   private projectPoint(point: Vec3) {
@@ -968,29 +1101,24 @@ export class ChemSSHStructureViewer {
     }
   }
 
-  private drawOverlay(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], selectedAtoms: Set<number> | null) {
+  private drawOverlay(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], hoveredAtom: ProjectedAtom | null, selectedAtoms: ProjectedAtom[]) {
     this.drawAxes(context)
-    this.drawAtomStateMarkers(context, atoms)
-    this.drawLabels(context, atoms)
-    this.drawSelectedAtomMarkers(context, atoms, selectedAtoms)
+    this.drawHoveredAtomMarker(context, hoveredAtom)
+    this.drawLabels(context, atoms, hoveredAtom)
+    this.drawSelectedAtomMarkers(context, selectedAtoms)
     this.drawSelectionInfo(context)
     this.drawSelectionBox(context)
   }
 
-  private drawAtomStateMarkers(context: CanvasRenderingContext2D, atoms: ProjectedAtom[]) {
-    if (!atoms.length) return
+  private drawHoveredAtomMarker(context: CanvasRenderingContext2D, atom: ProjectedAtom | null) {
+    if (!atom) return
+    if (atom.x < -atom.radius || atom.y < -atom.radius || atom.x > this.width + atom.radius || atom.y > this.height + atom.radius) return
     context.save()
-    for (const atom of atoms) {
-      if (atom.x < -atom.radius || atom.y < -atom.radius || atom.x > this.width + atom.radius || atom.y > this.height + atom.radius) continue
-      const hovered = atom.index === this.hoveredAtom
-      if (hovered) {
-        context.strokeStyle = 'rgba(23, 107, 135, 0.88)'
-        context.lineWidth = 2.2
-        context.beginPath()
-        context.arc(atom.x, atom.y, atom.radius + 3, 0, Math.PI * 2)
-        context.stroke()
-      }
-    }
+    context.strokeStyle = 'rgba(23, 107, 135, 0.88)'
+    context.lineWidth = 2.2
+    context.beginPath()
+    context.arc(atom.x, atom.y, atom.radius + 3, 0, Math.PI * 2)
+    context.stroke()
     context.restore()
   }
 
@@ -1138,17 +1266,15 @@ export class ChemSSHStructureViewer {
     context.restore()
   }
 
-  private drawSelectedAtomMarkers(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], selectedAtoms: Set<number> | null) {
-    if (!selectedAtoms?.size) return
-    const atomByIndex = new Map(atoms.map(atom => [atom.index, atom]))
+  private drawSelectedAtomMarkers(context: CanvasRenderingContext2D, atoms: ProjectedAtom[]) {
+    if (!atoms.length) return
     const showOrderBadges = this.selectedAtomOrder.length <= 4
     context.save()
     context.font = '800 10px Inter, system-ui, sans-serif'
     context.textAlign = 'center'
     context.textBaseline = 'middle'
-    for (let orderIndex = 0; orderIndex < this.selectedAtomOrder.length; orderIndex += 1) {
-      const atom = atomByIndex.get(this.selectedAtomOrder[orderIndex])
-      if (!atom) continue
+    for (let orderIndex = 0; orderIndex < atoms.length; orderIndex += 1) {
+      const atom = atoms[orderIndex]
       if (showOrderBadges) {
         const x = atom.x + atom.radius * 0.72
         const y = atom.y - atom.radius * 0.72
@@ -1258,9 +1384,8 @@ export class ChemSSHStructureViewer {
     return `#${atom.index} ${atom.symbol} tag=${atom.tag}${fixed} (${atom.position[0].toFixed(3)}, ${atom.position[1].toFixed(3)}, ${atom.position[2].toFixed(3)})`
   }
 
-  private drawLabels(context: CanvasRenderingContext2D, atoms: ProjectedAtom[]) {
-    const showLabels = this.labelOptions.showAtomIndex || this.labelOptions.showAtomTag
-    const hovered = this.hoveredAtom === null ? null : atoms.find(atom => atom.index === this.hoveredAtom)
+  private drawLabels(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], hovered: ProjectedAtom | null) {
+    const showLabels = this.labelsVisible()
     if (!showLabels && !hovered) return
 
     context.save()
@@ -1268,12 +1393,13 @@ export class ChemSSHStructureViewer {
     context.textBaseline = 'middle'
     context.lineJoin = 'round'
     const occupied: Array<{ x: number; y: number; width: number; height: number }> = []
-    const sortedAtoms = [...atoms].sort((left, right) => right.depth - left.depth)
+    const sortedAtoms = atoms
     const maxLabels = atoms.length <= 500 ? atoms.length : this.labelOptions.maxLabels
     let drawn = 0
 
     if (showLabels) {
       for (const atom of sortedAtoms) {
+        if (drawn >= maxLabels) break
         const text = this.atomLabel(atom)
         if (!text) continue
         const metrics = context.measureText(text)
@@ -1283,7 +1409,7 @@ export class ChemSSHStructureViewer {
         const y = atom.y - Math.max(2, atom.radius * 0.18)
         const box = { x: x - 4, y: y - height / 2, width, height }
         if (box.x < 0 || box.y < 0 || box.x + box.width > this.width || box.y + box.height > this.height) continue
-        if (drawn >= maxLabels || intersectsAny(box, occupied)) continue
+        if (intersectsAny(box, occupied)) continue
         occupied.push(box)
         this.drawText(context, text, x, y, labelColor(atom.color))
         drawn += 1
@@ -1297,6 +1423,10 @@ export class ChemSSHStructureViewer {
       this.drawText(context, text, x, y, '#111827', true)
     }
     context.restore()
+  }
+
+  private labelsVisible() {
+    return this.labelOptions.showAtomIndex || this.labelOptions.showAtomTag
   }
 
   private drawSelectionBox(context: CanvasRenderingContext2D) {
@@ -1400,6 +1530,7 @@ export class ChemSSHStructureViewer {
     this.panX = 0
     this.panY = 0
     this.updateFitScale()
+    this.invalidateProjectedAtoms()
   }
 
   private rotateOrbit(deltaYaw: number, deltaPitch: number) {
@@ -1885,6 +2016,11 @@ function atomScreenRadius(symbol: string, style: Required<ViewerStyle>, scale: n
   if (style.mode === 'line') return 2.2
   const modeScale = style.mode === 'sphere' ? 1.62 : 1
   return clamp(covalentRadius(symbol) * style.atomScale * modeScale * scale, 2.8, 34)
+}
+
+function labelProjectionStride(atomCount: number) {
+  if (atomCount <= LABEL_SCAN_TARGET_ATOMS) return 1
+  return Math.ceil(atomCount / LABEL_SCAN_TARGET_ATOMS)
 }
 
 function covalentRadius(symbol: string) {
