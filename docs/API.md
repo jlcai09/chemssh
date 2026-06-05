@@ -416,6 +416,198 @@ WebSocket 连接使用 query 参数：
 }
 ```
 
+## 客户端缓存
+
+客户端缓存用于保存同一个浏览器 `client_id` 的 UI 状态，例如画板布局、窗口大小、tail 行数等。它不是认证或权限系统，不应保存密码、token 等敏感信息。
+
+前端封装：
+
+```text
+frontend/src/api/clientCache.ts
+```
+
+后端实现：
+
+```text
+backend/app/api/client_cache.py
+backend/app/services/client_cache_service.py
+```
+
+默认保存位置：
+
+```text
+cache/<client_id>/
+```
+
+目录内文件：
+
+- `meta.json`：`created_at`、`last_seen_at`、`last_saved_at`。
+- `preferences.json`：用户偏好，例如 tail 行数。
+- `boards.json`：画板、viewport、窗口布局和窗口 payload。
+
+后端启动时会清理超过 `client_cache.cleanup_offline_days` 没有上线的 client cache，默认 14 天。
+
+### `GET /api/client-cache`
+
+读取当前客户端缓存。请求必须带：
+
+```http
+X-ChemSSH-Client-Id: client_xxx
+```
+
+响应：
+
+```json
+{
+  "enabled": true,
+  "client_id": "client_xxx",
+  "preferences": {
+    "version": 1,
+    "logs": {
+      "tailLines": 20
+    }
+  },
+  "boards": {
+    "version": 1,
+    "activeBoardId": "board_xxx",
+    "boards": []
+  },
+  "updated_at": "2026-06-05T12:00:00Z"
+}
+```
+
+### `PUT /api/client-cache/preferences`
+
+保存用户偏好。
+
+```json
+{
+  "version": 1,
+  "logs": {
+    "tailLines": 80
+  },
+  "workspace": {
+    "fileTreeWidth": 360,
+    "sidePaneWidth": 420,
+    "queueHeight": 260,
+    "currentPath": "/workspace/project",
+    "showHiddenFiles": false,
+    "activeWorkPanelId": "builtin:preview"
+  },
+  "canvas": {
+    "lastBoardId": "board_xxx"
+  }
+}
+```
+
+前端通过 `frontend/src/api/clientPreferences.ts` 合并保存偏好，避免画板、工作台和日志窗口分别保存时互相覆盖。当前接入项包括：
+
+- `workspace.fileTreeWidth`：工作台左侧文件管理器宽度。
+- `workspace.sidePaneWidth`：工作台右侧窗口宽度。
+- `workspace.queueHeight`：工作台右侧队列/日志高度。
+- `workspace.currentPath`：工作台当前目录。
+- `workspace.showHiddenFiles`：是否显示隐藏文件。
+- `workspace.activeWorkPanelId`：工作台右侧活跃面板。
+- `logs.tailLines`：tail 行数。
+
+### `PUT /api/client-cache/boards`
+
+保存画板布局。
+
+```json
+{
+  "version": 1,
+  "activeBoardId": "board_xxx",
+  "boards": [
+    {
+      "id": "board_xxx",
+      "name": "Board 1",
+      "createdAt": "2026-06-05T12:00:00Z",
+      "updatedAt": "2026-06-05T12:05:00Z",
+      "viewport": {
+        "x": 120,
+        "y": 80,
+        "zoom": 1
+      },
+      "windows": [
+        {
+          "id": "window_xxx",
+          "type": "tail",
+          "title": "slurm.out",
+          "x": 80,
+          "y": 80,
+          "width": 520,
+          "height": 340,
+          "zIndex": 2,
+          "payload": {
+            "path": "/workspace/project/slurm.out",
+            "lines": 80,
+            "boundFileManagerId": "window_files"
+          }
+        },
+        {
+          "id": "window_files",
+          "type": "file-manager",
+          "title": "project",
+          "x": 40,
+          "y": 60,
+          "width": 620,
+          "height": 430,
+          "zIndex": 1,
+          "payload": {
+            "path": "/workspace/project",
+            "bindingNumber": 1,
+            "bindingColor": "#176b87"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+画板窗口交互约定：
+
+- 新建窗口菜单顺序为：文件、终端、预览、队列、Tail、插件。空画板的默认新建入口创建文件管理窗口。
+- 文件管理窗口会把当前目录保存到 `payload.path`，标题只显示当前目录名；新建时写入 `payload.bindingNumber` 和 `payload.bindingColor`，用于窗口类型标签、绑定徽标和关系线的一致颜色/编号。绑定到该文件管理器的 Tail 窗口在单击选中任意文件时会自动更新 `payload.path`，与工作台 Tail 的选中文件行为保持一致。
+- Tail 窗口通过 `payload.boundFileManagerId` 记录绑定的文件管理窗口。画板 Tail 不提供手动路径输入，绑定入口位于 Tail 标题栏右侧的连接图标；日志内容仍由 `LogViewer.vue` 调用 `GET /api/files/tail`。
+- Terminal 窗口通过 `payload.tabBindings` 保存当前终端标签页绑定摘要，形如：
+
+```json
+[
+  {
+    "tabId": "terminal_tab_1",
+    "title": "project",
+    "cwd": "/workspace/project",
+    "syncMode": "follow",
+    "boundFileManagerId": "window_files",
+    "active": true
+  }
+]
+```
+
+终端标签页绑定到文件管理窗口后，默认进入跟随目录模式；切到双向同步时，终端 `cwd` 变化会回写对应的文件管理窗口，而不是全局工作台文件管理器。画板会用窗口标题徽标和关系线展示文件管理器、Tail、Terminal 标签页之间的绑定关系。Terminal 的大窗口按钮会把整个 TerminalPanel teleport 到 `body` 后全视口覆盖，避免被画板 transform 限制；多标签页切换、拖拽排序和标签级绑定保持不变。
+
+### `POST /api/client-cache/heartbeat`
+
+刷新当前 `client_id` 的 `last_seen_at`。前端启动时调用一次，之后每 5 到 10 分钟调用一次。
+
+### `DELETE /api/client-cache`
+
+清理当前请求头 `X-ChemSSH-Client-Id` 对应的缓存目录。该接口不接受前端传入路径，只删除服务端解析出的 `cache/<client_id>/`。
+
+设置页“清理当前缓存”会调用该接口，同时清理前端本地兜底缓存，然后刷新页面，让工作台布局、tail 行数、画板列表和窗口布局回到默认值。
+
+响应：
+
+```json
+{
+  "success": true,
+  "client_id": "client_xxx",
+  "removed": true
+}
+```
+
 ### 终端 `rz` / `sz` 接管
 
 终端会话启动时，后端会创建临时 `rz`、`sz` shim，并把 shim 目录放到该终端进程的 `PATH` 最前面。脚本或用户命令通过普通 `PATH` 查找调用 `rz` / `sz` 时，不会进入原生 ZMODEM 传输；shim 会向 pty 输出 ChemSSH 私有 OSC 标记，后端读取终端输出时吞掉该标记并转成 WebSocket 传输请求。shim 会阻塞等待前端回传 `transfer_result`，收到成功后以 `0` 退出，收到失败或取消后以非零码退出；这让脚本中位于 `sz` 后面的 `rm` 等清理命令在浏览器下载请求完成后才继续执行。
@@ -470,6 +662,51 @@ WebSocket 连接使用 query 参数：
 - 如果脚本显式调用 `/usr/bin/rz`、`/usr/bin/sz` 等绝对路径，会绕过 shim。后端会在 pty 输出流中识别常见原生 ZMODEM 起始特征并发送 `Ctrl+C` 中断，避免终端继续卡死。原生 `rz` 可继续接管为浏览器上传；原生 `sz` 在协议流中通常无法可靠恢复原始文件参数，因此会提示改用 PATH 解析到的 `sz` shim，除非后续实现完整 ZMODEM 接收器。
 
 ## 前端窗口交互协议
+
+### 无边画板
+
+顶部“画板”视图由 `frontend/src/views/CanvasBoard.vue` 实现，窗口外壳由 `frontend/src/components/canvas/CanvasWindow.vue` 统一管理。画板状态保存在 client cache 的 `boards.json` 中。
+
+第一版画板窗口类型：
+
+| 类型 | 当前行为 |
+| --- | --- |
+| `file-manager` | 渲染画板文件管理器窗口，可浏览目录并把文件拖给其它窗口 |
+| `queue` | 渲染 `QueueStatus.vue`，队列仍可打开作业工作目录 |
+| `tail` | 渲染 `LogViewer.vue`，保存路径和 tail 行数 |
+| `terminal` | 渲染 `TerminalPanel.vue`，窗口 resize 后触发 terminal fit |
+| `preview` | 渲染画板预览窗口，复用 `FilePreview.vue`、文本读取/保存和 ASE 结构预览接口 |
+| `plugin` | 渲染插件 iframe 窗口，可选择插件 panel，激活后发送 `chemssh:plugin:init` |
+
+窗口布局使用画布坐标，而不是屏幕像素。保存字段包括：
+
+- `x`、`y`：画布坐标。
+- `width`、`height`：窗口尺寸。
+- `zIndex`：窗口层级。
+- `payload`：窗口类型自己的轻量状态，例如 tail 的 `{ path, lines }`。
+
+`file-manager` 窗口的 `payload.path` 保存当前目录。画板文件管理器复用工作台的完整工具栏能力：刷新、上级目录、新建文件、新建文件夹、显示隐藏文件、上传文件/文件夹、下载、重命名和删除。外部文件拖拽上传只在具体文件管理器窗口内响应，目标目录就是该窗口当前目录，便于多个文件管理器并存时选择上传位置。双击目录进入目录；双击文件统一打开 `preview` 窗口。Tail 窗口不由双击文件触发，而是和工作台一样由当前文件选择驱动：绑定文件管理器后，单击/选中文件会更新对应 Tail 路径。
+
+`preview` 窗口的 `payload.path` 保存当前文件。从文件管理器打开或从内部文件拖拽打开时还会保存 `payload.previewType` 与 `payload.format`，预览窗口优先使用后端文件类型判定结果，再按文件名和扩展名兜底判断结构文件；大文件沿用现有确认流程。预览大窗口与 Terminal 大窗口一致，使用 `Teleport to="body"` 加 `position: fixed; inset: 0` 覆盖整个页面，不使用 Element Plus fullscreen dialog。
+
+`plugin` 窗口保存 `pluginId`、`panelId`、`assetUrl`、`apiBase` 和标题。iframe 加载后接收：
+
+```json
+{
+  "type": "chemssh:plugin:init",
+  "version": 1,
+  "pluginId": "plugin_id",
+  "panelId": "panel_id",
+  "instanceId": "window_xxx",
+  "locale": "zh",
+  "theme": "light",
+  "apiBase": "/api/plugins/plugin_id/api",
+  "assetBase": "/api/plugins/plugin_id/assets",
+  "initialFile": null
+}
+```
+
+画板 UI 要保持工具化和低干扰：浅色点阵背景、贴边工具栏、图标按钮加 tooltip、窗口薄边框和不超过 8px 的圆角。多窗口、窄屏和不同缩放比例下不得出现文字溢出或控件重叠。
 
 ### 文件拖拽 payload
 
@@ -537,7 +774,7 @@ function handleDrop(event: DragEvent) {
 - 文件管理器 -> 浏览器外部拖拽目录时，即使只拖了一个目录，也使用 `download-selection` 返回 zip。
 - 文件管理器 -> 终端：向当前 tab 输入 ` ${paths.join(' ')}`，不自动回车。
 - 文件管理器 -> 预览：只打开第一个路径，并切换到预览面板。
-- 预览面板统一使用结构/文本切换窗口；结构与文本子视图保活，文件管理器切换目录不会清空当前预览目标，打开普通文件时进入文本视图，只有当前目标可作为结构预览时才显示结构切换入口。结构加载和重绘期间会在旧结构上显示非阻塞半透明遮罩；继续打开下一个结构会取消上一条结构 preview 请求，并且旧响应不能覆盖新状态。预览器工具栏提供“大窗口打开”按钮，用 Element Plus 全屏弹窗复用当前结构或文本预览器，适合临时放大查看而不改变当前文件选择。
+- 预览面板统一使用结构/文本切换窗口；结构与文本子视图保活，文件管理器切换目录不会清空当前预览目标，打开普通文件时进入文本视图，只有当前目标可作为结构预览时才显示结构切换入口。结构加载和重绘期间会在旧结构上显示非阻塞半透明遮罩；继续打开下一个结构会取消上一条结构 preview 请求，并且旧响应不能覆盖新状态。预览器工具栏提供“大窗口打开”按钮，使用与 Terminal 一致的 `Teleport to="body"` 固定全页层复用当前结构或文本预览器，适合临时放大查看而不改变当前文件选择。
 - 文件管理器 -> 插件结构 provider：如果插件 UI 已加载并注册 active preview provider，文件管理器可先调用插件 `probe`，匹配成功后把插件 `StructureSource` 和文件路径发送到现有预览窗口。
 - 文件管理器图标：已加载插件注册 active preview provider 后，文件列表会用 `accepts.extensions`、`accepts.filenames`、`accepts.preview_types` 做轻量匹配；匹配到的文件显示与结构文件一致的小眼睛图标。列表渲染阶段不调用 `probe`，真实可预览性仍在双击打开时确认。
 - 文件管理器 -> 新模块：默认读取 `application/x-chemssh-files`。如果模块只需要路径，使用 `payload.paths`；如果需要判断结构/文本/目录，使用 `payload.items[*].preview_type` 和 `type`。

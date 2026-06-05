@@ -14,9 +14,6 @@
         <span v-if="structureError" class="preview-error">{{ structureError }}</span>
       </div>
       <div class="preview-actions">
-        <el-tooltip v-if="canOpenPopout" :content="t('preview.openExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
-          <el-button :icon="FullScreen" circle size="small" @click="popoutOpen = true" />
-        </el-tooltip>
         <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
           <el-button :icon="Refresh" circle size="small" @click="refreshText" />
         </el-tooltip>
@@ -38,6 +35,9 @@
             :disabled="!editingEnabled || !dirty"
             @click="$emit('save', draft)"
           />
+        </el-tooltip>
+        <el-tooltip v-if="canOpenPopout" :content="t('preview.openExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-button :icon="FullScreen" circle size="small" @click="popoutOpen = true" />
         </el-tooltip>
       </div>
     </div>
@@ -78,15 +78,8 @@
       <el-empty :description="t('preview.empty')" />
     </div>
 
-    <el-dialog
-      v-model="popoutOpen"
-      append-to-body
-      class="preview-popout-dialog"
-      destroy-on-close
-      fullscreen
-      :title="displayName"
-    >
-      <div class="preview-popout-body">
+    <Teleport to="body">
+      <div v-if="popoutOpen" class="preview-popout-panel" role="dialog" aria-modal="true" tabindex="-1">
         <div class="preview-popout-toolbar">
           <el-segmented
             v-if="structureCandidate && displayPath"
@@ -122,6 +115,9 @@
                 :disabled="!editingEnabled || !dirty"
                 @click="$emit('save', draft)"
               />
+            </el-tooltip>
+            <el-tooltip :content="t('preview.exitExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+              <el-button :icon="ScaleToOriginal" circle size="small" @click="popoutOpen = false" />
             </el-tooltip>
           </div>
         </div>
@@ -161,13 +157,13 @@
           </div>
         </div>
       </div>
-    </el-dialog>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, defineComponent, h, ref, watch } from 'vue'
-import { EditPen, FullScreen, Loading, Refresh } from '@element-plus/icons-vue'
+import { EditPen, FullScreen, Loading, Refresh, ScaleToOriginal } from '@element-plus/icons-vue'
 import type { FileReadResponse } from '../api/files'
 import { t } from '../i18n'
 import type { AsePreviewResponse } from '../types/structure'

@@ -11,6 +11,7 @@ from backend.app.providers.scheduler.pbs import PbsProvider
 from backend.app.providers.scheduler.slurm import SlurmProvider
 from backend.app.services.file_service import FileService
 from backend.app.services.job_service import JobService
+from backend.app.services.client_cache_service import ClientCacheService
 from backend.app.services.queue_service import QueueService
 from backend.app.services.structure_service import StructureService
 
@@ -42,6 +43,10 @@ def get_file_service(settings: Settings = Depends(get_settings_dependency)) -> F
 
 def get_structure_service(settings: Settings = Depends(get_settings_dependency)) -> StructureService:
     return StructureService(settings)
+
+
+def get_client_cache_service(settings: Settings = Depends(get_settings_dependency)) -> ClientCacheService:
+    return ClientCacheService(settings)
 
 
 def get_scheduler_provider(settings: Settings = Depends(get_settings_dependency)) -> SchedulerProvider:

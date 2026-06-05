@@ -53,7 +53,7 @@
     <div class="viewer-stage">
       <div ref="container" class="viewer-canvas" />
       <div v-if="asePreview" class="viewer-floating-tools">
-        <el-popover trigger="click" placement="right-start" :width="260">
+        <el-popover trigger="click" placement="right-start" :width="260" :teleported="false">
           <template #reference>
             <el-button :aria-label="t('viewer.bondSettings')" :icon="Connection" circle size="small" />
           </template>
@@ -76,7 +76,7 @@
           </div>
         </el-popover>
 
-        <el-popover trigger="click" placement="right-start" :width="220">
+        <el-popover trigger="click" placement="right-start" :width="220" :teleported="false">
           <template #reference>
             <el-button :aria-label="t('viewer.displaySettings')" :icon="View" circle size="small" />
           </template>
@@ -90,7 +90,7 @@
           <el-button :aria-label="t('viewer.resetView')" :icon="ResetViewIcon" circle size="small" @click="resetView" />
         </el-tooltip>
 
-        <el-popover trigger="click" placement="right-start" :width="236" :disabled="!structureHasCell">
+        <el-popover trigger="click" placement="right-start" :width="236" :disabled="!structureHasCell" :teleported="false">
           <template #reference>
             <el-button
               :aria-label="t('viewer.supercellSettings')"

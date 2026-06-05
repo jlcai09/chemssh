@@ -1,12 +1,13 @@
 <template>
-  <div class="terminal-panel">
-    <div
-      ref="tabsRef"
-      class="terminal-tabs"
-      :class="{ 'is-overflowing': tabsOverflowing }"
-      role="tablist"
-      :aria-label="t('terminal.title')"
-    >
+  <Teleport to="body" :disabled="!largeOpen">
+    <div class="terminal-panel" :class="{ 'is-large': largeOpen }">
+      <div
+        ref="tabsRef"
+        class="terminal-tabs"
+        :class="{ 'is-overflowing': tabsOverflowing }"
+        role="tablist"
+        :aria-label="t('terminal.title')"
+      >
       <div
         v-for="tab in tabs"
         :key="tab.localId"
@@ -25,7 +26,44 @@
         @drop="handleTabDrop(tab.localId, $event)"
       >
         <span class="terminal-tab-label">{{ tabTitle(tab) }}</span>
+        <span
+          v-if="boundFileManagerLabel(tab)"
+          class="terminal-tab-binding-label"
+          :style="{ '--binding-color': boundFileManagerColor(tab) }"
+        >
+          {{ boundFileManagerLabel(tab) }}
+        </span>
         <span class="terminal-tab-actions" @click.stop>
+          <el-dropdown
+            v-if="fileManagerOptions.length > 0"
+            trigger="click"
+            placement="bottom"
+            @command="handleTabBindCommand(tab, $event)"
+          >
+            <button
+              class="terminal-tab-icon terminal-tab-bind"
+              :class="{ 'is-bound': Boolean(tab.boundFileManagerId) }"
+              type="button"
+              :aria-label="t('terminal.bindFileManager')"
+            >
+              <el-icon><Link /></el-icon>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="">{{ t('terminal.bindNone') }}</el-dropdown-item>
+                <el-dropdown-item
+                  v-for="manager in fileManagerOptions"
+                  :key="manager.id"
+                  :command="manager.id"
+                >
+                  <span class="terminal-bind-option">
+                    <span class="terminal-bind-dot" :style="{ background: manager.color }" />
+                    <span>{{ manager.title }}</span>
+                  </span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-tooltip :content="syncModeLabel(tab.syncMode)" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
             <button
               class="terminal-tab-icon terminal-tab-sync"
@@ -100,24 +138,30 @@
           </div>
         </div>
       </el-popover>
-    </div>
+      <el-tooltip :content="largeOpen ? t('terminal.exitLarge') : t('terminal.openLarge')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <button class="terminal-tab-settings terminal-tab-large" type="button" :aria-label="largeOpen ? t('terminal.exitLarge') : t('terminal.openLarge')" @click="toggleLargeOpen">
+          <el-icon><FullScreen /></el-icon>
+        </button>
+      </el-tooltip>
+      </div>
 
-    <div class="terminal-shell" @dragover="handleFileDragOver" @drop="handleFileDrop">
-      <div
-        v-for="tab in tabs"
-        :key="tab.localId"
-        :ref="el => setTerminalHost(tab.localId, el)"
-        class="terminal-host"
-        :class="{ 'is-active': tab.localId === activeTabId }"
-      />
-      <div v-if="activeTab?.awaitingVisibleShellOutput" class="terminal-overlay">{{ t('terminal.starting') }}</div>
+      <div class="terminal-shell" @dragover="handleFileDragOver" @drop="handleFileDrop">
+        <div
+          v-for="tab in tabs"
+          :key="tab.localId"
+          :ref="el => setTerminalHost(tab.localId, el)"
+          class="terminal-host"
+          :class="{ 'is-active': tab.localId === activeTabId }"
+        />
+        <div v-if="activeTab?.awaitingVisibleShellOutput" class="terminal-overlay">{{ t('terminal.starting') }}</div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ArrowRight, Close, Plus, Setting } from '@element-plus/icons-vue'
+import { ArrowRight, Close, FullScreen, Link, Plus, Setting } from '@element-plus/icons-vue'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal, type IDisposable } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
@@ -132,6 +176,7 @@ import { uploadFile } from '../../api/files'
 import { requestBlob } from '../../api/http'
 import { formatFileDragTerminalInput, hasChemSSHFileDrag, readChemSSHFileDrag } from '../../api/fileDrag'
 import { t } from '../../i18n'
+import type { CanvasFileManagerBindingTarget, CanvasTerminalTabBinding } from '../../types/canvasBoard'
 
 type TerminalMessage =
   | { type: 'output'; data: string }
@@ -169,6 +214,7 @@ type TerminalTab = {
   preservingMiddleClickSelection: boolean
   resizeObserver: ResizeObserver | null
   fitFrame: number
+  boundFileManagerId: string | null
 }
 
 const TERMINAL_FONT_SIZE_STORAGE_KEY = 'chemssh.terminal.fontSize'
@@ -179,12 +225,16 @@ const TERMINAL_FONT_SIZE_MAX = 24
 const props = defineProps<{
   initialCwd?: string | null
   currentFileManagerPath?: string | null
+  fileManagers?: CanvasFileManagerBindingTarget[]
+  initialBindings?: CanvasTerminalTabBinding[]
   layoutVersion?: number
   transferUploadHandler?: (path: string, files: File[]) => Promise<void>
 }>()
 
 const emit = defineEmits<{
   'cwd-change': [path: string]
+  'bound-cwd-change': [managerId: string, path: string]
+  'binding-summary-change': [summary: CanvasTerminalTabBinding[]]
 }>()
 
 const tabs = ref<TerminalTab[]>([])
@@ -192,6 +242,7 @@ const activeTabId = ref<string | null>(null)
 const tabsRef = ref<HTMLElement | null>(null)
 const tabsOverflowing = ref(false)
 const terminalFontSize = ref(readStoredTerminalFontSize())
+const largeOpen = ref(false)
 const terminalFontSizeModel = computed({
   get: () => terminalFontSize.value,
   set: (value: number | undefined) => setTerminalFontSize(value)
@@ -202,6 +253,7 @@ let tabSerial = 0
 const TERMINAL_TAB_DRAG_MIME = 'application/x-chemssh-terminal-tab'
 
 const preferredCwd = computed(() => props.currentFileManagerPath || props.initialCwd || undefined)
+const fileManagerOptions = computed(() => props.fileManagers ?? [])
 const activeTab = computed(() => tabs.value.find(tab => tab.localId === activeTabId.value) ?? null)
 
 onMounted(async () => {
@@ -234,8 +286,15 @@ watch(
   path => {
     if (!path) return
     for (const tab of tabs.value) {
-      if (isTabFollowingFileManager(tab) && tab.cwd !== path) sendTabSyncCwd(tab, path)
+      if (!tab.boundFileManagerId && isTabFollowingFileManager(tab) && tab.cwd !== path) sendTabSyncCwd(tab, path)
     }
+  }
+)
+
+watch(
+  () => fileManagerOptions.value.map(item => `${item.id}\u0000${item.path}`).join('\u0001'),
+  () => {
+    syncTabsWithBoundFileManagers()
   }
 )
 
@@ -254,6 +313,12 @@ watch(
 
 watch(activeTabId, () => {
   requestActiveTabFit()
+  emitTerminalBindingSummary()
+})
+
+watch(largeOpen, () => {
+  window.setTimeout(handleLayoutChange, 0)
+  window.setTimeout(handleLayoutChange, 120)
 })
 
 watch(
@@ -292,27 +357,66 @@ function createEmptyTab(cwd?: string): TerminalTab {
     latestSelection: '',
     preservingMiddleClickSelection: false,
     resizeObserver: null,
-    fitFrame: 0
+    fitFrame: 0,
+    boundFileManagerId: null
   }
 }
 
-async function createTab(cwd?: string) {
+function normalizeInitialBindings() {
+  const bindings = props.initialBindings ?? []
+  return bindings.flatMap(binding => {
+    if (!binding || typeof binding.tabId !== 'string') return []
+    const syncMode: TerminalSyncMode = binding.syncMode === 'follow' || binding.syncMode === 'bidirectional'
+      ? binding.syncMode
+      : 'off'
+    return [{
+      ...binding,
+      title: typeof binding.title === 'string' ? binding.title : '',
+      cwd: typeof binding.cwd === 'string' ? binding.cwd : '',
+      syncMode,
+      boundFileManagerId: typeof binding.boundFileManagerId === 'string' ? binding.boundFileManagerId : null,
+      active: binding.active === true
+    }]
+  })
+}
+
+async function createTab(cwd?: string, binding?: CanvasTerminalTabBinding) {
   const tab = createEmptyTab(cwd)
+  if (binding) {
+    tab.syncMode = binding.syncMode
+    tab.boundFileManagerId = binding.boundFileManagerId
+    if (binding.cwd) tab.cwd = binding.cwd
+  }
   tabs.value.push(tab)
   activeTabId.value = tab.localId
+  emitTerminalBindingSummary()
   await nextTick()
   await initializeTabTerminal(tab)
   await requestTabFit(tab)
   measureTabsOverflow()
+  emitTerminalBindingSummary()
 }
 
 async function ensureInitialTab(cwd?: string) {
   if (tabs.value.length > 0) return
-  await createTab(cwd)
+  const initialBindings = normalizeInitialBindings()
+  if (initialBindings.length === 0) {
+    await createTab(cwd)
+    return
+  }
+
+  for (const binding of initialBindings) {
+    await createTab(binding.cwd || cwd, binding)
+  }
+  const activeBinding = initialBindings.find(binding => binding.active) ?? initialBindings[0]
+  const activeIndex = initialBindings.indexOf(activeBinding)
+  activeTabId.value = tabs.value[Math.max(0, activeIndex)]?.localId ?? tabs.value[0]?.localId ?? null
+  emitTerminalBindingSummary()
 }
 
 function activateTab(tabId: string) {
   activeTabId.value = tabId
+  emitTerminalBindingSummary()
 }
 
 function handleTabDragStart(tabId: string, event: DragEvent) {
@@ -447,8 +551,9 @@ function connectTabSocket(tab: TerminalTab, id: string) {
     tab.connected = true
     markTabInteractive(tab)
     void requestTabFit(tab)
-    if (isTabFollowingFileManager(tab) && props.currentFileManagerPath && tab.cwd !== props.currentFileManagerPath) {
-      sendTabSyncCwd(tab, props.currentFileManagerPath)
+    const managerPath = fileManagerPathForTab(tab)
+    if (isTabFollowingFileManager(tab) && managerPath && tab.cwd !== managerPath) {
+      sendTabSyncCwd(tab, managerPath)
     }
   }
 
@@ -633,6 +738,7 @@ async function closeTab(tabId: string) {
   await nextTick()
   measureTabsOverflow()
   requestActiveTabFit()
+  emitTerminalBindingSummary()
 }
 
 async function disposeTab(tab: TerminalTab, closeSession: boolean) {
@@ -683,13 +789,16 @@ function closeTabSocket(tab: TerminalTab) {
 function toggleTabSync(tab: TerminalTab) {
   const nextMode = nextSyncMode(tab.syncMode)
   tab.syncMode = nextMode
-  if (nextMode === 'follow' && props.currentFileManagerPath) {
-    sendTabSyncCwd(tab, props.currentFileManagerPath)
+  const managerPath = fileManagerPathForTab(tab)
+  if (nextMode === 'follow' && managerPath) {
+    sendTabSyncCwd(tab, managerPath)
+    emitTerminalBindingSummary()
     return
   }
-  if (nextMode === 'bidirectional' && tab.cwd && tab.cwd !== props.currentFileManagerPath) {
-    emit('cwd-change', tab.cwd)
+  if (nextMode === 'bidirectional' && tab.cwd && tab.cwd !== managerPath) {
+    emitTabCwdChange(tab, tab.cwd)
   }
+  emitTerminalBindingSummary()
 }
 
 function nextSyncMode(mode: TerminalSyncMode): TerminalSyncMode {
@@ -704,6 +813,66 @@ function syncModeLabel(mode: TerminalSyncMode) {
   return t('terminal.syncCwdOff')
 }
 
+function handleTabBindCommand(tab: TerminalTab, command: unknown) {
+  const managerId = typeof command === 'string' ? command : ''
+  tab.boundFileManagerId = managerId || null
+  if (tab.boundFileManagerId && tab.syncMode === 'off') tab.syncMode = 'follow'
+  const path = fileManagerPathForTab(tab)
+  if (path && isTabFollowingFileManager(tab) && tab.cwd !== path) sendTabSyncCwd(tab, path)
+  emitTerminalBindingSummary()
+}
+
+function boundFileManager(tab: TerminalTab) {
+  if (!tab.boundFileManagerId) return null
+  return fileManagerOptions.value.find(item => item.id === tab.boundFileManagerId) ?? null
+}
+
+function boundFileManagerLabel(tab: TerminalTab) {
+  return boundFileManager(tab)?.title ?? ''
+}
+
+function boundFileManagerColor(tab: TerminalTab) {
+  return boundFileManager(tab)?.color ?? '#176b87'
+}
+
+function fileManagerPathForTab(tab: TerminalTab) {
+  return boundFileManager(tab)?.path || props.currentFileManagerPath || ''
+}
+
+function emitTabCwdChange(tab: TerminalTab, path: string) {
+  if (tab.boundFileManagerId) {
+    emit('bound-cwd-change', tab.boundFileManagerId, path)
+    return
+  }
+  emit('cwd-change', path)
+}
+
+function syncTabsWithBoundFileManagers() {
+  const managerIds = new Set(fileManagerOptions.value.map(item => item.id))
+  for (const tab of tabs.value) {
+    if (tab.boundFileManagerId && !managerIds.has(tab.boundFileManagerId)) {
+      tab.boundFileManagerId = null
+      continue
+    }
+    const path = fileManagerPathForTab(tab)
+    if (tab.boundFileManagerId && path && isTabFollowingFileManager(tab) && tab.cwd !== path) {
+      sendTabSyncCwd(tab, path)
+    }
+  }
+  emitTerminalBindingSummary()
+}
+
+function emitTerminalBindingSummary() {
+  emit('binding-summary-change', tabs.value.map(tab => ({
+    tabId: tab.localId,
+    title: tabTitle(tab),
+    cwd: tab.cwd,
+    syncMode: tab.syncMode,
+    boundFileManagerId: tab.boundFileManagerId,
+    active: tab.localId === activeTabId.value
+  })))
+}
+
 function isTabFollowingFileManager(tab: TerminalTab) {
   return tab.syncMode === 'follow' || tab.syncMode === 'bidirectional'
 }
@@ -711,9 +880,11 @@ function isTabFollowingFileManager(tab: TerminalTab) {
 function applyTabCwd(tab: TerminalTab, path: string) {
   if (!path) return
   tab.cwd = path
+  emitTerminalBindingSummary()
   if (tab.syncMode !== 'bidirectional') return
-  if (path === props.currentFileManagerPath) return
-  emit('cwd-change', path)
+  if (path === fileManagerPathForTab(tab)) return
+  emitTabCwdChange(tab, path)
+  emitTerminalBindingSummary()
 }
 
 function markTabInteractive(tab: TerminalTab) {
@@ -740,6 +911,7 @@ function sendTabSocketMessage(tab: TerminalTab, payload: Record<string, unknown>
 function sendTabSyncCwd(tab: TerminalTab, path: string) {
   tab.cwd = path
   sendTabSocketMessage(tab, { type: 'sync_cwd', path })
+  emitTerminalBindingSummary()
 }
 
 function handleFileDragOver(event: DragEvent) {
@@ -838,6 +1010,11 @@ async function cleanupDetachedSessions() {
 
 function handleLayoutChange() {
   measureTabsOverflow()
+  requestActiveTabFit()
+}
+
+function toggleLargeOpen() {
+  largeOpen.value = !largeOpen.value
   requestActiveTabFit()
 }
 

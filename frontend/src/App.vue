@@ -36,7 +36,11 @@
           :system-info="systemInfo"
           :open-path-request="workspacePathRequest"
         />
-        <Jobs v-show="activeView === 'jobs'" :system-info="systemInfo" @open-workdir="openWorkspacePath" />
+        <CanvasBoard
+          v-show="activeView === 'board'"
+          :system-info="systemInfo"
+          @open-workdir="openWorkspacePath"
+        />
         <Settings v-show="activeView === 'settings'" :system-info="systemInfo" />
       </main>
     </div>
@@ -50,12 +54,12 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import en from 'element-plus/es/locale/lang/en'
 import { getSystemInfo, type SystemInfo } from './api/system'
 import chemsshIcon from './assets/chemssh-icon.svg'
-import Jobs from './views/Jobs.vue'
+import CanvasBoard from './views/CanvasBoard.vue'
 import Settings from './views/Settings.vue'
 import Workspace from './views/Workspace.vue'
 import { locale, setLocale, t } from './i18n'
 
-type ActiveView = 'workspace' | 'jobs' | 'settings'
+type ActiveView = 'workspace' | 'board' | 'settings'
 
 const activeView = ref<ActiveView>('workspace')
 const systemInfo = ref<SystemInfo | null>(null)
@@ -66,7 +70,7 @@ const elementLocale = computed(() => (locale.value === 'zh' ? zhCn : en))
 
 const navOptions = computed(() => [
   { label: t('nav.workspace'), value: 'workspace' },
-  { label: t('nav.jobs'), value: 'jobs' },
+  { label: t('nav.board'), value: 'board' },
   { label: t('nav.settings'), value: 'settings' }
 ])
 

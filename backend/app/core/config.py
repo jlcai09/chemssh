@@ -77,6 +77,13 @@ class PluginsConfig(BaseModel):
     directories: list[Path] = Field(default_factory=list)
 
 
+class ClientCacheConfig(BaseModel):
+    enabled: bool = True
+    directory: Optional[Path] = None
+    cleanup_offline_days: int = Field(default=14, ge=1)
+    max_file_size_kb: int = Field(default=512, ge=16)
+
+
 class Settings(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
@@ -87,6 +94,7 @@ class Settings(BaseModel):
     terminal: TerminalConfig = Field(default_factory=TerminalConfig)
     compression: CompressionConfig = Field(default_factory=CompressionConfig)
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
+    client_cache: ClientCacheConfig = Field(default_factory=ClientCacheConfig)
 
 
 _settings: Optional[Settings] = None
@@ -111,6 +119,8 @@ def _normalize_settings(settings: Settings) -> Settings:
     settings.viewer.default_style = settings.viewer.default_style.lower().strip()
     if settings.terminal.shell is not None:
         settings.terminal.shell = settings.terminal.shell.strip() or None
+    if settings.client_cache.directory is not None:
+        settings.client_cache.directory = settings.client_cache.directory.expanduser().resolve()
     return settings
 
 

@@ -45,6 +45,13 @@ Run a narrower test file when the change is focused. Use the full test suite for
 - Global styles: `frontend/src/styles.css`.
 - i18n strings: `frontend/src/i18n.ts`.
 
+### File Type And Preview Standards
+
+- Backend file type detection is the source of truth. Use `FileItem.preview_type` and `FileItem.format` returned by `listFiles()` / drag payloads before falling back to names or extensions.
+- Do not create per-window structure/text extension allowlists. Shared frontend fallback helpers live in `frontend/src/api/fileTypes.ts`; update that file only when the backend `backend/app/services/file_types.py` capability changes.
+- Workspace and canvas preview behavior should stay aligned. New canvas/file-manager modules should pass through the existing `FileItem` metadata (`preview_type`, `format`, `extension`) instead of passing only a path when the metadata is available.
+- Tail/log-opening heuristics are only for choosing a convenience window such as Tail. They must not be reused as file preview type standards.
+
 After modifying frontend code, you usually do not need to start the backend/server. Verify with:
 
 ```powershell
@@ -61,6 +68,7 @@ If sandboxed `npm` fails on Windows, rerun the same command with approval outsid
 - Internal file drag MIME: `application/x-chemssh-files`.
 - Terminal drops insert selected absolute paths as text, prefixed by one space and joined by spaces.
 - Preview drops open only the first selected path.
+- File-manager double-click behavior must stay consistent across workspace and canvas: directories open in the same file manager; files open in Preview. Tail/log windows follow file-manager selection when bound, and must not be opened by special-casing log-like filenames on double-click.
 - External browser drops use download URLs; multiple files or directories download as `chemssh-selection.zip`.
 - New modules that accept dragged files should use `hasChemSSHFileDrag` and `readChemSSHFileDrag` from `frontend/src/api/fileDrag.ts`.
 

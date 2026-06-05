@@ -173,7 +173,7 @@
         @dblclick="resetSideLayout"
       />
 
-      <LogViewer class="side-log" :path="logPath" />
+      <LogViewer class="side-log" :path="logPath" :initial-lines="workspaceTailLines" @lines-change="setWorkspaceTailLines" />
     </aside>
 
     <div v-if="dragUploadActive" class="workspace-drop-overlay" aria-live="polite">
@@ -280,16 +280,36 @@ import {
   type FileReadResponse,
   type UploadProgress
 } from '../api/files'
-import { API_BASE, ApiError, downloadUrl, request } from '../api/http'
+import { API_BASE, downloadUrl, request } from '../api/http'
+import { getClientPreferences, loadClientPreferencesState, saveClientPreferencesPatch } from '../api/clientPreferences'
 import { hasChemSSHFileDrag, readChemSSHFileDrag } from '../api/fileDrag'
 import {
   providerMatchesItem,
   type FilePreviewProvider,
   type PreviewProbeResponse
 } from '../api/filePreviewProviders'
+import { isStructurePreviewItem } from '../api/fileTypes'
 import { submitJob, type SubmitCommand } from '../api/jobs'
 import { activatePlugin, deactivatePlugin, listPlugins, type PluginManifest } from '../api/plugins'
+import {
+  confirmLargePreview,
+  isLargePreviewError,
+  normalizeTextLineEndings,
+  previewApiErrorMessage
+} from '../api/previewUtils'
 import { ASE_STRUCTURE_SOURCE, readStructurePreview } from '../api/structures'
+import {
+  collectDropUploadEntries,
+  filesToUploadEntries,
+  hasFileDrag,
+  joinDisplayPath,
+  prepareUploadEntries,
+  SAFE_UPLOAD_SEGMENT_RE,
+  setUploadDropEffect,
+  type UploadConflictAction,
+  type UploadConflictResolution,
+  type UploadEntry
+} from '../api/uploadEntries'
 import type { SystemInfo } from '../api/system'
 import type { AsePreviewResponse, StructureSource } from '../types/structure'
 import FilePreview from '../components/FilePreview.vue'
@@ -316,6 +336,7 @@ const pathInput = ref('')
 const selectedItems = ref<FileItem[]>([])
 const selectedItem = ref<FileItem | null>(null)
 const showHiddenFiles = ref(false)
+const workspaceTailLines = ref(20)
 const preview = ref<FileReadResponse | null>(null)
 const asePreview = ref<AsePreviewResponse | null>(null)
 const previewMode = ref<PreviewMode>('text')
@@ -355,28 +376,11 @@ type UploadState = {
   total: number
   speedBytesPerSecond: number
 }
-type UploadConflictAction = 'overwrite' | 'skip' | 'suffix' | 'cancel'
-type UploadConflictResolution = {
-  action: UploadConflictAction
-  applyAll: boolean
-}
 type UploadConflictDialogState = {
   visible: boolean
   name: string
   applyAll: boolean
   resolve: ((resolution: UploadConflictResolution) => void) | null
-}
-type UploadEntry = {
-  file: File
-  relativePath: string
-  displayPath: string
-  rootName: string
-}
-type PreparedUploadEntries = {
-  entries: UploadEntry[]
-  invalidCount: number
-  renamedCount: number
-  cancelled: boolean
 }
 type UploadBatchResult = {
   uploaded: number
@@ -384,15 +388,6 @@ type UploadBatchResult = {
   total: number
   cancelled: boolean
   message: string
-}
-type FileSystemEntryLike = {
-  isFile: boolean
-  isDirectory: boolean
-  name: string
-  file?: (callback: (file: File) => void, errorCallback?: (error: unknown) => void) => void
-  createReader?: () => {
-    readEntries: (callback: (entries: FileSystemEntryLike[]) => void, errorCallback?: (error: unknown) => void) => void
-  }
 }
 
 const workspaceRef = ref<HTMLElement | null>(null)
@@ -439,6 +434,7 @@ let previousBodyCursor = ''
 let previousBodyUserSelect = ''
 let previewRequestSerial = 0
 let structurePreviewAbortController: AbortController | null = null
+let workspacePreferencesReady = false
 
 const SPLITTER_SIZE = 6
 const MIN_LEFT_WIDTH = 260
@@ -448,7 +444,6 @@ const MIN_QUEUE_HEIGHT = 180
 const MIN_LOG_HEIGHT = 120
 const CONTEXT_MENU_WIDTH = 190
 const CONTEXT_MENU_HEIGHT = 88
-const SAFE_UPLOAD_SEGMENT_RE = /^[A-Za-z0-9._-]+$/
 
 const workspaceStyle = computed<Record<string, string | undefined>>(() => ({
   '--workspace-left': leftPaneWidth.value === null ? undefined : `${leftPaneWidth.value}px`,
@@ -467,6 +462,42 @@ const sideStyle = computed<Record<string, string | undefined>>(() => ({
 }))
 
 const terminalInitialPath = computed(() => currentPath.value || props.systemInfo?.workspace_root || '')
+
+function applyWorkspacePreferences() {
+  const workspace = getClientPreferences().workspace
+  if (!workspace) return
+  leftPaneWidth.value = typeof workspace.fileTreeWidth === 'number' ? workspace.fileTreeWidth : null
+  sidePaneWidth.value = typeof workspace.sidePaneWidth === 'number' ? workspace.sidePaneWidth : null
+  sideQueueHeight.value = typeof workspace.queueHeight === 'number' ? workspace.queueHeight : null
+  showHiddenFiles.value = Boolean(workspace.showHiddenFiles)
+  workspaceTailLines.value = getClientPreferences().logs?.tailLines ?? 20
+  if (workspace.activeWorkPanelId && workPanels.value.some(panel => panel.id === workspace.activeWorkPanelId)) {
+    activeWorkPanelId.value = workspace.activeWorkPanelId
+  }
+}
+
+function saveWorkspacePreferences() {
+  if (!workspacePreferencesReady) return
+  void saveClientPreferencesPatch({
+    version: 1,
+    logs: {
+      tailLines: workspaceTailLines.value
+    },
+    workspace: {
+      fileTreeWidth: leftPaneWidth.value,
+      sidePaneWidth: sidePaneWidth.value,
+      queueHeight: sideQueueHeight.value,
+      currentPath: currentPath.value,
+      showHiddenFiles: showHiddenFiles.value,
+      activeWorkPanelId: activeWorkPanelId.value
+    }
+  }).catch(() => undefined)
+}
+
+function setWorkspaceTailLines(lines: number) {
+  workspaceTailLines.value = lines
+  saveWorkspacePreferences()
+}
 
 const visibleItems = computed(() => (listing.value?.items ?? []).filter(item => showHiddenFiles.value || !isHiddenItem(item)))
 const logPath = computed(() => selectedItems.value.find(item => item.type === 'file')?.path ?? null)
@@ -597,16 +628,19 @@ function stopResize() {
   window.removeEventListener('pointerup', stopResize)
   window.removeEventListener('pointercancel', stopResize)
   if (target === 'left' || target === 'right') notifyTerminalLayoutChanged()
+  saveWorkspacePreferences()
 }
 
 function resetColumnLayout() {
   leftPaneWidth.value = null
   sidePaneWidth.value = null
+  saveWorkspacePreferences()
   notifyTerminalLayoutChanged()
 }
 
 function resetSideLayout() {
   sideQueueHeight.value = null
+  saveWorkspacePreferences()
 }
 
 function notifyTerminalLayoutChanged() {
@@ -623,12 +657,8 @@ function isHiddenItem(item: FileItem) {
   return item.name.startsWith('.')
 }
 
-function isForcedStructureName(name: string) {
-  return name.toUpperCase().includes('POSCAR') || name.toUpperCase().includes('CONTCAR')
-}
-
 function isStructureCandidate(item: FileItem) {
-  return item.preview_type === 'structure' || isForcedStructureName(item.name)
+  return isStructurePreviewItem(item)
 }
 
 function panelTitle(panel: WorkPanel) {
@@ -838,6 +868,7 @@ function providerStructureSource(provider: FilePreviewProvider): StructureSource
 
 function setShowHiddenFiles(value: boolean) {
   showHiddenFiles.value = value
+  saveWorkspacePreferences()
   if (value) return
   const visibleSelection = selectedItems.value.filter(item => !isHiddenItem(item))
   const primary = selectedItem.value && !isHiddenItem(selectedItem.value) ? selectedItem.value : (visibleSelection[visibleSelection.length - 1] ?? null)
@@ -854,6 +885,7 @@ async function loadDirectory(path?: string | null) {
     listing.value = await listFiles(path ?? undefined)
     currentPath.value = listing.value.path
     pathInput.value = listing.value.path
+    saveWorkspacePreferences()
     setSelection([], null)
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.directoryLoadFailed'))
@@ -1113,71 +1145,6 @@ async function readStructurePreviewWithLargeConfirmation(
   }
 }
 
-function isLargePreviewError(error: unknown, code: 'FILE_TOO_LARGE' | 'STRUCTURE_FILE_TOO_LARGE') {
-  return error instanceof ApiError && error.code === code
-}
-
-async function confirmLargePreview(error: unknown, kind: 'text' | 'structure') {
-  const message = previewApiErrorMessage(error)
-  const title = kind === 'structure' ? t('preview.largeStructureTitle') : t('preview.largeFileTitle')
-  const body = kind === 'structure'
-    ? t('preview.largeStructureMessage', { message })
-    : t('preview.largeFileMessage', { message })
-
-  try {
-    await ElMessageBox.confirm(body, title, {
-      confirmButtonText: t('preview.loadAnyway'),
-      cancelButtonText: t('common.cancel'),
-      type: 'warning'
-    })
-    return true
-  } catch {
-    return false
-  }
-}
-
-function previewApiErrorMessage(error: unknown) {
-  if (error instanceof ApiError) {
-    if (error.code === 'FILE_TOO_LARGE') return fileSizeLimitMessage(error.message, 'text') ?? t('error.fileTooLarge')
-    if (error.code === 'STRUCTURE_FILE_TOO_LARGE') return fileSizeLimitMessage(error.message, 'structure') ?? t('error.structureFileTooLarge')
-    if (error.code === 'STRUCTURE_TOO_MANY_FRAMES') return frameLimitMessage(error.message) ?? t('error.structureTooManyFrames')
-    if (error.code === 'STRUCTURE_TOO_MANY_ATOMS') return atomLimitMessage(error.message) ?? t('error.structureTooManyAtoms')
-    if (error.code === 'INVALID_FRAME_RANGE') return t('error.invalidFrameRange')
-    if (error.code === 'FRAME_INDEX_OUT_OF_RANGE') return t('error.frameIndexOutOfRange')
-  }
-  return error instanceof Error ? error.message : t('message.previewFailed')
-}
-
-function fileSizeLimitMessage(message: string, kind: 'text' | 'structure') {
-  const match = message.match(/File is (\d+) bytes;.*?(?:larger than|limit is) (\d+) bytes/i)
-  if (!match) return null
-  const size = formatByteCount(Number(match[1]))
-  const limit = formatByteCount(Number(match[2]))
-  return kind === 'structure'
-    ? t('error.structureFileTooLargeDetail', { size, limit })
-    : t('error.fileTooLargeDetail', { size, limit })
-}
-
-function frameLimitMessage(message: string) {
-  const match = message.match(/more than (\d+) frames/i)
-  if (!match) return null
-  return t('error.structureTooManyFramesDetail', { limit: Number(match[1]) })
-}
-
-function atomLimitMessage(message: string) {
-  const match = message.match(/Structure has (\d+) atoms; limit is (\d+)/i)
-  if (!match) return null
-  return t('error.structureTooManyAtomsDetail', { count: Number(match[1]), limit: Number(match[2]) })
-}
-
-function formatByteCount(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes < 0) return '0 B'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
-}
-
 function setPreviewMode(mode: PreviewMode) {
   previewMode.value = mode
   if (mode === 'text') {
@@ -1198,10 +1165,6 @@ async function savePreview(content: string) {
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.saveFailed'))
   }
-}
-
-function normalizeTextLineEndings(content: string) {
-  return content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 }
 
 function openFileContextMenu(item: FileItem, event: MouseEvent) {
@@ -1342,20 +1305,6 @@ async function handleTerminalTransferUpload(path: string, files: File[]) {
   if (entries.length > 0 && result.uploaded === 0) throw new Error(t('message.uploadFailed'))
 }
 
-function filesToUploadEntries(files: File[]) {
-  return files
-    .filter(file => file.name)
-    .map(file => {
-      const relativePath = sanitizeRelativePath(file.webkitRelativePath || file.name)
-      return {
-        file,
-        relativePath,
-        displayPath: relativePath,
-        rootName: relativePath.split('/')[0] ?? file.name
-      } satisfies UploadEntry
-    })
-}
-
 async function handleUploadEntries(entries: UploadEntry[], targetPath = currentPath.value): Promise<UploadBatchResult> {
   const emptyResult: UploadBatchResult = {
     uploaded: 0,
@@ -1366,7 +1315,12 @@ async function handleUploadEntries(entries: UploadEntry[], targetPath = currentP
   }
   if (entries.length === 0) return emptyResult
 
-  const preparedResult = await prepareUploadEntries(entries, targetPath)
+  const preparedResult = await prepareUploadEntries(entries, {
+    targetPath,
+    promptConflict: promptUploadConflict
+  })
+  if (preparedResult.invalidCount > 0) ElMessage.error(t('message.uploadInvalidPath', { count: preparedResult.invalidCount }))
+  if (preparedResult.renamedCount > 0) ElMessage.info(t('message.uploadPathRenamed', { count: preparedResult.renamedCount }))
   const prepared = preparedResult.entries
   if (prepared.length === 0) {
     return {
@@ -1454,137 +1408,6 @@ async function handleUploadEntries(entries: UploadEntry[], targetPath = currentP
   }
 }
 
-function sanitizeRelativePath(path: string) {
-  return path.replace(/\\/g, '/').split('/').filter(part => part && part !== '.' && part !== '..').join('/')
-}
-
-async function prepareUploadEntries(entries: UploadEntry[], targetPath = currentPath.value): Promise<PreparedUploadEntries> {
-  const { entries: normalized, invalidCount, renamedCount } = normalizeUploadEntries(entries)
-
-  if (invalidCount > 0) {
-    ElMessage.error(t('message.uploadInvalidPath', { count: invalidCount }))
-  }
-
-  if (renamedCount > 0) {
-    ElMessage.info(t('message.uploadPathRenamed', { count: renamedCount }))
-  }
-
-  if (normalized.length === 0) return { entries: [], invalidCount, renamedCount, cancelled: false }
-
-  const topLevelItems = new Map((await listFiles(targetPath)).items.map(item => [item.name, item] as const))
-  const resolved: UploadEntry[] = []
-  let applyAllAction: UploadConflictAction | null = null
-
-  const groups = new Map<string, UploadEntry[]>()
-  for (const entry of normalized) {
-    const rootName = entry.relativePath.split('/')[0] ?? entry.file.name
-    const group = groups.get(rootName)
-    if (group) group.push(entry)
-    else groups.set(rootName, [entry])
-  }
-
-  for (const [rootName, group] of groups) {
-    const isFolderUpload = group.some(entry => entry.relativePath.includes('/'))
-    const existing = topLevelItems.get(rootName) ?? null
-
-    let action: UploadConflictAction = 'overwrite'
-    if (existing) {
-      const resolution: UploadConflictResolution = applyAllAction
-        ? { action: applyAllAction, applyAll: true }
-        : await promptUploadConflict(rootName)
-      if (resolution.applyAll) applyAllAction = resolution.action
-      action = resolution.action
-    }
-
-    if (action === 'cancel') return { entries: [], invalidCount, renamedCount, cancelled: true }
-    if (action === 'skip') continue
-
-    let finalRootName = rootName
-    if (action === 'suffix') {
-      finalRootName = uniqueSuffixedName(rootName, topLevelItems)
-    }
-
-    for (const entry of group) {
-      const suffix = entry.relativePath === rootName ? '' : entry.relativePath.slice(rootName.length)
-      const relativePath = `${finalRootName}${suffix}`
-      resolved.push({
-        ...entry,
-        relativePath,
-        displayPath: relativePath,
-        rootName: finalRootName
-      })
-    }
-
-    topLevelItems.set(finalRootName, {
-      name: finalRootName,
-      path: joinDisplayPath(targetPath, finalRootName),
-      type: isFolderUpload ? 'directory' : 'file',
-      size: null,
-      mtime: '',
-      extension: '',
-      preview_type: isFolderUpload ? 'directory' : 'file',
-      format: null
-    })
-  }
-
-  return { entries: resolved, invalidCount, renamedCount, cancelled: false }
-}
-
-function normalizeUploadEntries(entries: UploadEntry[]) {
-  let invalidCount = 0
-  let renamedCount = 0
-  const normalized: UploadEntry[] = []
-
-  for (const entry of entries) {
-    const originalPath = sanitizeRelativePath(entry.relativePath)
-    const originalDisplayPath = sanitizeRelativePath(entry.displayPath || entry.relativePath)
-    const relativePath = normalizeUploadRelativePath(originalPath)
-    const displayPath = normalizeUploadRelativePath(originalDisplayPath)
-    if (!relativePath || !isSafeUploadRelativePath(relativePath)) {
-      invalidCount += 1
-      continue
-    }
-    if (relativePath !== originalPath || displayPath !== originalDisplayPath) {
-      renamedCount += 1
-    }
-    normalized.push({
-      ...entry,
-      relativePath,
-      displayPath,
-      rootName: relativePath.split('/')[0] ?? entry.file.name
-    })
-  }
-
-  return { entries: normalized, invalidCount, renamedCount }
-}
-
-function normalizeUploadRelativePath(path: string) {
-  return sanitizeRelativePath(path)
-    .split('/')
-    .map(part => part.replace(/\s+/g, '_'))
-    .filter(Boolean)
-    .join('/')
-}
-
-function isSafeUploadRelativePath(path: string) {
-  const parts = path.split('/').filter(Boolean)
-  return parts.length > 0 && parts.every(part => SAFE_UPLOAD_SEGMENT_RE.test(part))
-}
-
-function uniqueSuffixedName(name: string, existing: Map<string, FileItem>) {
-  let candidate = `${name}.new`
-  while (existing.has(candidate)) {
-    candidate = `${candidate}.new`
-  }
-  return candidate
-}
-
-function joinDisplayPath(parent: string, name: string) {
-  if (!parent) return name
-  const separator = parent.includes('\\') ? '\\' : '/'
-  return `${parent.replace(/[\\/]+$/, '')}${separator}${name}`
-}
-
 async function promptUploadConflict(name: string) {
   return new Promise<UploadConflictResolution>(resolve => {
     uploadConflictDialog.value = {
@@ -1611,14 +1434,6 @@ function chooseUploadConflict(action: UploadConflictAction) {
 function formatUploadSpeed(bytesPerSecond: number) {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0.0 MB/s'
   return `${(bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s`
-}
-
-function hasFileDrag(event: DragEvent) {
-  return Array.from(event.dataTransfer?.types ?? []).includes('Files')
-}
-
-function setUploadDropEffect(event: DragEvent) {
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
 }
 
 function handleWorkspaceDragEnter(event: DragEvent) {
@@ -1652,70 +1467,6 @@ function handleWorkspaceDrop(event: DragEvent) {
   void collectDropUploadEntries(event).then(entries => {
     if (entries.length > 0) void handleUploadEntries(entries)
   })
-}
-
-async function collectDropUploadEntries(event: DragEvent) {
-  const items = Array.from(event.dataTransfer?.items ?? [])
-  if (items.length > 0) {
-    const entries = await Promise.all(items.map(item => collectDataTransferItem(item)))
-    const flattened = entries.flat().filter(entry => entry.file.name)
-    if (flattened.length > 0) return flattened
-  }
-  return filesToUploadEntries(Array.from(event.dataTransfer?.files ?? []).filter(file => file.name))
-}
-
-async function collectDataTransferItem(item: DataTransferItem): Promise<UploadEntry[]> {
-  if (item.kind !== 'file') return []
-  const getEntry = (item as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntryLike | null }).webkitGetAsEntry
-  const entry = getEntry?.call(item)
-  if (!entry) {
-    const file = item.getAsFile()
-    return file ? filesToUploadEntries([file]) : []
-  }
-  return collectFileSystemEntry(entry, '')
-}
-
-async function collectFileSystemEntry(entry: FileSystemEntryLike, parentPath: string): Promise<UploadEntry[]> {
-  const relativePath = sanitizeRelativePath(parentPath ? `${parentPath}/${entry.name}` : entry.name)
-  if (entry.isFile) {
-    const file = await readFileSystemEntryFile(entry)
-    return file
-      ? [{
-          file,
-          relativePath,
-          displayPath: relativePath,
-          rootName: relativePath.split('/')[0] ?? file.name
-        }]
-      : []
-  }
-  if (!entry.isDirectory || !entry.createReader) return []
-  const children = await readAllDirectoryEntries(entry)
-  const nested = await Promise.all(children.map(child => collectFileSystemEntry(child, relativePath)))
-  return nested.flat()
-}
-
-function readFileSystemEntryFile(entry: FileSystemEntryLike) {
-  return new Promise<File | null>(resolve => {
-    if (!entry.file) {
-      resolve(null)
-      return
-    }
-    entry.file(file => resolve(file), () => resolve(null))
-  })
-}
-
-async function readAllDirectoryEntries(entry: FileSystemEntryLike) {
-  const reader = entry.createReader?.()
-  if (!reader) return []
-  const entries: FileSystemEntryLike[] = []
-  while (true) {
-    const batch = await new Promise<FileSystemEntryLike[]>(resolve => {
-      reader.readEntries(resolve, () => resolve([]))
-    })
-    if (batch.length === 0) break
-    entries.push(...batch)
-  }
-  return entries
 }
 
 function handlePreviewDragOver(event: DragEvent) {
@@ -1812,8 +1563,13 @@ async function confirmDelete() {
   }
 }
 
-onMounted(() => {
-  void loadDirectory()
+onMounted(async () => {
+  applyWorkspacePreferences()
+  await loadClientPreferencesState()
+  applyWorkspacePreferences()
+  const initialPath = getClientPreferences().workspace?.currentPath || undefined
+  await loadDirectory(initialPath)
+  workspacePreferencesReady = true
   void loadPluginManifests()
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -1837,6 +1593,10 @@ watch(
   },
   { immediate: true }
 )
+
+watch(activeWorkPanelId, () => {
+  saveWorkspacePreferences()
+})
 
 onBeforeUnmount(() => {
   if (uploadConflictDialog.value.resolve) chooseUploadConflict('cancel')

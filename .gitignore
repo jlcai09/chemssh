@@ -1,6 +1,7 @@
 # User-specific files
 idea/
 logs/
+cache/
 plugins/*/.chemweb-plugin-state.json
 plugins/*/.venv/
 
@@ -55,6 +56,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.codex-pytest/
 cover/
 
 # Translations

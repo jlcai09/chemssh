@@ -6,6 +6,7 @@
         <strong>{{ title }}</strong>
       </div>
       <div class="header-actions">
+        <slot name="header-actions" />
         <el-input-number
           v-model="lines"
           class="tail-lines-input"
@@ -34,11 +35,16 @@ import { t } from '../i18n'
 
 const props = defineProps<{
   path?: string | null
+  initialLines?: number
+}>()
+
+const emit = defineEmits<{
+  'lines-change': [lines: number]
 }>()
 
 const contentRef = ref<HTMLElement | null>(null)
 const loading = ref(false)
-const lines = ref(20)
+const lines = ref(clampLines(props.initialLines ?? 20))
 const autoRefresh = ref(false)
 const content = ref('')
 let timer: number | undefined
@@ -72,6 +78,11 @@ function schedule() {
   timer = window.setInterval(refresh, 5000)
 }
 
+function clampLines(value: number) {
+  if (!Number.isFinite(value)) return 20
+  return Math.min(100, Math.max(1, Math.round(value)))
+}
+
 watch(
   () => props.path,
   () => {
@@ -82,9 +93,19 @@ watch(
 )
 
 watch([autoRefresh, lines], () => {
+  emit('lines-change', lines.value)
   schedule()
   refresh()
 })
+
+watch(
+  () => props.initialLines,
+  value => {
+    if (value === undefined) return
+    const next = clampLines(value)
+    if (next !== lines.value) lines.value = next
+  }
+)
 
 watch(content, scrollToBottom)
 

@@ -1,4 +1,5 @@
 import type { FileItem } from './files'
+import { extensionFromName } from './fileTypes'
 import type { StructureSource } from '../types/structure'
 
 export interface FilePreviewProvider {
@@ -27,11 +28,6 @@ export interface FilePreviewProvider {
 export interface PreviewProbeResponse {
   can_preview?: boolean
   reason?: string | null
-}
-
-export function extensionFromName(name: string) {
-  const index = name.lastIndexOf('.')
-  return index >= 0 ? name.slice(index).toLowerCase() : ''
 }
 
 export function providerMatchesItem(provider: FilePreviewProvider, item: FileItem) {

@@ -20,6 +20,15 @@ def test_server_idle_shutdown_defaults() -> None:
     assert settings.server.idle_shutdown_seconds == 0
 
 
+def test_client_cache_defaults() -> None:
+    settings = Settings()
+
+    assert settings.client_cache.enabled is True
+    assert settings.client_cache.directory is None
+    assert settings.client_cache.cleanup_offline_days == 14
+    assert settings.client_cache.max_file_size_kb == 512
+
+
 def test_server_idle_shutdown_yaml(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
