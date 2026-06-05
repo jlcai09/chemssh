@@ -2586,6 +2586,25 @@ button.context-menu-item {
   font-weight: 750;
 }
 
+.terminal-settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid #dbe3eb;
+  border-radius: 8px;
+  color: #26323f;
+  background: #f7fafc;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.terminal-settings-toggle span {
+  min-width: 0;
+}
+
 .terminal-settings-node {
   display: flex;
   align-items: center;

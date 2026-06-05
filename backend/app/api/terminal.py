@@ -34,6 +34,7 @@ def create_terminal_session(
         shell=payload.shell,
         rows=payload.rows,
         cols=payload.cols,
+        vim_compatibility=payload.vim_compatibility,
     )
     return session.to_response()
 

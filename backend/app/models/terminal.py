@@ -11,6 +11,7 @@ class CreateTerminalSessionRequest(BaseModel):
     shell: Optional[str] = None
     rows: Optional[int] = Field(default=None, ge=2, le=200)
     cols: Optional[int] = Field(default=None, ge=20, le=500)
+    vim_compatibility: bool = True
 
 
 class TerminalSessionResponse(BaseModel):

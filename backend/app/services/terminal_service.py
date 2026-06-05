@@ -334,6 +334,7 @@ class TerminalManager:
         shell: str | None,
         rows: int | None,
         cols: int | None,
+        vim_compatibility: bool = True,
     ) -> TerminalSession:
         if not settings.terminal.enabled:
             raise AppError("TERMINAL_DISABLED", "Terminal is disabled by configuration", 403)
@@ -349,6 +350,7 @@ class TerminalManager:
                 raise AppError("NOT_A_DIRECTORY", f"Terminal cwd is not a directory: {safe_cwd}", 400)
 
             provider = LocalPtyTerminalProvider()
+            provider.vim_compatibility = vim_compatibility
             session_id = f"term_{uuid.uuid4().hex[:12]}"
             started_at = utc_now()
             try:

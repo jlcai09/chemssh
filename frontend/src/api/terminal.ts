@@ -6,6 +6,7 @@ export interface CreateTerminalSessionPayload {
   shell?: string | null
   rows?: number
   cols?: number
+  vim_compatibility?: boolean
 }
 
 export interface TerminalSession {

@@ -400,9 +400,77 @@ WebSocket 连接使用 query 参数：
 
 后端只会列出、关闭、连接当前 client id 拥有的终端会话。`terminal.max_sessions` 是每个 client id 的上限，不是全局上限。client id 只用于会话隔离，不代表用户身份或安全认证。
 
+### `POST /api/terminal/sessions`
+
+创建终端会话。请求必须带 `X-ChemSSH-Client-Id`，用于把会话归属到当前浏览器客户端。
+
+```json
+{
+  "cwd": "/workspace/project",
+  "shell": null,
+  "rows": 30,
+  "cols": 120,
+  "vim_compatibility": true
+}
+```
+
+字段说明：
+
+- `cwd`：可选，终端启动目录；省略时使用工作区根目录。后端会通过 `WorkspaceSecurity` 校验路径必须留在工作区内。
+- `shell`：可选，指定 shell；省略时使用后端默认 shell。
+- `rows` / `cols`：可选，初始终端尺寸；`rows` 范围为 `2..200`，`cols` 范围为 `20..500`。
+- `vim_compatibility`：可选，默认 `true`。只影响新建会话是否创建 `vi` / `vim` 兼容 shim，不影响已有终端。
+
+响应：
+
+```json
+{
+  "session_id": "term_xxx",
+  "cwd": "/workspace/project",
+  "shell": "/bin/bash",
+  "created_at": "2026-06-05T12:00:00Z",
+  "last_active_at": "2026-06-05T12:00:00Z",
+  "alive": true,
+  "clients": 1
+}
+```
+
+前端封装：`createTerminalSession(payload)`，类型定义在 `frontend/src/api/terminal.ts`。
+
+### `GET /api/terminal/sessions`
+
+列出当前 `X-ChemSSH-Client-Id` 拥有的终端会话。响应形如：
+
+```json
+{
+  "items": [
+    {
+      "session_id": "term_xxx",
+      "cwd": "/workspace/project",
+      "shell": "/bin/bash",
+      "created_at": "2026-06-05T12:00:00Z",
+      "last_active_at": "2026-06-05T12:05:00Z",
+      "alive": true,
+      "clients": 1
+    }
+  ]
+}
+```
+
+### `DELETE /api/terminal/sessions/{session_id}`
+
+关闭当前 `X-ChemSSH-Client-Id` 拥有的指定终端会话。
+
+```json
+{
+  "success": true
+}
+```
+
 常用交互：
 
 - 创建终端会带上当前文件管理器目录作为 `cwd`。
+- 创建终端可传 `vim_compatibility` 布尔值，默认 `true`。前端终端设置中的“Vim 兼容模式”会保存到 `localStorage` 并随新建会话发送；关闭后只影响之后新建的终端会话。
 - 文件管理器与终端支持目录同步：`follow` 表示终端跟随文件管理器，`bidirectional` 表示终端 cwd 变化也会反向打开文件管理器目录。
 - 终端接收文件拖放时，会向当前活跃 tab 写入输入数据。当前约定是路径串前置一个空格，多个绝对路径用空格连接，例如 ` /abs/a /abs/b`。
 - 终端支持“中键粘贴当前终端选区文本”。该行为依赖宿主环境放行中键事件；常规浏览器通常会拦截为自动滚屏，自定义 WebView2 启动器可通过关闭默认中键滚轮后启用。
@@ -415,6 +483,69 @@ WebSocket 连接使用 query 参数：
   "data": " ls\n"
 }
 ```
+
+### 终端 `rz` / `sz` 接管
+
+终端会话启动时，后端会创建临时 `rz`、`sz` shim，并把 shim 目录放到该终端进程的 `PATH` 最前面。脚本或用户命令通过普通 `PATH` 查找调用 `rz` / `sz` 时，不会进入原生 ZMODEM 传输；shim 会向 pty 输出 ChemSSH 私有 OSC 标记，后端读取终端输出时吞掉该标记并转成 WebSocket 传输请求。shim 会阻塞等待前端回传 `transfer_result`，收到成功后以 `0` 退出，收到失败或取消后以非零码退出；这让脚本中位于 `sz` 后面的 `rm` 等清理命令在浏览器下载请求完成后才继续执行。
+
+后端发送上传请求：
+
+```json
+{
+  "type": "transfer_request",
+  "transfer_id": "transfer_xxx",
+  "direction": "upload",
+  "cwd": "/workspace/project",
+  "argv": ["rz", "-y"]
+}
+```
+
+前端收到 `direction="upload"` 后打开浏览器文件选择器，并走与文件管理器相同的上传准备流程上传到该终端当前目录：空白字符会先改为 `_`，路径段预检失败的文件不会开始传输。
+
+后端发送下载请求：
+
+```json
+{
+  "type": "transfer_request",
+  "transfer_id": "transfer_xxx",
+  "direction": "download",
+  "cwd": "/workspace/project",
+  "argv": ["sz", "result.out"],
+  "paths": ["/workspace/project/result.out"]
+}
+```
+
+前端收到 `direction="download"` 后，单文件使用 `downloadUrl(path)`，多文件或目录使用 `downloadSelectionUrl(paths, { forceArchive: true })`。
+
+前端完成、失败或取消后回传结果：
+
+```json
+{
+  "type": "transfer_result",
+  "transfer_id": "transfer_xxx",
+  "success": true,
+  "message": "Uploaded 1 file(s)"
+}
+```
+
+后端收到 `transfer_result` 后，会写入 shim 专属临时 ack 文件释放正在等待的 `rz` / `sz` 进程。ack 路径只允许位于该终端会话创建的临时 shim 目录内，不能由前端任意指定。
+
+安全规则：
+
+- shim 只影响当前终端会话子进程的 `PATH`，不会修改系统环境。
+- `rz` 上传目标目录来自终端 shim 上报的 cwd，后端会按 workspace 安全规则解析。
+- `sz` 参数由后端解析为 workspace 内路径；越界、缺失或不存在的路径会以 `transfer_request.error` 返回，前端显示失败并回传 `transfer_result`。
+- 如果脚本显式调用 `/usr/bin/rz`、`/usr/bin/sz` 等绝对路径，会绕过 shim。后端会在 pty 输出流中识别常见原生 ZMODEM 起始特征并发送 `Ctrl+C` 中断，避免终端继续卡死。原生 `rz` 可继续接管为浏览器上传；原生 `sz` 在协议流中通常无法可靠恢复原始文件参数，因此会提示改用 PATH 解析到的 `sz` shim，除非后续实现完整 ZMODEM 接收器。
+
+### 终端 `vi` / `vim` 兼容 shim
+
+终端会话支持“Vim 兼容模式”，默认开启。开启后，临时 shim 目录还会放置 `vi` 和 `vim` 包装脚本。Linux Vim 在 xterm 兼容终端中会发起 `t_RV`、`t_u7`、`t_RF`、`t_RB`、`t_RK` 等终端探测；当前 WebTerminal 链路对这些探测的完整响应仍不够稳定，会导致 Vim 启动后等待终端响应，看起来像卡死。包装脚本只在真实命令是 Vim 时注入：
+
+```bash
+--cmd 'set t_RV= t_u7= t_RF= t_RB= t_RK='
+```
+
+前端设置面板可以手动关闭“Vim 兼容模式”，关闭后创建会话请求会发送 `vim_compatibility: false`，后端仍创建 `rz` / `sz` shim，但不会创建 `vi` / `vim` 包装脚本。脚本会先从移除 shim 目录后的 `PATH` 中找到真实 `vi` / `vim`。如果真实命令不是 Vim，则原样执行；如果用户显式调用 `/usr/bin/vim` 等绝对路径，也会绕过 shim。该兼容层只影响 ChemSSH 创建的终端会话，不修改用户的 `~/.vimrc` 或系统配置。后续如果前端完整实现 Vim 所需的 xterm 查询响应，可移除此 shim。
 
 ## 客户端缓存
 
@@ -607,59 +738,6 @@ X-ChemSSH-Client-Id: client_xxx
   "removed": true
 }
 ```
-
-### 终端 `rz` / `sz` 接管
-
-终端会话启动时，后端会创建临时 `rz`、`sz` shim，并把 shim 目录放到该终端进程的 `PATH` 最前面。脚本或用户命令通过普通 `PATH` 查找调用 `rz` / `sz` 时，不会进入原生 ZMODEM 传输；shim 会向 pty 输出 ChemSSH 私有 OSC 标记，后端读取终端输出时吞掉该标记并转成 WebSocket 传输请求。shim 会阻塞等待前端回传 `transfer_result`，收到成功后以 `0` 退出，收到失败或取消后以非零码退出；这让脚本中位于 `sz` 后面的 `rm` 等清理命令在浏览器下载请求完成后才继续执行。
-
-后端发送上传请求：
-
-```json
-{
-  "type": "transfer_request",
-  "transfer_id": "transfer_xxx",
-  "direction": "upload",
-  "cwd": "/workspace/project",
-  "argv": ["rz", "-y"]
-}
-```
-
-前端收到 `direction="upload"` 后打开浏览器文件选择器，并走与文件管理器相同的上传准备流程上传到该终端当前目录：空白字符会先改为 `_`，路径段预检失败的文件不会开始传输。
-
-后端发送下载请求：
-
-```json
-{
-  "type": "transfer_request",
-  "transfer_id": "transfer_xxx",
-  "direction": "download",
-  "cwd": "/workspace/project",
-  "argv": ["sz", "result.out"],
-  "paths": ["/workspace/project/result.out"]
-}
-```
-
-前端收到 `direction="download"` 后，单文件使用 `downloadUrl(path)`，多文件或目录使用 `downloadSelectionUrl(paths, { forceArchive: true })`。
-
-前端完成、失败或取消后回传结果：
-
-```json
-{
-  "type": "transfer_result",
-  "transfer_id": "transfer_xxx",
-  "success": true,
-  "message": "Uploaded 1 file(s)"
-}
-```
-
-后端收到 `transfer_result` 后，会写入 shim 专属临时 ack 文件释放正在等待的 `rz` / `sz` 进程。ack 路径只允许位于该终端会话创建的临时 shim 目录内，不能由前端任意指定。
-
-安全规则：
-
-- shim 只影响当前终端会话子进程的 `PATH`，不会修改系统环境。
-- `rz` 上传目标目录来自终端 shim 上报的 cwd，后端会按 workspace 安全规则解析。
-- `sz` 参数由后端解析为 workspace 内路径；越界、缺失或不存在的路径会以 `transfer_request.error` 返回，前端显示失败并回传 `transfer_result`。
-- 如果脚本显式调用 `/usr/bin/rz`、`/usr/bin/sz` 等绝对路径，会绕过 shim。后端会在 pty 输出流中识别常见原生 ZMODEM 起始特征并发送 `Ctrl+C` 中断，避免终端继续卡死。原生 `rz` 可继续接管为浏览器上传；原生 `sz` 在协议流中通常无法可靠恢复原始文件参数，因此会提示改用 PATH 解析到的 `sz` shim，除非后续实现完整 ZMODEM 接收器。
 
 ## 前端窗口交互协议
 

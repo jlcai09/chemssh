@@ -106,6 +106,10 @@
         </template>
         <div class="terminal-settings-panel">
           <div class="terminal-settings-title">{{ t('terminal.settings') }}</div>
+          <label class="terminal-settings-toggle">
+            <span>{{ t('terminal.vimCompatibility') }}</span>
+            <el-switch v-model="vimCompatibilityMode" size="small" />
+          </label>
           <div class="terminal-settings-node">
             <span>{{ t('terminal.font') }}</span>
             <el-icon><ArrowRight /></el-icon>
@@ -218,6 +222,7 @@ type TerminalTab = {
 }
 
 const TERMINAL_FONT_SIZE_STORAGE_KEY = 'chemssh.terminal.fontSize'
+const TERMINAL_VIM_COMPATIBILITY_STORAGE_KEY = 'chemssh.terminal.vimCompatibility'
 const DEFAULT_TERMINAL_FONT_SIZE = 13
 const TERMINAL_FONT_SIZE_MIN = 10
 const TERMINAL_FONT_SIZE_MAX = 24
@@ -242,6 +247,7 @@ const activeTabId = ref<string | null>(null)
 const tabsRef = ref<HTMLElement | null>(null)
 const tabsOverflowing = ref(false)
 const terminalFontSize = ref(readStoredTerminalFontSize())
+const vimCompatibilityMode = ref(readStoredVimCompatibilityMode())
 const largeOpen = ref(false)
 const terminalFontSizeModel = computed({
   get: () => terminalFontSize.value,
@@ -335,6 +341,10 @@ watch(terminalFontSize, size => {
     tab.terminal.options.fontSize = size
     void requestTabFit(tab)
   }
+})
+
+watch(vimCompatibilityMode, value => {
+  storeVimCompatibilityMode(value)
 })
 
 function createEmptyTab(cwd?: string): TerminalTab {
@@ -516,7 +526,8 @@ async function startTabSession(tab: TerminalTab) {
     const session = await createTerminalSession({
       cwd: tab.cwd || preferredCwd.value,
       rows: tab.terminal.rows,
-      cols: tab.terminal.cols
+      cols: tab.terminal.cols,
+      vim_compatibility: vimCompatibilityMode.value
     })
     attachTabSession(tab, session)
   } catch (error) {
@@ -1082,6 +1093,24 @@ function storeTerminalFontSize(value: number) {
     window.localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(value))
   } catch {
     // Font size persistence is a convenience; the live terminal still updates.
+  }
+}
+
+function readStoredVimCompatibilityMode() {
+  if (typeof window === 'undefined') return true
+  try {
+    const stored = window.localStorage.getItem(TERMINAL_VIM_COMPATIBILITY_STORAGE_KEY)
+    return stored === null ? true : stored !== 'false'
+  } catch {
+    return true
+  }
+}
+
+function storeVimCompatibilityMode(value: boolean) {
+  try {
+    window.localStorage.setItem(TERMINAL_VIM_COMPATIBILITY_STORAGE_KEY, String(value))
+  } catch {
+    // Terminal settings persistence is optional; new sessions still use the live value.
   }
 }
 

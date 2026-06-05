@@ -28,6 +28,7 @@ class LocalPtyTerminalProvider(TerminalProvider):
         self._in_escape_sequence = False
         self._pipe_encoding = locale.getpreferredencoding(False) or "utf-8"
         self._transfer_shim_dir: Path | None = None
+        self.vim_compatibility = True
 
     @property
     def shell(self) -> str:
@@ -210,6 +211,11 @@ class LocalPtyTerminalProvider(TerminalProvider):
 
             cmd_script = directory / f"{command}.cmd"
             cmd_script.write_text(_windows_transfer_wrapper(direction, helper), encoding="utf-8", newline="\r\n")
+        if self.vim_compatibility:
+            for command in ("vi", "vim"):
+                script = directory / command
+                script.write_text(_posix_vim_wrapper(command), encoding="utf-8", newline="\n")
+                script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         self._transfer_shim_dir = directory
         return directory
 
@@ -423,6 +429,38 @@ def _posix_transfer_wrapper(direction: str, helper: Path) -> str:
 def _windows_transfer_wrapper(direction: str, helper: Path) -> str:
     python = str(Path(sys.executable))
     return f'@"{python}" "{helper}" {direction} %*\r\n'
+
+
+def _posix_vim_wrapper(command: str) -> str:
+    return f"""#!/bin/sh
+shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+clean_path=
+old_ifs=$IFS
+IFS=:
+for item in $PATH; do
+    [ "$item" = "$shim_dir" ] && continue
+    if [ -z "$clean_path" ]; then
+        clean_path=$item
+    else
+        clean_path=$clean_path:$item
+    fi
+done
+IFS=$old_ifs
+PATH=$clean_path
+export PATH
+
+real_command=$(command -v {command} 2>/dev/null)
+if [ -z "$real_command" ]; then
+    echo "{command}: command not found" >&2
+    exit 127
+fi
+
+if "$real_command" --version 2>/dev/null | sed -n '1p' | grep -qi 'vim'; then
+    exec "$real_command" --cmd 'set t_RV= t_u7= t_RF= t_RB= t_RK=' "$@"
+fi
+
+exec "$real_command" "$@"
+"""
 
 
 def _shell_quote(value: str) -> str:

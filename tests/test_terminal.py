@@ -80,6 +80,51 @@ def test_windows_powershell_args_configure_interactive_encoding() -> None:
     assert "Set-PSReadLineOption" in args[-1]
 
 
+def test_terminal_shims_include_vim_terminal_probe_workaround(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = LocalPtyTerminalProvider()
+
+    def fake_mkdtemp(prefix: str) -> str:
+        path = tmp_path / prefix.rstrip("-")
+        path.mkdir()
+        return str(path)
+
+    monkeypatch.setattr("backend.app.providers.terminal.local_pty.tempfile.mkdtemp", fake_mkdtemp)
+
+    shim_dir = provider._ensure_transfer_shims()
+
+    for command in ("vi", "vim"):
+        wrapper = shim_dir / command
+        assert wrapper.exists()
+        content = wrapper.read_text(encoding="utf-8")
+        assert "--cmd 'set t_RV= t_u7= t_RF= t_RB= t_RK='" in content
+        assert f"real_command=$(command -v {command} 2>/dev/null)" in content
+
+
+def test_terminal_shims_skip_vim_wrappers_when_compatibility_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = LocalPtyTerminalProvider()
+    provider.vim_compatibility = False
+
+    def fake_mkdtemp(prefix: str) -> str:
+        path = tmp_path / prefix.rstrip("-")
+        path.mkdir()
+        return str(path)
+
+    monkeypatch.setattr("backend.app.providers.terminal.local_pty.tempfile.mkdtemp", fake_mkdtemp)
+
+    shim_dir = provider._ensure_transfer_shims()
+
+    assert (shim_dir / "rz").exists()
+    assert (shim_dir / "sz").exists()
+    assert not (shim_dir / "vi").exists()
+    assert not (shim_dir / "vim").exists()
+
+
 def test_terminal_session_sync_cwd_validates_workspace(tmp_path: Path) -> None:
     provider = FakeTerminalProvider()
     provider.start(str(tmp_path), 24, 80)
@@ -159,6 +204,21 @@ def test_terminal_manager_enforces_session_limit(monkeypatch: pytest.MonkeyPatch
     manager.close_session(other_session.session_id, CLIENT_B)
 
 
+def test_terminal_manager_passes_vim_compatibility_to_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("backend.app.services.terminal_service.LocalPtyTerminalProvider", FakeTerminalProvider)
+    settings = Settings(workspace=WorkspaceConfig(root=tmp_path))
+    manager = TerminalManager()
+
+    session = manager.create_session(settings, CLIENT_A, None, None, None, None, vim_compatibility=False)
+
+    assert getattr(session.provider, "vim_compatibility") is False
+
+    manager.close_session(session.session_id, CLIENT_A)
+
+
 def test_terminal_manager_releases_session_after_client_disconnect(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -218,11 +278,12 @@ def test_terminal_sessions_api(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     created = client.post(
         "/api/terminal/sessions",
         headers=CLIENT_A_HEADERS,
-        json={"cwd": str(tmp_path), "rows": 20, "cols": 80},
+        json={"cwd": str(tmp_path), "rows": 20, "cols": 80, "vim_compatibility": False},
     )
 
     assert created.status_code == 200
     session_id = created.json()["session_id"]
+    assert getattr(terminal_manager.sessions[session_id].provider, "vim_compatibility") is False
 
     listed = client.get("/api/terminal/sessions", headers=CLIENT_A_HEADERS)
     assert listed.status_code == 200
