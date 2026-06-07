@@ -308,6 +308,269 @@ def test_upload_relative_path_blocks_traversal(tmp_path: Path) -> None:
     assert response.json()["error"]["code"] == "INVALID_NAME"
 
 
+def test_move_paths_uses_native_mv_and_refreshes_target(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    source_file = tmp_path / "sample.txt"
+    source_dir = tmp_path / "case"
+    nested = source_dir / "input.inp"
+    target = tmp_path / "target"
+    source_file.write_text("sample\n", encoding="utf-8")
+    source_dir.mkdir()
+    nested.write_text("input\n", encoding="utf-8")
+    target.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_which(command: str) -> str | None:
+        return "/usr/bin/mv" if command == "mv" else None
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        separator_index = command.index("--")
+        sources = [Path(path) for path in command[separator_index + 1 : -1]]
+        destination = Path(command[-1])
+        for source in sources:
+            source.rename(destination / source.name)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.shutil.which", fake_which)
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.subprocess.run", fake_run)
+
+    response = client.post(
+        "/api/files/move",
+        json={"paths": [str(source_file), str(source_dir)], "target_directory": str(target)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["path"] == str(target.resolve())
+    assert captured["command"] == ["/usr/bin/mv", "--", str(source_file.resolve()), str(source_dir.resolve()), str(target.resolve())]
+    assert captured["kwargs"] == {"capture_output": True, "text": True, "check": False}
+    assert not source_file.exists()
+    assert (target / "sample.txt").read_text(encoding="utf-8") == "sample\n"
+    assert (target / "case" / "input.inp").read_text(encoding="utf-8") == "input\n"
+
+
+def test_move_paths_reports_native_mv_failure_in_chinese(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    source = tmp_path / "mixed"
+    nested = source / "nested"
+    target = tmp_path / "target"
+    nested.mkdir(parents=True)
+    target.mkdir()
+    (source / "file.txt").write_text("file\n", encoding="utf-8")
+    (nested / "child.txt").write_text("child\n", encoding="utf-8")
+
+    def fake_which(command: str) -> str | None:
+        return "/usr/bin/mv" if command == "mv" else None
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="mock mv failed")
+
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.shutil.which", fake_which)
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.subprocess.run", fake_run)
+
+    response = client.post(
+        "/api/files/move",
+        json={"paths": [str(source)], "target_directory": str(target)},
+    )
+
+    assert response.status_code == 500
+    error = response.json()["error"]
+    assert error["code"] == "MOVE_FAILED"
+    assert "移动失败" in error["message"]
+    assert str(source.resolve()) in error["message"]
+    assert str(target.resolve()) in error["message"]
+    assert "mock mv failed" in error["message"]
+
+
+def test_move_paths_blocks_self_descendant_and_existing_targets(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    source_dir = tmp_path / "case"
+    nested_target = source_dir / "nested"
+    sibling = tmp_path / "sibling"
+    source_file = tmp_path / "sample.txt"
+    source_dir.mkdir()
+    nested_target.mkdir()
+    sibling.mkdir()
+    source_file.write_text("sample\n", encoding="utf-8")
+    (sibling / "sample.txt").write_text("existing\n", encoding="utf-8")
+
+    into_self = client.post(
+        "/api/files/move",
+        json={"paths": [str(source_dir)], "target_directory": str(nested_target)},
+    )
+    collision = client.post(
+        "/api/files/move",
+        json={"paths": [str(source_file)], "target_directory": str(sibling)},
+    )
+
+    assert into_self.status_code == 400
+    assert into_self.json()["error"]["code"] == "MOVE_INTO_SELF"
+    assert collision.status_code == 409
+    assert collision.json()["error"]["code"] == "PATH_EXISTS"
+
+
+def test_move_paths_can_overwrite_merge_and_suffix_conflicts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.shutil.which", lambda command: None)
+    client = make_client(tmp_path)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    source_file = source / "sample.txt"
+    target_file = target / "sample.txt"
+    source_file.write_text("new sample\n", encoding="utf-8")
+    target_file.write_text("old sample\n", encoding="utf-8")
+
+    source_dir = source / "case"
+    target_dir = target / "case"
+    source_dir.mkdir()
+    target_dir.mkdir()
+    (source_dir / "input.inp").write_text("new input\n", encoding="utf-8")
+    (target_dir / "input.inp").write_text("old input\n", encoding="utf-8")
+    (target_dir / "keep.out").write_text("keep\n", encoding="utf-8")
+
+    suffix_source = source / "beta.txt"
+    suffix_source.write_text("beta\n", encoding="utf-8")
+    (target / "beta.txt").write_text("existing beta\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/files/move",
+        json={
+            "target_directory": str(target),
+            "items": [
+                {"path": str(source_file), "overwrite": True},
+                {"path": str(source_dir), "overwrite": True},
+                {"path": str(suffix_source), "target_name": "beta.txt.new"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert not source_file.exists()
+    assert not source_dir.exists()
+    assert not suffix_source.exists()
+    assert target_file.read_text(encoding="utf-8") == "new sample\n"
+    assert (target_dir / "input.inp").read_text(encoding="utf-8") == "new input\n"
+    assert (target_dir / "keep.out").read_text(encoding="utf-8") == "keep\n"
+    assert (target / "beta.txt").read_text(encoding="utf-8") == "existing beta\n"
+    assert (target / "beta.txt.new").read_text(encoding="utf-8") == "beta\n"
+
+
+def test_move_items_without_conflict_uses_bulk_native_mv(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    mixed = source / "mixed"
+    nested = mixed / "nested"
+    nested.mkdir(parents=True)
+    target.mkdir()
+    (mixed / "file.txt").write_text("file\n", encoding="utf-8")
+    (nested / "child.txt").write_text("child\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_which(command: str) -> str | None:
+        return "/usr/bin/mv" if command == "mv" else None
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        source_path = Path(command[-2])
+        target_dir = Path(command[-1])
+        source_path.rename(target_dir / source_path.name)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.shutil.which", fake_which)
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.subprocess.run", fake_run)
+
+    response = client.post(
+        "/api/files/move",
+        json={
+            "target_directory": str(target),
+            "items": [{"path": str(mixed), "overwrite": True}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["command"] == ["/usr/bin/mv", "--", str(mixed.resolve()), str(target.resolve())]
+    assert (target / "mixed" / "file.txt").read_text(encoding="utf-8") == "file\n"
+    assert (target / "mixed" / "nested" / "child.txt").read_text(encoding="utf-8") == "child\n"
+
+
+def test_copy_paths_can_overwrite_merge_and_suffix_conflicts(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    source_file = source / "sample.txt"
+    target_file = target / "sample.txt"
+    source_file.write_text("new sample\n", encoding="utf-8")
+    target_file.write_text("old sample\n", encoding="utf-8")
+
+    source_dir = source / "case"
+    target_dir = target / "case"
+    source_dir.mkdir()
+    target_dir.mkdir()
+    (source_dir / "input.inp").write_text("new input\n", encoding="utf-8")
+    (target_dir / "input.inp").write_text("old input\n", encoding="utf-8")
+    (target_dir / "keep.out").write_text("keep\n", encoding="utf-8")
+
+    suffix_source = source / "beta.txt"
+    suffix_source.write_text("beta\n", encoding="utf-8")
+    (target / "beta.txt").write_text("existing beta\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/files/copy",
+        json={
+            "target_directory": str(target),
+            "items": [
+                {"path": str(source_file), "overwrite": True},
+                {"path": str(source_dir), "overwrite": True},
+                {"path": str(suffix_source), "target_name": "beta.txt.new"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert source_file.read_text(encoding="utf-8") == "new sample\n"
+    assert (source_dir / "input.inp").read_text(encoding="utf-8") == "new input\n"
+    assert suffix_source.read_text(encoding="utf-8") == "beta\n"
+    assert target_file.read_text(encoding="utf-8") == "new sample\n"
+    assert (target_dir / "input.inp").read_text(encoding="utf-8") == "new input\n"
+    assert (target_dir / "keep.out").read_text(encoding="utf-8") == "keep\n"
+    assert (target / "beta.txt").read_text(encoding="utf-8") == "existing beta\n"
+    assert (target / "beta.txt.new").read_text(encoding="utf-8") == "beta\n"
+
+
+def test_copy_paths_blocks_self_descendant_and_existing_targets(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    source_dir = tmp_path / "case"
+    nested_target = source_dir / "nested"
+    sibling = tmp_path / "sibling"
+    source_file = tmp_path / "sample.txt"
+    source_dir.mkdir()
+    nested_target.mkdir()
+    sibling.mkdir()
+    source_file.write_text("sample\n", encoding="utf-8")
+    (sibling / "sample.txt").write_text("existing\n", encoding="utf-8")
+
+    into_self = client.post(
+        "/api/files/copy",
+        json={"paths": [str(source_dir)], "target_directory": str(nested_target)},
+    )
+    collision = client.post(
+        "/api/files/copy",
+        json={"paths": [str(source_file)], "target_directory": str(sibling)},
+    )
+
+    assert into_self.status_code == 400
+    assert into_self.json()["error"]["code"] == "COPY_INTO_SELF"
+    assert collision.status_code == 409
+    assert collision.json()["error"]["code"] == "PATH_EXISTS"
+
+
 def test_submit_job_uses_requested_queue_command(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path)
     script = tmp_path / "vasp.script"

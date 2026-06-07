@@ -30,10 +30,12 @@
 
       <FileToolbar
         :selected-items="selectedItems"
-        :can-go-up="Boolean(listing?.parent)"
+        :can-go-back="canGoBack"
+        :history-entries="directoryHistoryEntries"
         :show-hidden-files="showHiddenFiles"
         @refresh="loadDirectory(currentPath)"
-        @go-up="goUp"
+        @go-back="goBack"
+        @history-select="openHistoryPath"
         @create-file="promptCreateFile"
         @mkdir="promptMkdir"
         @upload="handleUpload"
@@ -46,10 +48,12 @@
       <div class="file-table-shell" v-loading="loadingFiles">
         <FileTree
           :items="visibleItems"
+          :parent-path="listing?.parent"
           :selected-items="selectedItems"
           :preview-providers="previewProviders"
           @selection-change="handleSelectionChange"
           @context-menu="openFileContextMenu"
+          @move-items="handleMoveItems"
           @open="openItem"
         />
       </div>
@@ -71,7 +75,10 @@
         :current-file-manager-path="currentPath"
         :layout-version="terminalLayoutVersion"
         :transfer-upload-handler="handleTerminalTransferUpload"
+        :defer-init="!workspacePreferencesReady"
+        :initial-bindings="workspaceTerminalBindings"
         @cwd-change="openDirectoryFromTerminal"
+        @binding-summary-change="saveWorkspaceTerminalBindings"
       />
     </section>
 
@@ -215,8 +222,16 @@
     <Teleport to="body">
       <div v-if="uploadConflictDialog.visible" class="upload-conflict-backdrop">
         <div class="upload-conflict-dialog" role="dialog" aria-modal="true">
-          <div class="upload-conflict-title">{{ t('upload.conflictTitle') }}</div>
-          <p>{{ t('upload.conflictMessage', { name: uploadConflictDialog.name }) }}</p>
+          <div class="upload-conflict-title">
+            {{ uploadConflictDialog.mode === 'move' ? t('move.conflictTitle') : t('upload.conflictTitle') }}
+          </div>
+          <p>
+            {{
+              uploadConflictDialog.mode === 'move'
+                ? t('move.conflictMessage', { name: uploadConflictDialog.name })
+                : t('upload.conflictMessage', { name: uploadConflictDialog.name })
+            }}
+          </p>
           <label class="upload-conflict-apply">
             <input v-model="uploadConflictDialog.applyAll" type="checkbox" />
             <span>{{ t('upload.applyAll') }}</span>
@@ -271,6 +286,7 @@ import {
   downloadArchive,
   listFiles,
   makeDirectory,
+  movePaths,
   readFile,
   renamePath,
   uploadFile,
@@ -283,6 +299,7 @@ import {
 import { API_BASE, downloadUrl, request } from '../api/http'
 import { getClientPreferences, loadClientPreferencesState, saveClientPreferencesPatch } from '../api/clientPreferences'
 import { hasChemSSHFileDrag, readChemSSHFileDrag } from '../api/fileDrag'
+import { moveApiErrorMessage, prepareMoveEntries } from '../api/fileMove'
 import {
   providerMatchesItem,
   type FilePreviewProvider,
@@ -312,6 +329,7 @@ import {
 } from '../api/uploadEntries'
 import type { SystemInfo } from '../api/system'
 import type { AsePreviewResponse, StructureSource } from '../types/structure'
+import type { CanvasTerminalTabBinding } from '../types/canvasBoard'
 import FilePreview from '../components/FilePreview.vue'
 import FileToolbar from '../components/FileToolbar.vue'
 import FileTree from '../components/FileTree.vue'
@@ -345,6 +363,7 @@ const previewError = ref<string | null>(null)
 const loadingFiles = ref(false)
 const previewLoading = ref(false)
 const dragUploadDepth = ref(0)
+const directoryHistory = ref<string[]>([])
 const forcedLargeTextPreviews = new Set<string>()
 const forcedLargeStructurePreviews = new Set<string>()
 
@@ -378,6 +397,7 @@ type UploadState = {
 }
 type UploadConflictDialogState = {
   visible: boolean
+  mode: 'upload' | 'move'
   name: string
   applyAll: boolean
   resolve: ((resolution: UploadConflictResolution) => void) | null
@@ -425,6 +445,7 @@ const uploadState = ref<UploadState>({
 })
 const uploadConflictDialog = ref<UploadConflictDialogState>({
   visible: false,
+  mode: 'upload',
   name: '',
   applyAll: false,
   resolve: null
@@ -434,7 +455,7 @@ let previousBodyCursor = ''
 let previousBodyUserSelect = ''
 let previewRequestSerial = 0
 let structurePreviewAbortController: AbortController | null = null
-let workspacePreferencesReady = false
+const workspacePreferencesReady = ref(false)
 
 const SPLITTER_SIZE = 6
 const MIN_LEFT_WIDTH = 260
@@ -444,6 +465,7 @@ const MIN_QUEUE_HEIGHT = 180
 const MIN_LOG_HEIGHT = 120
 const CONTEXT_MENU_WIDTH = 190
 const CONTEXT_MENU_HEIGHT = 88
+const DIRECTORY_HISTORY_LIMIT = 20
 
 const workspaceStyle = computed<Record<string, string | undefined>>(() => ({
   '--workspace-left': leftPaneWidth.value === null ? undefined : `${leftPaneWidth.value}px`,
@@ -451,6 +473,11 @@ const workspaceStyle = computed<Record<string, string | undefined>>(() => ({
 }))
 
 const dragUploadActive = computed(() => dragUploadDepth.value > 0)
+const canGoBack = computed(() => directoryHistory.value.length > 0)
+const directoryHistoryEntries = computed(() => directoryHistory.value.map(path => ({
+  path,
+  label: directoryHistoryLabel(path)
+})))
 const uploadPercent = computed(() => {
   if (!uploadState.value.active || uploadState.value.total <= 0) return 0
   return Math.min(100, Math.max(0, Math.round((uploadState.value.loaded / uploadState.value.total) * 100)))
@@ -462,6 +489,31 @@ const sideStyle = computed<Record<string, string | undefined>>(() => ({
 }))
 
 const terminalInitialPath = computed(() => currentPath.value || props.systemInfo?.workspace_root || '')
+
+const workspaceTerminalBindings = computed<CanvasTerminalTabBinding[]>(() => {
+  const tabs = getClientPreferences().terminal?.tabs
+  if (!Array.isArray(tabs)) return []
+  return tabs.flatMap(item => {
+    if (!item || typeof item !== 'object') return []
+    const binding = item as Partial<CanvasTerminalTabBinding>
+    if (typeof binding.tabId !== 'string') return []
+    return [{
+      tabId: binding.tabId,
+      title: typeof binding.title === 'string' ? binding.title : '',
+      cwd: typeof binding.cwd === 'string' ? binding.cwd : '',
+      syncMode: binding.syncMode === 'follow' || binding.syncMode === 'bidirectional' ? binding.syncMode : 'off',
+      boundFileManagerId: typeof binding.boundFileManagerId === 'string' ? binding.boundFileManagerId : null,
+      active: binding.active === true
+    }]
+  })
+})
+
+function saveWorkspaceTerminalBindings(summary: CanvasTerminalTabBinding[]) {
+  void saveClientPreferencesPatch({
+    version: 1,
+    terminal: { tabs: summary }
+  }).catch(() => undefined)
+}
 
 function applyWorkspacePreferences() {
   const workspace = getClientPreferences().workspace
@@ -477,7 +529,7 @@ function applyWorkspacePreferences() {
 }
 
 function saveWorkspacePreferences() {
-  if (!workspacePreferencesReady) return
+  if (!workspacePreferencesReady.value) return
   void saveClientPreferencesPatch({
     version: 1,
     logs: {
@@ -879,12 +931,14 @@ function handleSelectionChange(items: FileItem[], primary: FileItem | null) {
   setSelection(items, primary)
 }
 
-async function loadDirectory(path?: string | null) {
+async function loadDirectory(path?: string | null, options: { recordHistory?: boolean } = {}) {
+  const previousPath = currentPath.value
   loadingFiles.value = true
   try {
     listing.value = await listFiles(path ?? undefined)
     currentPath.value = listing.value.path
     pathInput.value = listing.value.path
+    if (options.recordHistory) recordDirectoryHistory(previousPath, currentPath.value)
     saveWorkspacePreferences()
     setSelection([], null)
   } catch (error) {
@@ -895,7 +949,7 @@ async function loadDirectory(path?: string | null) {
 }
 
 async function openDirectory(path?: string | null) {
-  await loadDirectory(path)
+  await loadDirectory(path, { recordHistory: true })
 }
 
 async function openQueueWorkdir(path: string) {
@@ -909,20 +963,38 @@ async function openDirectoryFromTerminal(path: string) {
 
 async function openPathFromInput() {
   const value = pathInput.value.trim()
-  await loadDirectory(value || undefined)
+  await loadDirectory(value || undefined, { recordHistory: true })
 }
 
-async function goUp() {
-  if (listing.value?.parent) await loadDirectory(listing.value.parent)
+async function goBack() {
+  const path = directoryHistory.value[0]
+  if (!path) return
+  directoryHistory.value = directoryHistory.value.slice(1)
+  await loadDirectory(path, { recordHistory: false })
+}
+
+async function openHistoryPath(path: string) {
+  if (!path) return
+  directoryHistory.value = directoryHistory.value.filter(item => item !== path)
+  await loadDirectory(path, { recordHistory: false })
 }
 
 async function openItem(item: FileItem) {
   setSelection([item], item)
   if (item.type === 'directory') {
-    await loadDirectory(item.path)
+    await loadDirectory(item.path, { recordHistory: true })
     return
   }
   await previewFile(item)
+}
+
+function recordDirectoryHistory(previousPath: string, nextPath: string) {
+  if (!previousPath || previousPath === nextPath) return
+  directoryHistory.value = [previousPath, ...directoryHistory.value.filter(path => path !== previousPath)].slice(0, DIRECTORY_HISTORY_LIMIT)
+}
+
+function directoryHistoryLabel(path: string) {
+  return path
 }
 
 function abortStructurePreviewRequest() {
@@ -1412,6 +1484,7 @@ async function promptUploadConflict(name: string) {
   return new Promise<UploadConflictResolution>(resolve => {
     uploadConflictDialog.value = {
       visible: true,
+      mode: 'upload',
       name,
       applyAll: false,
       resolve
@@ -1425,6 +1498,7 @@ function chooseUploadConflict(action: UploadConflictAction) {
   dialog.resolve({ action, applyAll: dialog.applyAll })
   uploadConflictDialog.value = {
     visible: false,
+    mode: 'upload',
     name: '',
     applyAll: false,
     resolve: null
@@ -1517,6 +1591,38 @@ async function downloadSelected() {
   }
 }
 
+async function promptMoveConflict(name: string) {
+  return new Promise<UploadConflictResolution>(resolve => {
+    uploadConflictDialog.value = {
+      visible: true,
+      mode: 'move',
+      name,
+      applyAll: false,
+      resolve
+    }
+  })
+}
+
+async function handleMoveItems(items: FileItem[], targetDirectory: FileItem) {
+  if (items.length === 0) return
+  try {
+    const prepared = await prepareMoveEntries(items, {
+      targetPath: targetDirectory.path,
+      promptConflict: promptMoveConflict
+    })
+    if (prepared.cancelled) return
+    if (prepared.entries.length === 0) {
+      ElMessage.info(t('message.moveSkipped'))
+      return
+    }
+    await movePaths(prepared.entries.map(entry => entry.path), targetDirectory.path, prepared.entries)
+    await loadDirectory(currentPath.value)
+    ElMessage.success(t('message.moved'))
+  } catch (error) {
+    ElMessage.error(moveApiErrorMessage(error))
+  }
+}
+
 async function promptRename() {
   if (selectedItems.value.length !== 1 || !selectedItem.value) return
   const oldPath = selectedItem.value.path
@@ -1569,7 +1675,7 @@ onMounted(async () => {
   applyWorkspacePreferences()
   const initialPath = getClientPreferences().workspace?.currentPath || undefined
   await loadDirectory(initialPath)
-  workspacePreferencesReady = true
+  workspacePreferencesReady.value = true
   void loadPluginManifests()
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)

@@ -559,6 +559,57 @@ p {
   flex: 1;
 }
 
+.toolbar-history-control {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.toolbar-history-control > .el-button {
+  margin-right: 0;
+}
+
+.toolbar-history-menu-button {
+  width: 22px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  padding: 0;
+  color: #667085;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.toolbar-history-menu-button:hover,
+.toolbar-history-menu-button:focus-visible {
+  color: var(--accent);
+  background: var(--accent-weak);
+  outline: 0;
+}
+
+.toolbar-history-menu-button:disabled {
+  color: #b4bdc8;
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.toolbar-history-entry {
+  max-width: min(78vw, 720px);
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
 .toolbar-menu {
   position: relative;
   flex: 0 0 auto;
@@ -628,6 +679,7 @@ p {
 }
 
 .file-tree {
+  position: relative;
   display: grid;
   grid-template-rows: 34px minmax(0, 1fr);
 }
@@ -778,6 +830,12 @@ p {
   min-height: 0;
   overflow: auto;
   padding: 4px 8px;
+  scrollbar-width: none;
+}
+
+.file-list-body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .file-row {
@@ -807,6 +865,99 @@ p {
   box-shadow:
     inset 3px 0 0 var(--accent-2),
     inset 0 0 0 1px rgba(213, 106, 63, 0.18);
+}
+
+.file-parent-row {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  color: #335466;
+  background: rgba(250, 252, 254, 0.96);
+  box-shadow:
+    inset 0 0 0 1px rgba(148, 163, 184, 0.26),
+    0 4px 10px rgba(31, 41, 55, 0.06);
+  cursor: pointer;
+}
+
+.file-parent-row:hover,
+.file-parent-row:focus-visible {
+  color: var(--accent);
+  background: #eef7fa;
+}
+
+.file-parent-row .file-kind-icon {
+  color: #5d7485;
+}
+
+.file-floating-scrollbar {
+  position: absolute;
+  z-index: 8;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.45);
+  opacity: 0;
+  pointer-events: auto;
+  transition:
+    opacity 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.file-tree:hover .file-floating-scrollbar,
+.file-tree:focus-within .file-floating-scrollbar,
+.file-tree.is-column-resizing .file-floating-scrollbar {
+  opacity: 1;
+}
+
+.file-floating-scrollbar.is-vertical {
+  top: 42px;
+  right: 3px;
+  bottom: 12px;
+  width: 8px;
+}
+
+.file-floating-scrollbar.is-horizontal {
+  right: 12px;
+  bottom: 3px;
+  left: 8px;
+  height: 8px;
+}
+
+.file-floating-scrollbar-thumb {
+  border-radius: inherit;
+  background: rgba(102, 112, 133, 0.58);
+  transition: background-color 0.14s ease;
+}
+
+.file-floating-scrollbar.is-vertical .file-floating-scrollbar-thumb {
+  width: 100%;
+}
+
+.file-floating-scrollbar.is-horizontal .file-floating-scrollbar-thumb {
+  height: 100%;
+}
+
+.file-floating-scrollbar:hover,
+.file-floating-scrollbar:active {
+  opacity: 1;
+  background: rgba(226, 232, 240, 0.72);
+}
+
+.file-floating-scrollbar-thumb:hover,
+.file-floating-scrollbar-thumb:active {
+  background: rgba(71, 85, 105, 0.74);
+}
+
+.file-row.is-move-drop-target {
+  color: #0f3d4c;
+  background: linear-gradient(90deg, #dff4e8 0%, #f2fbf6 100%);
+  box-shadow:
+    inset 0 0 0 2px rgba(22, 138, 69, 0.42),
+    inset 4px 0 0 var(--success),
+    0 6px 16px rgba(22, 138, 69, 0.12);
+}
+
+.file-row.is-move-drop-target .file-kind-icon,
+.file-row.is-move-drop-target .file-name-cell {
+  color: var(--success);
 }
 
 .file-drag-image {
@@ -3311,8 +3462,12 @@ button.context-menu-item {
   min-width: 0;
   padding: 6px 8px;
   overflow-x: auto;
-  overflow-y: visible;
-  scrollbar-width: thin;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.canvas-file-manager > .file-toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 .canvas-file-manager > .file-toolbar .el-button {
@@ -3322,24 +3477,116 @@ button.context-menu-item {
 
 .canvas-file-drop-overlay {
   position: absolute;
-  inset: 46px 8px 8px;
+  top: 94px;
+  right: 12px;
   z-index: 18;
-  display: grid;
-  place-items: center;
-  gap: 8px;
+  min-width: 176px;
+  max-width: calc(100% - 24px);
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   border: 2px dashed rgba(23, 107, 135, 0.52);
   border-radius: 8px;
+  padding: 8px 12px;
   color: #124f64;
-  background: rgba(247, 251, 253, 0.9);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+  background: rgba(247, 251, 253, 0.94);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.72),
+    0 8px 22px rgba(31, 41, 55, 0.12);
+  backdrop-filter: blur(10px);
   font-size: 13px;
   font-weight: 750;
-  pointer-events: none;
+  pointer-events: auto;
+  transition:
+    border-color 0.14s ease,
+    background-color 0.14s ease,
+    color 0.14s ease,
+    opacity 0.14s ease;
+}
+
+.canvas-file-drop-actions {
+  position: absolute;
+  top: 94px;
+  right: 12px;
+  z-index: 18;
+  width: min(260px, calc(100% - 24px));
+  max-width: calc(100% - 24px);
+  display: grid;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.canvas-file-drop-overlay.is-upload-overlay {
+  inset: 8px;
+  top: 8px;
+  right: 8px;
+  min-width: 0;
+  max-width: none;
+  width: auto;
+  height: auto;
+  flex-direction: column;
+  gap: 10px;
+  border-radius: 12px;
+  border-color: rgba(23, 107, 135, 0.52);
+  background: rgba(247, 251, 253, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+  backdrop-filter: none;
+  font-size: 14px;
+}
+
+.canvas-file-drop-overlay.is-upload-overlay .el-icon {
+  font-size: 28px;
+}
+
+.canvas-file-drop-actions .canvas-file-drop-overlay {
+  position: static;
+  top: auto;
+  right: auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+}
+
+.canvas-file-drop-actions .canvas-file-drop-overlay span {
+  text-align: center;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.canvas-file-drop-overlay.is-copy-action {
+  border-color: rgba(67, 97, 238, 0.48);
+  color: #243b8f;
+  background: rgba(247, 248, 255, 0.95);
+}
+
+.canvas-file-drop-overlay.is-copy-action .el-icon {
+  color: #4361ee;
 }
 
 .canvas-file-drop-overlay .el-icon {
-  font-size: 30px;
+  flex: 0 0 auto;
+  font-size: 20px;
   color: var(--accent-2);
+}
+
+.canvas-file-drop-overlay span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-file-drop-overlay.is-disabled {
+  border-color: rgba(180, 35, 24, 0.34);
+  color: #9f1f17;
+  background: rgba(255, 247, 247, 0.94);
+  opacity: 0.86;
+}
+
+.canvas-file-drop-overlay.is-disabled .el-icon {
+  color: var(--danger);
 }
 
 .canvas-preview-window {

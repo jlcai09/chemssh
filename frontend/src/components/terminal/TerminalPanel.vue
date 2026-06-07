@@ -234,6 +234,7 @@ const props = defineProps<{
   initialBindings?: CanvasTerminalTabBinding[]
   layoutVersion?: number
   transferUploadHandler?: (path: string, files: File[]) => Promise<void>
+  deferInit?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -271,7 +272,9 @@ onMounted(async () => {
     tabsResizeObserver = new ResizeObserver(measureTabsOverflow)
     tabsResizeObserver.observe(tabsRef.value)
   }
-  await ensureInitialTab()
+  if (!props.deferInit) {
+    await ensureInitialTab()
+  }
   measureTabsOverflow()
 })
 
@@ -308,6 +311,15 @@ watch(preferredCwd, cwd => {
   if (!cwd || tabs.value.length > 0) return
   void ensureInitialTab(cwd)
 })
+
+watch(
+  () => props.deferInit,
+  deferred => {
+    if (!deferred && tabs.value.length === 0) {
+      void ensureInitialTab()
+    }
+  }
+)
 
 watch(
   () => props.layoutVersion,
@@ -1011,7 +1023,7 @@ async function cleanupDetachedSessions() {
     const sessions = await listTerminalSessions()
     await Promise.all(
       sessions.items
-        .filter(item => !item.alive || (item.clients ?? 0) === 0)
+        .filter(item => !item.alive)
         .map(item => closeTerminalSession(item.session_id).catch(() => undefined))
     )
   } catch {

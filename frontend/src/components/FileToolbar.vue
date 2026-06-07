@@ -3,9 +3,28 @@
     <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
       <el-button :icon="Refresh" circle @click="$emit('refresh')" />
     </el-tooltip>
-    <el-tooltip :content="t('toolbar.up')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
-      <el-button :icon="Back" circle :disabled="!canGoUp" @click="$emit('go-up')" />
-    </el-tooltip>
+    <div class="toolbar-history-control">
+      <el-tooltip :content="t('toolbar.back')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-button :icon="Back" circle :disabled="!canGoBack" @click="$emit('go-back')" />
+      </el-tooltip>
+      <el-dropdown trigger="click" :disabled="historyEntries.length === 0" @command="selectHistoryPath">
+        <button
+          class="toolbar-history-menu-button"
+          type="button"
+          :disabled="historyEntries.length === 0"
+          :aria-label="t('toolbar.history')"
+        >
+          <el-icon><CaretBottom /></el-icon>
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item v-for="entry in historyEntries" :key="entry.path" :command="entry.path">
+              <span class="toolbar-history-entry" :title="entry.path">{{ entry.label }}</span>
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+    </div>
     <div class="toolbar-menu">
       <el-button :icon="Plus" circle aria-haspopup="menu" @click.prevent />
       <div class="toolbar-submenu" role="menu">
@@ -71,25 +90,33 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Back, Delete, DocumentAdd, Download, Edit, FolderAdd, FolderOpened, Hide, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
+import { Back, CaretBottom, Delete, DocumentAdd, Download, Edit, FolderAdd, FolderOpened, Hide, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
 import type { FileItem } from '../api/files'
 import { t } from '../i18n'
+
+export type DirectoryHistoryEntry = {
+  path: string
+  label: string
+}
 
 const props = withDefaults(
   defineProps<{
     selectedItems?: FileItem[]
-    canGoUp: boolean
+    canGoBack: boolean
+    historyEntries?: DirectoryHistoryEntry[]
     showHiddenFiles?: boolean
   }>(),
   {
     selectedItems: () => [],
+    historyEntries: () => [],
     showHiddenFiles: false
   }
 )
 
 const emit = defineEmits<{
   refresh: []
-  'go-up': []
+  'go-back': []
+  'history-select': [path: string]
   'create-file': []
   mkdir: []
   upload: [files: File[]]
@@ -109,6 +136,10 @@ function pickFile() {
 
 function pickFolder() {
   folderInput.value?.click()
+}
+
+function selectHistoryPath(path: string | number | boolean) {
+  emit('history-select', String(path))
 }
 
 function handleUpload(event: Event) {

@@ -9,11 +9,13 @@ from starlette.background import BackgroundTask
 from backend.app.dependencies import get_file_service
 from backend.app.core.errors import AppError
 from backend.app.models.file import (
+    CopyRequest,
     CreateDirectoryRequest,
     DirectoryListing,
     DownloadArchiveRequest,
     FileOperationResponse,
     FileReadResponse,
+    MoveRequest,
     RenameRequest,
     TailResponse,
     WriteFileRequest,
@@ -60,6 +62,22 @@ def rename_file(
     service: FileService = Depends(get_file_service),
 ) -> FileOperationResponse:
     return service.rename_path(payload.old_path, payload.new_path)
+
+
+@router.post("/move", response_model=FileOperationResponse)
+def move_files(
+    payload: MoveRequest,
+    service: FileService = Depends(get_file_service),
+) -> FileOperationResponse:
+    return service.move_paths(payload.paths, payload.target_directory, items=payload.items)
+
+
+@router.post("/copy", response_model=FileOperationResponse)
+def copy_files(
+    payload: CopyRequest,
+    service: FileService = Depends(get_file_service),
+) -> FileOperationResponse:
+    return service.copy_paths(payload.paths, payload.target_directory, items=payload.items)
 
 
 @router.post("/mkdir", response_model=FileOperationResponse)

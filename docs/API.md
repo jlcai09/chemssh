@@ -170,6 +170,84 @@ CLI 参数：
 }
 ```
 
+### `POST /api/files/move`
+
+把一个或多个文件/目录移动到目标目录。后端会先校验所有路径仍在工作区内、目标必须是已存在目录、不能移动工作区根目录、不能把目录移动到自身或子目录内。默认 `paths` 模式下目标目录已有同名项会返回 `PATH_EXISTS`；前端拖拽移动会先检查目标目录，同名时弹出和上传一致的冲突处理：覆盖、跳过、添加 `.new` 后缀或取消。
+
+兼容的简单请求：
+
+```json
+{
+  "paths": [
+    "/workspace/project/a.xyz",
+    "/workspace/project/case_dir"
+  ],
+  "target_directory": "/workspace/project/done"
+}
+```
+
+需要表达冲突处理时使用 `items`。`target_name` 省略时使用源文件名；`overwrite=true` 允许覆盖同名文件，或把同名目录递归合并，源目录中同名文件覆盖目标文件，目标目录里额外文件保留。后缀模式由前端生成唯一 `target_name`，例如 `a.xyz.new`。
+
+```json
+{
+  "target_directory": "/workspace/project/done",
+  "items": [
+    {
+      "path": "/workspace/project/a.xyz",
+      "overwrite": true
+    },
+    {
+      "path": "/workspace/project/case_dir",
+      "target_name": "case_dir.new"
+    }
+  ]
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "path": "/workspace/project/done",
+  "message": "Paths moved"
+}
+```
+
+失败响应沿用统一的 `{ "error": { "code": "...", "message": "..." } }` 格式。移动接口的 `message` 会给出中文详细原因，常见错误码包括 `PATH_NOT_FOUND`（源路径不存在）、`DIRECTORY_NOT_FOUND`（目标文件夹不存在）、`PATH_EXISTS`（目标已有同名项目）、`MOVE_INTO_SELF`（移动到自身或子目录）、`MOVE_TYPE_CONFLICT`（文件和文件夹类型冲突）和 `MOVE_FAILED`（底层 `mv` 或文件系统移动失败）。前端文件管理器会优先展示后端返回的中文详情；如果只拿到旧版英文或错误码，则兜底转换为中文提示。
+
+### `POST /api/files/copy`
+
+把一个或多个文件/目录复制到目标目录。请求体和 `POST /api/files/move` 保持一致，支持 `paths` 简单模式和 `items` 冲突处理模式。复制目录时如果 `overwrite=true` 且目标已有同名目录，后端会递归合并目录树：源目录中的同名文件覆盖目标文件，目标目录里的额外文件保留。复制不会删除源项目。
+
+```json
+{
+  "target_directory": "/workspace/project/done",
+  "items": [
+    {
+      "path": "/workspace/project/a.xyz",
+      "overwrite": true
+    },
+    {
+      "path": "/workspace/project/case_dir",
+      "target_name": "case_dir.new"
+    }
+  ]
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "path": "/workspace/project/done",
+  "message": "Paths copied"
+}
+```
+
+常见错误码包括 `PATH_NOT_FOUND`、`DIRECTORY_NOT_FOUND`、`PATH_EXISTS`、`COPY_INTO_SELF`、`COPY_SAME_PATH`、`COPY_TYPE_CONFLICT`、`COPY_WORKSPACE_ROOT` 和 `COPY_FAILED`。前端封装：`copyPaths(paths, targetDirectory, entries)`，定义在 `frontend/src/api/files.ts`。
+
 ### `GET /api/files/tail?path=/workspace/project/slurm-123.out&lines=300`
 
 读取日志类文件末尾 N 行，适合 `.log`、`.out`、`slurm-*.out`、`OUTCAR`、`OSZICAR` 等。
@@ -700,7 +778,8 @@ X-ChemSSH-Client-Id: client_xxx
 画板窗口交互约定：
 
 - 新建窗口菜单顺序为：文件、终端、预览、队列、Tail、插件。空画板的默认新建入口创建文件管理窗口。
-- 文件管理窗口会把当前目录保存到 `payload.path`，标题只显示当前目录名；新建时写入 `payload.bindingNumber` 和 `payload.bindingColor`，用于窗口类型标签、绑定徽标和关系线的一致颜色/编号。绑定到该文件管理器的 Tail 窗口在单击选中任意文件时会自动更新 `payload.path`，与工作台 Tail 的选中文件行为保持一致。
+- 文件管理窗口会把当前目录保存到 `payload.path`，标题只显示当前目录名；新建时写入 `payload.bindingNumber` 和 `payload.bindingColor`，用于窗口类型标签、绑定徽标和关系线的一致颜色/编号。绑定到该文件管理器的 Tail 窗口在单击选中任意文件时会自动更新 `payload.path`，与工作台 Tail 的选中文件行为保持一致。画板文件管理窗口完成内部移动后会向 `CanvasBoard.vue` 上报受影响目录，画布层按各文件管理器当前目录匹配并递增 `refreshToken`，因此源目录窗口、目标目录窗口，以及其它打开相同目录的窗口都会自动刷新。
+- 文件管理器列表顶部在存在上级目录时固定显示 `..` 文件夹行。该行不参与选择、重命名或删除；双击进入上一级，也可作为内部文件拖拽的移动目标。工具栏不再提供“上一级”按钮；原位置改为类似 XFTP 的“后退”按钮和历史下拉，每个文件管理器本地记录最近 20 个用户主动访问过的目录，历史下拉显示完整绝对路径。刷新、上传完成、移动完成等重载当前目录的操作不会写入历史。
 - Tail 窗口通过 `payload.boundFileManagerId` 记录绑定的文件管理窗口。画板 Tail 不提供手动路径输入，绑定入口位于 Tail 标题栏右侧的连接图标；日志内容仍由 `LogViewer.vue` 调用 `GET /api/files/tail`。
 - Terminal 窗口通过 `payload.tabBindings` 保存当前终端标签页绑定摘要，形如：
 
@@ -805,6 +884,8 @@ X-ChemSSH-Client-Id: client_xxx
 | `text/uri-list` | 下载 URL | 拖到浏览器外部触发下载 |
 | `DownloadURL` | Chrome 下载拖拽格式 | 外部下载兼容增强 |
 
+写入端设置 `effectAllowed="copyMove"`：拖到终端、预览或浏览器外部仍按原来的 copy/download 行为处理；拖回文件管理器目录行时，只有合法目标文件夹会 `preventDefault()` 并设置 `dropEffect="move"`，其它行和空白区域保持浏览器默认禁止图标。
+
 JSON payload：
 
 ```json
@@ -850,6 +931,7 @@ function handleDrop(event: DragEvent) {
 
 - 文件管理器 -> 浏览器外部：打开 `text/uri-list` 中的下载 URL。单文件直接下载，多文件或目录下载 zip。
 - 文件管理器 -> 浏览器外部拖拽目录时，即使只拖了一个目录，也使用 `download-selection` 返回 zip。
+- 文件管理器 -> 当前目录另一个文件夹：长按文件行进入内部文件拖拽后，可拖动当前选择的多个文件/文件夹到目录行。合法目标目录会高亮并以 move 光标提示；松开后先读取目标目录，若有同名项则使用和上传一致的冲突弹窗选择覆盖、跳过、添加 `.new` 后缀或取消，然后调用 `movePaths(paths, targetDirectory, entries)`，也就是 `POST /api/files/move`。文件行、空白区域、选中的目标目录、自身/子目录等非法位置不接收目录行移动 drop，保留默认禁止图标。画板文件管理窗口在内部拖拽期间还会显示当前目录悬浮投放区：一个用于移动到该窗口当前目录，另一个用于复制到该窗口当前目录。复制区使用 `copyPaths(paths, targetDirectory, entries)`，也就是 `POST /api/files/copy`；同名冲突仍使用覆盖、跳过、添加 `.new` 后缀或取消。拖到画板文件管理窗口的非目录行或空白区域时，会按移动到该窗口当前目录处理，类似 SFTP pane 级 drop 行为；目录行仍作为更精确的移动目标优先处理，复制只通过复制悬浮区触发。外部文件拖入画板文件管理窗口时显示留有少量边距的窗口级圆角“松开以上传文件”遮罩，目标目录就是该窗口当前目录，不支持直接拖拽上传到列表中的子文件夹。
 - 文件管理器 -> 终端：向当前 tab 输入 ` ${paths.join(' ')}`，不自动回车。
 - 文件管理器 -> 预览：只打开第一个路径，并切换到预览面板。
 - 预览面板统一使用结构/文本切换窗口；结构与文本子视图保活，文件管理器切换目录不会清空当前预览目标，打开普通文件时进入文本视图，只有当前目标可作为结构预览时才显示结构切换入口。结构加载和重绘期间会在旧结构上显示非阻塞半透明遮罩；继续打开下一个结构会取消上一条结构 preview 请求，并且旧响应不能覆盖新状态。预览器工具栏提供“大窗口打开”按钮，使用与 Terminal 一致的 `Teleport to="body"` 固定全页层复用当前结构或文本预览器，适合临时放大查看而不改变当前文件选择。

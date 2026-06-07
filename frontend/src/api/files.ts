@@ -36,6 +36,12 @@ export interface FileOperationResponse {
   message: string
 }
 
+export interface MovePathEntry {
+  path: string
+  targetName?: string
+  overwrite?: boolean
+}
+
 export interface UploadProgress {
   loaded: number
   total: number
@@ -77,6 +83,20 @@ export function renamePath(oldPath: string, newPath: string) {
   return request<FileOperationResponse>('/api/files/rename', {
     method: 'POST',
     body: JSON.stringify({ old_path: oldPath, new_path: newPath })
+  })
+}
+
+export function movePaths(paths: string[], targetDirectory: string, entries?: MovePathEntry[]) {
+  return request<FileOperationResponse>('/api/files/move', {
+    method: 'POST',
+    body: JSON.stringify({ paths, target_directory: targetDirectory, items: entries ?? [] })
+  })
+}
+
+export function copyPaths(paths: string[], targetDirectory: string, entries?: MovePathEntry[]) {
+  return request<FileOperationResponse>('/api/files/copy', {
+    method: 'POST',
+    body: JSON.stringify({ paths, target_directory: targetDirectory, items: entries ?? [] })
   })
 }
 

@@ -12,6 +12,7 @@ from backend.app.models.file import (
     DirectoryListing,
     FileOperationResponse,
     FileReadResponse,
+    MoveItemRequest,
     TailResponse,
 )
 from backend.app.providers.filesystem.local_fs import LocalFileSystemProvider
@@ -79,6 +80,121 @@ class FileService:
             raise AppError("RENAME_WORKSPACE_ROOT", "Cannot rename workspace root", 400)
         self.provider.rename_path(old_path, new_path)
         return FileOperationResponse(path=str(new_path), message="Path renamed")
+
+    def move_paths(
+        self,
+        raw_paths: list[str],
+        raw_target_directory: str,
+        *,
+        items: list[MoveItemRequest] | None = None,
+    ) -> FileOperationResponse:
+        raw_items = items or [MoveItemRequest(path=path) for path in raw_paths]
+        if not raw_items:
+            raise AppError("NO_PATHS", "移动失败：没有选择要移动的文件或文件夹", 400)
+
+        target_directory = self.security.resolve_path(raw_target_directory)
+        if not target_directory.exists():
+            raise AppError("DIRECTORY_NOT_FOUND", f"移动失败：目标文件夹不存在：{target_directory}", 404)
+        if not target_directory.is_dir():
+            raise AppError("NOT_A_DIRECTORY", f"移动失败：目标路径不是文件夹：{target_directory}", 400)
+
+        moves: list[tuple[Path, Path, bool]] = []
+        seen_paths: set[Path] = set()
+        destination_names: set[str] = set()
+        for item in raw_items:
+            path = self.security.resolve_path(item.path)
+            if not path.exists():
+                raise AppError("PATH_NOT_FOUND", f"移动失败：源路径不存在：{path}", 404)
+            if path == self.security.root:
+                raise AppError("MOVE_WORKSPACE_ROOT", f"移动失败：不能移动工作区根目录：{path}", 400)
+            if path in seen_paths:
+                continue
+            if path == target_directory:
+                raise AppError("MOVE_INTO_SELF", f"移动失败：不能把文件夹移动到它自身：{path}", 400)
+            if path.is_dir() and self._path_contains(path, target_directory):
+                raise AppError("MOVE_INTO_SELF", f"移动失败：不能把文件夹移动到它的子文件夹中。源路径：{path}；目标文件夹：{target_directory}", 400)
+
+            target_name = self.security.validate_child_name(item.target_name or path.name, field="target name")
+            destination = (target_directory / target_name).resolve(strict=False)
+            if not self.security.is_allowed(destination):
+                raise AppError("FORBIDDEN_PATH", f"移动失败：目标路径超出了工作区范围：{destination}", 403)
+            if path == destination:
+                raise AppError("MOVE_SAME_PATH", f"移动失败：源位置和目标位置相同：{path}", 400)
+            if path.is_dir() and self._path_contains(path, destination):
+                raise AppError("MOVE_INTO_SELF", f"移动失败：不能把文件夹移动到它自身或它的子文件夹中。源路径：{path}；目标路径：{destination}", 400)
+            if target_name in destination_names:
+                raise AppError("PATH_EXISTS", f"移动失败：多个源项目会移动成同一个目标名称：{target_name}", 409)
+            if destination.exists() and not item.overwrite:
+                raise AppError("PATH_EXISTS", f"移动失败：目标位置已存在同名项目：{destination}", 409)
+            overwrite = item.overwrite and destination.exists()
+            if overwrite and path.is_dir() != destination.is_dir():
+                raise AppError("MOVE_TYPE_CONFLICT", f"移动失败：同名项目类型不同，不能覆盖：{destination}", 409)
+
+            destination_names.add(target_name)
+            seen_paths.add(path)
+            moves.append((path, destination, overwrite))
+
+        if all(destination.parent == target_directory and destination.name == path.name and not overwrite for path, destination, overwrite in moves):
+            self.provider.move_paths([path for path, _, _ in moves], target_directory)
+        else:
+            for path, destination, overwrite in moves:
+                self.provider.move_path_to(path, destination, overwrite=overwrite)
+        return FileOperationResponse(path=str(target_directory), message="Paths moved")
+
+    def copy_paths(
+        self,
+        raw_paths: list[str],
+        raw_target_directory: str,
+        *,
+        items: list[MoveItemRequest] | None = None,
+    ) -> FileOperationResponse:
+        raw_items = items or [MoveItemRequest(path=path) for path in raw_paths]
+        if not raw_items:
+            raise AppError("NO_PATHS", "复制失败：没有选择要复制的文件或文件夹", 400)
+
+        target_directory = self.security.resolve_path(raw_target_directory)
+        if not target_directory.exists():
+            raise AppError("DIRECTORY_NOT_FOUND", f"复制失败：目标文件夹不存在：{target_directory}", 404)
+        if not target_directory.is_dir():
+            raise AppError("NOT_A_DIRECTORY", f"复制失败：目标路径不是文件夹：{target_directory}", 400)
+
+        copies: list[tuple[Path, Path, bool]] = []
+        seen_paths: set[Path] = set()
+        destination_names: set[str] = set()
+        for item in raw_items:
+            path = self.security.resolve_path(item.path)
+            if not path.exists():
+                raise AppError("PATH_NOT_FOUND", f"复制失败：源路径不存在：{path}", 404)
+            if path == self.security.root:
+                raise AppError("COPY_WORKSPACE_ROOT", f"复制失败：不能复制工作区根目录：{path}", 400)
+            if path in seen_paths:
+                continue
+            if path.is_dir() and self._path_contains(path, target_directory):
+                raise AppError("COPY_INTO_SELF", f"复制失败：不能把文件夹复制到它自身或它的子文件夹中。源路径：{path}；目标文件夹：{target_directory}", 400)
+
+            target_name = self.security.validate_child_name(item.target_name or path.name, field="target name")
+            destination = (target_directory / target_name).resolve(strict=False)
+            if not self.security.is_allowed(destination):
+                raise AppError("FORBIDDEN_PATH", f"复制失败：目标路径超出了工作区范围：{destination}", 403)
+            if path == destination:
+                raise AppError("COPY_SAME_PATH", f"复制失败：源位置和目标位置相同：{path}", 400)
+            if path.is_dir() and self._path_contains(path, destination):
+                raise AppError("COPY_INTO_SELF", f"复制失败：不能把文件夹复制到它自身或它的子文件夹中。源路径：{path}；目标路径：{destination}", 400)
+            if target_name in destination_names:
+                raise AppError("PATH_EXISTS", f"复制失败：多个源项目会复制成同一个目标名称：{target_name}", 409)
+            if destination.exists() and not item.overwrite:
+                raise AppError("PATH_EXISTS", f"复制失败：目标位置已存在同名项目：{destination}", 409)
+            overwrite = item.overwrite and destination.exists()
+            if overwrite and path.is_dir() != destination.is_dir():
+                raise AppError("COPY_TYPE_CONFLICT", f"复制失败：同名项目类型不同，不能覆盖：{destination}", 409)
+
+            destination_names.add(target_name)
+            seen_paths.add(path)
+            copies.append((path, destination, overwrite))
+
+        for path, destination, overwrite in copies:
+            self.provider.copy_path_to(path, destination, overwrite=overwrite)
+        return FileOperationResponse(path=str(target_directory), message="Paths copied")
 
     def make_directory(self, raw_path: str, name: str) -> FileOperationResponse:
         target = self.security.resolve_child(raw_path, name, field="directory name")
@@ -208,3 +324,10 @@ class FileService:
         if path == self.security.root or not self.security.is_allowed(parent):
             return None
         return str(parent)
+
+    def _path_contains(self, parent: Path, child: Path) -> bool:
+        try:
+            child.relative_to(parent)
+            return True
+        except ValueError:
+            return False

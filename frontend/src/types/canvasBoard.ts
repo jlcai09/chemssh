@@ -56,6 +56,7 @@ export interface ClientPreferences {
   version: 1
   terminal?: {
     fontSize?: number
+    tabs?: CanvasTerminalTabBinding[]
   }
   logs?: {
     tailLines?: number

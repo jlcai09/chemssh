@@ -11,6 +11,8 @@ export interface ChemSSHFileDragPayload {
   items: Pick<FileItem, 'name' | 'path' | 'type' | 'size' | 'mtime' | 'extension' | 'preview_type' | 'format'>[]
 }
 
+let activeChemSSHFileDragPayload: ChemSSHFileDragPayload | null = null
+
 export function createChemSSHFileDragPayload(items: FileItem[]): ChemSSHFileDragPayload {
   return {
     source: 'chemssh:file-manager',
@@ -40,17 +42,26 @@ export function getFileDragDownloadUrl(paths: string[], options: { forceArchive?
 
 export function writeChemSSHFileDrag(dataTransfer: DataTransfer, items: FileItem[]) {
   const payload = createChemSSHFileDragPayload(items)
+  activeChemSSHFileDragPayload = payload
   const paths = payload.paths
   const downloadUrl = getFileDragDownloadUrl(paths, { forceArchive: paths.length === 1 && items[0]?.type === 'directory' })
   const filename = paths.length === 1 ? items[0]?.name ?? 'chemssh-file' : 'chemssh-selection.zip'
 
-  dataTransfer.effectAllowed = 'copy'
+  dataTransfer.effectAllowed = 'copyMove'
   dataTransfer.setData(CHEMSSH_FILE_DRAG_MIME, JSON.stringify(payload))
   dataTransfer.setData(CHEMSSH_FILE_PATHS_MIME, JSON.stringify(paths))
   dataTransfer.setData('text/plain', formatFileDragTerminalInput(paths))
   dataTransfer.setData('text/uri-list', downloadUrl)
   const mediaType = paths.length === 1 && items[0]?.type === 'file' ? 'application/octet-stream' : 'application/zip'
   dataTransfer.setData('DownloadURL', `${mediaType}:${filename}:${downloadUrl}`)
+}
+
+export function getActiveChemSSHFileDragPayload() {
+  return activeChemSSHFileDragPayload
+}
+
+export function clearActiveChemSSHFileDragPayload() {
+  activeChemSSHFileDragPayload = null
 }
 
 export function readChemSSHFileDrag(dataTransfer: DataTransfer | null): ChemSSHFileDragPayload | null {

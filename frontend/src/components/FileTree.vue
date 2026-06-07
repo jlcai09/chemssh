@@ -79,7 +79,34 @@
         </button>
       </span>
     </div>
-    <div ref="bodyRef" class="file-list-body" role="rowgroup" @mousedown.left="beginBlankSelect">
+    <div ref="bodyRef" class="file-list-body" role="rowgroup" @scroll="updateScrollbars" @mousedown.left="beginBlankSelect">
+      <div
+        v-if="parentItem"
+        class="file-row file-parent-row is-directory"
+        :class="{ 'is-move-drop-target': moveDropTargetPath === parentItem.path }"
+        role="row"
+        tabindex="0"
+        draggable="false"
+        aria-selected="false"
+        @mousedown.left.stop
+        @dragenter="handleMoveDragOverItem(parentItem, $event)"
+        @dragover="handleMoveDragOverItem(parentItem, $event)"
+        @dragleave="handleMoveDragLeaveItem(parentItem, $event)"
+        @drop="handleMoveDropItem(parentItem, $event)"
+        @dblclick="emit('open', parentItem)"
+        @keydown.enter.prevent="emit('open', parentItem)"
+      >
+        <span class="file-cell file-icon-cell" role="gridcell">
+          <el-icon class="file-kind-icon">
+            <Folder />
+          </el-icon>
+        </span>
+        <span class="file-cell file-name-cell" role="gridcell" title="..">..</span>
+        <span class="file-column-divider file-column-divider-name-size" aria-hidden="true" />
+        <span class="file-cell file-size-cell" role="gridcell" />
+        <span class="file-column-divider file-column-divider-size-time" aria-hidden="true" />
+        <span class="file-cell file-time-cell" role="gridcell" />
+      </div>
       <div
         v-for="(item, index) in sortedItems"
         :key="item.path"
@@ -90,6 +117,7 @@
           'is-selected': selectedPathSet.has(item.path),
           'is-drag-range': isInDragRange(index),
           'is-drag-export': exportDragPathSet.has(item.path),
+          'is-move-drop-target': moveDropTargetPath === item.path,
           'is-focused': focusedIndex === index,
           'is-anchor': anchorIndex === index
         }"
@@ -102,6 +130,10 @@
         @contextmenu.prevent="openContextMenu(index, $event)"
         @mouseenter="extendSelection(index)"
         @dragstart="handleFileDragStart(index, $event)"
+        @dragenter="handleMoveDragOver(index, $event)"
+        @dragover="handleMoveDragOver(index, $event)"
+        @dragleave="handleMoveDragLeave(index, $event)"
+        @drop="handleMoveDrop(index, $event)"
         @dragend="finishFileDrag"
         @dblclick="handleOpen(index)"
         @keydown="handleKeydown(index, $event)"
@@ -120,13 +152,44 @@
         <span class="file-cell file-time-cell" role="gridcell">{{ formatDate(item.mtime) }}</span>
       </div>
     </div>
+    <div
+      v-if="scrollState.showVertical"
+      class="file-floating-scrollbar is-vertical"
+      aria-hidden="true"
+      @pointerdown="handleScrollbarTrackPointerDown('vertical', $event)"
+    >
+      <div
+        class="file-floating-scrollbar-thumb"
+        :style="{ height: `${scrollState.verticalThumbSize}px`, transform: `translateY(${scrollState.verticalThumbOffset}px)` }"
+        @pointerdown.stop="startScrollbarThumbDrag('vertical', $event)"
+      />
+    </div>
+    <div
+      v-if="scrollState.showHorizontal"
+      class="file-floating-scrollbar is-horizontal"
+      aria-hidden="true"
+      @pointerdown="handleScrollbarTrackPointerDown('horizontal', $event)"
+    >
+      <div
+        class="file-floating-scrollbar-thumb"
+        :style="{ width: `${scrollState.horizontalThumbSize}px`, transform: `translateX(${scrollState.horizontalThumbOffset}px)` }"
+        @pointerdown.stop="startScrollbarThumbDrag('horizontal', $event)"
+      />
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CaretBottom, CaretTop, Document, Folder, View } from '@element-plus/icons-vue'
-import { writeChemSSHFileDrag } from '../api/fileDrag'
+import {
+  clearActiveChemSSHFileDragPayload,
+  getActiveChemSSHFileDragPayload,
+  hasChemSSHFileDrag,
+  readChemSSHFileDrag,
+  writeChemSSHFileDrag,
+  type ChemSSHFileDragPayload
+} from '../api/fileDrag'
 import { hasActivePreviewProvider, type FilePreviewProvider } from '../api/filePreviewProviders'
 import type { FileItem } from '../api/files'
 import { locale, t } from '../i18n'
@@ -134,6 +197,7 @@ import { locale, t } from '../i18n'
 const props = withDefaults(
   defineProps<{
     items: FileItem[]
+    parentPath?: string | null
     selectedItems?: FileItem[]
     previewProviders?: FilePreviewProvider[]
   }>(),
@@ -146,6 +210,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   'selection-change': [items: FileItem[], primary: FileItem | null]
   'context-menu': [item: FileItem, event: MouseEvent]
+  'move-items': [items: FileItem[], targetDirectory: FileItem]
   open: [item: FileItem]
 }>()
 
@@ -169,6 +234,15 @@ const blankDragPathSet = ref(new Set<string>())
 const exportDragPathSet = ref(new Set<string>())
 const exportDragArmed = ref(false)
 const exportDragActive = ref(false)
+const moveDropTargetPath = ref<string | null>(null)
+const scrollState = ref({
+  showVertical: false,
+  showHorizontal: false,
+  verticalThumbSize: 28,
+  verticalThumbOffset: 0,
+  horizontalThumbSize: 28,
+  horizontalThumbOffset: 0
+})
 let blankDragStartX = 0
 let blankDragStartY = 0
 let blankDragCurrentX = 0
@@ -182,6 +256,15 @@ let columnResizeStartSize = 0
 let columnResizeStartTime = 0
 let previousBodyCursor = ''
 let previousBodyUserSelect = ''
+let scrollResizeObserver: ResizeObserver | null = null
+let activeScrollbarDrag: {
+  axis: 'vertical' | 'horizontal'
+  pointerId: number
+  startClient: number
+  startScroll: number
+  maxScroll: number
+  maxThumbOffset: number
+} | null = null
 
 const LONG_PRESS_MS = 430
 const SELECT_DRAG_THRESHOLD = 4
@@ -194,6 +277,7 @@ const MIN_TIME_COLUMN_WIDTH = 112
 const MAX_TIME_COLUMN_WIDTH = 260
 const FILE_ICON_COLUMN_WIDTH = 34
 const FILE_COLUMN_RESIZER_WIDTH = 10
+const FLOATING_SCROLLBAR_MIN_THUMB = 28
 
 const activeColumnResize = ref<ColumnResizeTarget | null>(null)
 const sizeColumnWidth = ref(DEFAULT_SIZE_COLUMN_WIDTH)
@@ -212,6 +296,20 @@ const sortedItems = computed(() => {
     const result = compareItems(a, b)
     return sortDirection.value === 'asc' ? result : -result
   })
+})
+
+const parentItem = computed<FileItem | null>(() => {
+  if (!props.parentPath) return null
+  return {
+    name: '..',
+    path: props.parentPath,
+    type: 'directory',
+    size: null,
+    mtime: '',
+    extension: '',
+    preview_type: 'directory',
+    format: null
+  }
 })
 
 function typeRank(item: FileItem) {
@@ -335,6 +433,94 @@ function resetColumnWidths() {
 
 function setRowRef(el: unknown, index: number) {
   rowRefs.value[index] = el instanceof HTMLElement ? el : null
+}
+
+function updateScrollbars() {
+  const body = bodyRef.value
+  if (!body) return
+
+  const showVertical = body.scrollHeight > body.clientHeight + 1
+  const showHorizontal = body.scrollWidth > body.clientWidth + 1
+  const verticalTrack = Math.max(0, body.clientHeight - (showHorizontal ? 12 : 0))
+  const horizontalTrack = Math.max(0, body.clientWidth - (showVertical ? 12 : 0))
+  const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight)
+  const maxScrollLeft = Math.max(0, body.scrollWidth - body.clientWidth)
+  const verticalThumbSize = showVertical
+    ? clamp((body.clientHeight / body.scrollHeight) * verticalTrack, FLOATING_SCROLLBAR_MIN_THUMB, verticalTrack)
+    : FLOATING_SCROLLBAR_MIN_THUMB
+  const horizontalThumbSize = showHorizontal
+    ? clamp((body.clientWidth / body.scrollWidth) * horizontalTrack, FLOATING_SCROLLBAR_MIN_THUMB, horizontalTrack)
+    : FLOATING_SCROLLBAR_MIN_THUMB
+  const verticalMaxOffset = Math.max(0, verticalTrack - verticalThumbSize)
+  const horizontalMaxOffset = Math.max(0, horizontalTrack - horizontalThumbSize)
+
+  scrollState.value = {
+    showVertical,
+    showHorizontal,
+    verticalThumbSize,
+    verticalThumbOffset: maxScrollTop <= 0 ? 0 : (body.scrollTop / maxScrollTop) * verticalMaxOffset,
+    horizontalThumbSize,
+    horizontalThumbOffset: maxScrollLeft <= 0 ? 0 : (body.scrollLeft / maxScrollLeft) * horizontalMaxOffset
+  }
+}
+
+function startScrollbarThumbDrag(axis: 'vertical' | 'horizontal', event: PointerEvent) {
+  const body = bodyRef.value
+  if (!body) return
+  event.preventDefault()
+  const trackLength = axis === 'vertical'
+    ? Math.max(0, body.clientHeight - (scrollState.value.showHorizontal ? 12 : 0))
+    : Math.max(0, body.clientWidth - (scrollState.value.showVertical ? 12 : 0))
+  const thumbSize = axis === 'vertical' ? scrollState.value.verticalThumbSize : scrollState.value.horizontalThumbSize
+  activeScrollbarDrag = {
+    axis,
+    pointerId: event.pointerId,
+    startClient: axis === 'vertical' ? event.clientY : event.clientX,
+    startScroll: axis === 'vertical' ? body.scrollTop : body.scrollLeft,
+    maxScroll: axis === 'vertical' ? Math.max(0, body.scrollHeight - body.clientHeight) : Math.max(0, body.scrollWidth - body.clientWidth),
+    maxThumbOffset: Math.max(0, trackLength - thumbSize)
+  }
+  const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  target?.setPointerCapture(event.pointerId)
+  window.addEventListener('pointermove', handleScrollbarThumbMove)
+  window.addEventListener('pointerup', stopScrollbarThumbDrag, { once: true })
+  window.addEventListener('pointercancel', stopScrollbarThumbDrag, { once: true })
+}
+
+function handleScrollbarThumbMove(event: PointerEvent) {
+  const drag = activeScrollbarDrag
+  const body = bodyRef.value
+  if (!drag || !body || event.pointerId !== drag.pointerId) return
+  event.preventDefault()
+  const client = drag.axis === 'vertical' ? event.clientY : event.clientX
+  const delta = client - drag.startClient
+  const scrollDelta = drag.maxThumbOffset <= 0 ? 0 : (delta / drag.maxThumbOffset) * drag.maxScroll
+  if (drag.axis === 'vertical') body.scrollTop = drag.startScroll + scrollDelta
+  else body.scrollLeft = drag.startScroll + scrollDelta
+  updateScrollbars()
+}
+
+function stopScrollbarThumbDrag() {
+  activeScrollbarDrag = null
+  window.removeEventListener('pointermove', handleScrollbarThumbMove)
+  window.removeEventListener('pointerup', stopScrollbarThumbDrag)
+  window.removeEventListener('pointercancel', stopScrollbarThumbDrag)
+}
+
+function handleScrollbarTrackPointerDown(axis: 'vertical' | 'horizontal', event: PointerEvent) {
+  const body = bodyRef.value
+  if (!body || !(event.target instanceof HTMLElement) || event.target.classList.contains('file-floating-scrollbar-thumb')) return
+  event.preventDefault()
+  const rect = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : null
+  if (!rect) return
+  if (axis === 'vertical') {
+    const targetRatio = clamp((event.clientY - rect.top) / rect.height, 0, 1)
+    body.scrollTop = targetRatio * Math.max(0, body.scrollHeight - body.clientHeight)
+  } else {
+    const targetRatio = clamp((event.clientX - rect.left) / rect.width, 0, 1)
+    body.scrollLeft = targetRatio * Math.max(0, body.scrollWidth - body.clientWidth)
+  }
+  updateScrollbars()
 }
 
 function isScrollbarEvent(element: HTMLElement, event: MouseEvent) {
@@ -593,6 +779,78 @@ function handleFileDragStart(index: number, event: DragEvent) {
   setDragImage(event, items)
 }
 
+function handleMoveDragOver(index: number, event: DragEvent) {
+  const item = sortedItems.value[index]
+  handleMoveDragOverItem(item, event)
+}
+
+function handleMoveDragOverItem(item: FileItem | undefined | null, event: DragEvent) {
+  if (!item || !hasChemSSHFileDrag(event)) return
+  const payload = fileDragPayloadForEvent(event)
+  if (!payload || !isValidMoveTarget(item, payload)) {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
+    if (moveDropTargetPath.value === item.path) moveDropTargetPath.value = null
+    return
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
+  moveDropTargetPath.value = item.path
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+function handleMoveDragLeave(index: number, event: DragEvent) {
+  const item = sortedItems.value[index]
+  handleMoveDragLeaveItem(item, event)
+}
+
+function handleMoveDragLeaveItem(item: FileItem | undefined | null, event: DragEvent) {
+  if (!item || moveDropTargetPath.value !== item.path) return
+  const row = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  const related = event.relatedTarget instanceof Node ? event.relatedTarget : null
+  if (row && related && row.contains(related)) return
+  moveDropTargetPath.value = null
+}
+
+function handleMoveDrop(index: number, event: DragEvent) {
+  const item = sortedItems.value[index]
+  handleMoveDropItem(item, event)
+}
+
+function handleMoveDropItem(item: FileItem | undefined | null, event: DragEvent) {
+  const payload = fileDragPayloadForEvent(event)
+  moveDropTargetPath.value = null
+  if (!item || !payload || !isValidMoveTarget(item, payload)) return
+
+  event.preventDefault()
+  event.stopPropagation()
+  emit('move-items', payload.items, item)
+  finishFileDrag()
+}
+
+function fileDragPayloadForEvent(event: DragEvent) {
+  return readChemSSHFileDrag(event.dataTransfer) ?? getActiveChemSSHFileDragPayload()
+}
+
+function isValidMoveTarget(target: FileItem, payload: ChemSSHFileDragPayload) {
+  if (target.type !== 'directory' || payload.paths.length === 0) return false
+  const targetPath = normalizePath(target.path)
+  return payload.items.every(item => {
+    const sourcePath = normalizePath(item.path)
+    if (sourcePath === targetPath) return false
+    if (item.type === 'directory' && isPathInside(targetPath, sourcePath)) return false
+    return true
+  })
+}
+
+function normalizePath(path: string) {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function isPathInside(path: string, parent: string) {
+  return path === parent || path.startsWith(`${parent}/`)
+}
+
 function setDragImage(event: DragEvent, items: FileItem[]) {
   if (!event.dataTransfer) return
   const image = document.createElement('div')
@@ -608,6 +866,8 @@ function finishFileDrag() {
   exportDragActive.value = false
   exportDragArmed.value = false
   exportDragPathSet.value = new Set()
+  moveDropTargetPath.value = null
+  clearActiveChemSSHFileDragPayload()
 }
 
 function isInDragRange(index: number) {
@@ -724,15 +984,25 @@ watch(
   () => {
     rowRefs.value = []
     syncFocusedSelection()
+    void nextTick(updateScrollbars)
   }
 )
 
 onMounted(() => {
   window.addEventListener('mouseup', finishSelection)
+  void nextTick(() => {
+    updateScrollbars()
+    scrollResizeObserver = new ResizeObserver(updateScrollbars)
+    if (bodyRef.value) scrollResizeObserver.observe(bodyRef.value)
+    if (treeRef.value) scrollResizeObserver.observe(treeRef.value)
+  })
 })
 
 onBeforeUnmount(() => {
   stopColumnResize()
+  stopScrollbarThumbDrag()
+  scrollResizeObserver?.disconnect()
+  scrollResizeObserver = null
   window.removeEventListener('mouseup', finishSelection)
   window.removeEventListener('mousemove', handleBlankDragMove)
   window.removeEventListener('mousemove', handlePressMove)

@@ -32,5 +32,17 @@ class FileSystemProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def move_paths(self, paths: list[Path], target_directory: Path) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def move_path_to(self, path: Path, destination: Path, *, overwrite: bool = False) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def copy_path_to(self, path: Path, destination: Path, *, overwrite: bool = False) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def make_directory(self, path: Path) -> None:
         raise NotImplementedError

@@ -46,6 +46,24 @@ class RenameRequest(BaseModel):
     new_path: str
 
 
+class MoveItemRequest(BaseModel):
+    path: str
+    target_name: Optional[str] = None
+    overwrite: bool = False
+
+
+class MoveRequest(BaseModel):
+    paths: list[str] = []
+    target_directory: str
+    items: list[MoveItemRequest] = []
+
+
+class CopyRequest(BaseModel):
+    paths: list[str] = []
+    target_directory: str
+    items: list[MoveItemRequest] = []
+
+
 class CreateDirectoryRequest(BaseModel):
     path: str
     name: str

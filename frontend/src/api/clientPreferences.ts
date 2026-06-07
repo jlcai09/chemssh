@@ -67,6 +67,10 @@ export function normalizeClientPreferences(value: Partial<ClientPreferences> | R
   return {
     ...typed,
     version: 1,
+    terminal: {
+      ...(typed.terminal ?? {}),
+      tabs: Array.isArray(typed.terminal?.tabs) ? typed.terminal.tabs : undefined
+    },
     logs: {
       ...(typed.logs ?? {}),
       tailLines: typed.logs?.tailLines ?? 20

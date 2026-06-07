@@ -106,9 +106,11 @@
             <CanvasFileManagerWindow
               v-if="windowState.type === 'file-manager'"
               :initial-path="fileManagerPath(windowState)"
+              :refresh-token="fileManagerRefreshToken(windowState.id)"
               @path-change="path => updateFileManagerPath(windowState.id, path)"
               @open-file="item => openFileFromManager(windowState, item)"
               @selection-change="(items, primary) => updateFileManagerSelection(windowState.id, items, primary)"
+              @directories-change="paths => refreshFileManagersForDirectories(paths)"
             />
             <QueueStatus
               v-else-if="windowState.type === 'queue'"
@@ -256,6 +258,7 @@ const preferences = ref<ClientPreferences>({ version: 1, logs: { tailLines: 20 }
 const activeWindowId = ref<string | null>(null)
 const saveStatus = ref<SaveStatus>('saved')
 const terminalLayoutVersion = ref(0)
+const fileManagerRefreshTokens = ref<Record<string, number>>({})
 let saveTimer: number | undefined
 let heartbeatTimer: number | undefined
 let hydrated = false
@@ -547,6 +550,22 @@ function updateFileManagerPath(windowId: string, path: string) {
     windowState.payload = { ...(windowState.payload ?? {}), path }
     windowState.title = fileManagerDirectoryName(path) || t('canvas.window.fileManager')
   })
+}
+
+function fileManagerRefreshToken(windowId: string) {
+  return fileManagerRefreshTokens.value[windowId] ?? 0
+}
+
+function refreshFileManagersForDirectories(paths: string[]) {
+  const changed = new Set(paths.map(normalizePath).filter(Boolean))
+  if (changed.size === 0) return
+  const next = { ...fileManagerRefreshTokens.value }
+  for (const windowState of activeBoard.value?.windows ?? []) {
+    if (windowState.type !== 'file-manager') continue
+    if (!changed.has(normalizePath(fileManagerPath(windowState)))) continue
+    next[windowState.id] = (next[windowState.id] ?? 0) + 1
+  }
+  fileManagerRefreshTokens.value = next
 }
 
 function updatePreviewPath(windowId: string, path: string, metadata?: { previewType?: PreviewType | null; format?: string | null }) {
@@ -1054,5 +1073,9 @@ function nextZIndex(board: CanvasBoard) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function normalizePath(path: string) {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '')
 }
 </script>
