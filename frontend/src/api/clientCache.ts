@@ -1,5 +1,6 @@
 import { request } from './http'
 import { CLIENT_ID_HEADER, getClientId } from './clientSession'
+import { getCurrentWorkspaceScopeKey } from './workspaceScope'
 import type { CanvasBoardState, ClientPreferences } from '../types/canvasBoard'
 
 export interface ClientCacheResponse {
@@ -13,7 +14,8 @@ export interface ClientCacheResponse {
 function jsonHeaders() {
   return {
     'Content-Type': 'application/json',
-    [CLIENT_ID_HEADER]: getClientId()
+    [CLIENT_ID_HEADER]: getClientId(),
+    'X-ChemSSH-Cache-Scope': getCurrentWorkspaceScopeKey()
   }
 }
 

@@ -44,6 +44,7 @@ import { clearClientCache } from '../api/clientCache'
 import { clearLocalClientPreferences } from '../api/clientPreferences'
 import { getClientId } from '../api/clientSession'
 import type { SystemInfo } from '../api/system'
+import { scopedLocalStorageKey } from '../api/workspaceScope'
 import { t } from '../i18n'
 
 defineProps<{
@@ -81,6 +82,7 @@ async function confirmClearCache() {
 
 function clearLocalLayoutCache() {
   const keys = [
+    scopedLocalStorageKey('chemssh.canvas.boards.v1'),
     'chemssh.canvas.boards.v1',
     'chemssh.terminal.fontSize'
   ]

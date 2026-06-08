@@ -39,31 +39,35 @@ class ClientCacheService:
         self.root = get_client_cache_root(settings)
         self.max_bytes = settings.client_cache.max_file_size_kb * 1024
 
-    def read_cache(self, client_id: str) -> dict[str, Any]:
+    def read_cache(self, client_id: str, scope: str = "default") -> dict[str, Any]:
         self._ensure_enabled()
         client_dir = self._client_dir(client_id)
+        cache_dir = self._cache_dir(client_dir, scope)
         self._touch_meta(client_id, client_dir)
         return {
             "enabled": True,
             "client_id": client_id,
-            "preferences": self._read_json(client_dir / "preferences.json", DEFAULT_PREFERENCES),
-            "boards": self._read_json(client_dir / "boards.json", DEFAULT_BOARDS),
+            "scope": scope,
+            "preferences": self._read_json(cache_dir / "preferences.json", DEFAULT_PREFERENCES),
+            "boards": self._read_json(cache_dir / "boards.json", DEFAULT_BOARDS),
             "updated_at": self._iso_now(),
         }
 
-    def write_preferences(self, client_id: str, preferences: dict[str, Any]) -> dict[str, Any]:
+    def write_preferences(self, client_id: str, preferences: dict[str, Any], scope: str = "default") -> dict[str, Any]:
         self._ensure_enabled()
         client_dir = self._client_dir(client_id)
-        self._write_json(client_dir / "preferences.json", preferences)
+        cache_dir = self._cache_dir(client_dir, scope)
+        self._write_json(cache_dir / "preferences.json", preferences)
         self._touch_meta(client_id, client_dir, saved=True)
-        return self.read_cache(client_id)
+        return self.read_cache(client_id, scope)
 
-    def write_boards(self, client_id: str, boards: dict[str, Any]) -> dict[str, Any]:
+    def write_boards(self, client_id: str, boards: dict[str, Any], scope: str = "default") -> dict[str, Any]:
         self._ensure_enabled()
         client_dir = self._client_dir(client_id)
-        self._write_json(client_dir / "boards.json", boards)
+        cache_dir = self._cache_dir(client_dir, scope)
+        self._write_json(cache_dir / "boards.json", boards)
         self._touch_meta(client_id, client_dir, saved=True)
-        return self.read_cache(client_id)
+        return self.read_cache(client_id, scope)
 
     def heartbeat(self, client_id: str) -> dict[str, str]:
         self._ensure_enabled()
@@ -130,6 +134,17 @@ class ClientCacheService:
         if root not in client_dir.parents:
             raise AppError("INVALID_CLIENT_ID", "Invalid client id", 400)
         return client_dir
+
+    def _cache_dir(self, client_dir: Path, scope: str) -> Path:
+        if scope == "default":
+            return client_dir
+        scope_dir = (client_dir / "scopes" / scope).resolve()
+        expected = client_dir / "scopes" / scope
+        if scope_dir != expected:
+            raise AppError("INVALID_CLIENT_CACHE_SCOPE", "Invalid client cache scope", 400)
+        if client_dir not in scope_dir.parents:
+            raise AppError("INVALID_CLIENT_CACHE_SCOPE", "Invalid client cache scope", 400)
+        return scope_dir
 
     def _touch_meta(self, client_id: str, client_dir: Path, *, saved: bool = False) -> dict[str, Any]:
         now = self._iso_now()

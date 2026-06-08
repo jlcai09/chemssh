@@ -254,6 +254,86 @@ CLI 参数：
 
 前端封装：`frontend/src/api/files.ts`。
 
+## Launcher 本地文件联动
+
+当 ChemSSH 通过支持本地 bridge 的 Launcher 同源代理打开时，前端会调用 `frontend/src/api/launcherBridge.ts` 中的 `loadLauncherBridgeCapabilities()` 发现能力。该请求访问 `GET /api/chemssh-bridge/capabilities`；如果接口不存在、返回 404/503、网络失败，或响应中 `enabled !== true`，前端静默降级，文件管理器行为与直接访问 ChemSSH 时一致。
+
+能力响应由 Launcher 提供，形如：
+
+```json
+{
+  "enabled": true,
+  "version": 1,
+  "workspace_root": "/home/user/project",
+  "features": {
+    "system_icons": true,
+    "open_default": true,
+    "open_text": true,
+    "open_sync_events": true
+  },
+  "endpoints": {
+    "icon": "/api/file-icon",
+    "open": "/api/chemssh-bridge/open",
+    "open_text": "/api/chemssh-bridge/open-text",
+    "sync_events": "/api/chemssh-bridge/open-sync-events"
+  }
+}
+```
+
+前端只使用能力声明中的端点，不保存 Launcher 的本地缓存路径，不传 profile id、SFTP session id、密码或 host key 参数。文件路径仍以 ChemSSH 的 `workspace_root` 做前端边界判断；真正的远程文件权限仍由 ChemSSH 后端和 Launcher bridge 各自校验。
+
+### 系统文件图标
+
+`FileTree.vue` 接收可选 `systemIconProvider`。当 `enabled === true`、`features.system_icons === true` 且 `endpoints.icon` 存在时，文件列表优先渲染 `GET /api/file-icon?name=<name>&is_dir=0|1&size=16` 返回的系统图标。目录使用 `name=folder`，文件使用 `item.name`。图标加载失败时按“目录/扩展名/size”缓存失败结果，并回退到原有 Element Plus 图标；失败不会弹消息，也不会改变双击文件预览行为。
+
+### 本地打开
+
+工作台文件管理器和画板文件管理器在右键普通文件时，根据能力在“复制路径”和“提交队列”之前显示：
+
+- `context.openLocal`：调用 `POST /api/chemssh-bridge/open`，请求体 `{ "path": "/workspace/project/input.inp" }`。
+- `context.openNotepad`：调用 `POST /api/chemssh-bridge/open-text`，请求体相同。
+
+目录不显示这两个动作。双击文件仍打开 ChemSSH 预览；本地打开只由右键菜单触发。打开请求成功后只提示已交给本地程序，失败时才显示错误。
+
+Launcher 成功响应示例：
+
+```json
+{
+  "ok": true,
+  "remote_path": "/workspace/project/input.inp",
+  "local_path": "C:\\Users\\...\\ChemSSH Launcher\\sftp-open\\abcd1234\\input.inp"
+}
+```
+
+`local_path` 只用于即时提示或调试，不写入 client cache 或画板 payload。
+
+### 同步事件
+
+当 `features.open_sync_events === true` 且 `endpoints.sync_events` 存在时，`Workspace.vue` 与 `CanvasBoard.vue` 每 2 秒轮询：
+
+```http
+GET /api/chemssh-bridge/open-sync-events?after=<lastSeq>
+```
+
+响应：
+
+```json
+{
+  "events": [
+    {
+      "seq": 3,
+      "time": "2026-06-07T13:00:00Z",
+      "remote_path": "/workspace/project/input.inp",
+      "local_path": "C:\\Users\\...\\input.inp",
+      "status": "done",
+      "error": ""
+    }
+  ]
+}
+```
+
+前端维护 `lastSeq`，页面隐藏时暂停本轮请求。`status="done"` 时取 `parentDirectory(remote_path)`：工作台只在该目录等于当前目录时刷新当前列表，画板复用 `refreshFileManagersForDirectories(paths)` 刷新所有打开了该目录的文件管理窗口。`status="error"` 只弹同步失败提示，不刷新列表，避免把错误同步状态误导为远程文件已更新。
+
 ## 结构预览
 
 ### `GET /api/structures/ase/preview?path=/workspace/project/mol.xyz&force=false`

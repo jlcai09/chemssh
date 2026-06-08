@@ -46,6 +46,7 @@
         :items="visibleItems"
         :parent-path="listing?.parent"
         :selected-items="selectedItems"
+        :system-icon-provider="launcherSystemIconProvider"
         @selection-change="handleSelectionChange"
         @context-menu="handleContextMenu"
         @move-items="handleMoveItems"
@@ -103,6 +104,28 @@
         @click.stop
         @contextmenu.prevent
       >
+        <button
+          v-if="contextMenu.item && canLauncherOpenItem(contextMenu.item, 'default')"
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          @click="openContextWithLocalApp"
+        >
+          <el-icon><Open /></el-icon>
+          <span>{{ t('context.openLocal') }}</span>
+          <span />
+        </button>
+        <button
+          v-if="contextMenu.item && canLauncherOpenItem(contextMenu.item, 'text')"
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          @click="openContextWithNotepad"
+        >
+          <el-icon><EditPen /></el-icon>
+          <span>{{ t('context.openNotepad') }}</span>
+          <span />
+        </button>
         <button class="context-menu-item" type="button" role="menuitem" @click="copyContextPath">
           <el-icon><CopyDocument /></el-icon>
           <span>{{ t('context.copyPath') }}</span>
@@ -162,7 +185,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, CopyDocument, Promotion, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowRight, CopyDocument, EditPen, Open, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
   getActiveChemSSHFileDragPayload,
   hasChemSSHFileDrag,
@@ -171,6 +194,13 @@ import {
 } from '../../api/fileDrag'
 import { copyApiErrorMessage, moveApiErrorMessage, prepareMoveEntries } from '../../api/fileMove'
 import { downloadUrl } from '../../api/http'
+import {
+  isPathInsideWorkspace,
+  launcherFileIconUrl,
+  openWithLocalApp,
+  openWithNotepad,
+  type LauncherBridgeCapabilities
+} from '../../api/launcherBridge'
 import {
   copyPaths,
   deletePath,
@@ -204,6 +234,8 @@ import FileTree from '../FileTree.vue'
 const props = defineProps<{
   initialPath?: string | null
   refreshToken?: number
+  launcherBridgeCapabilities?: LauncherBridgeCapabilities | null
+  workspaceRoot?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -287,7 +319,16 @@ const currentDirectoryItem = computed<FileItem>(() => ({
 
 const DIRECTORY_HISTORY_LIMIT = 20
 const CONTEXT_MENU_WIDTH = 190
-const CONTEXT_MENU_HEIGHT = 88
+const CONTEXT_MENU_HEIGHT = 156
+
+const launcherSystemIconProvider = computed(() => ({
+  enabled: Boolean(
+    props.launcherBridgeCapabilities?.enabled &&
+    props.launcherBridgeCapabilities.features.system_icons &&
+    props.launcherBridgeCapabilities.endpoints.icon
+  ),
+  iconUrl: (item: FileItem) => launcherFileIconUrl(item, 16)
+}))
 
 onMounted(() => {
   void loadDirectory(currentPath.value || undefined)
@@ -412,6 +453,41 @@ async function submitContextJob(command: SubmitCommand) {
     ElMessage.success(response.message || t('submit.jobSubmitted', { id: response.job_id ?? '' }))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.submitFailed'))
+  }
+}
+
+function canLauncherOpenItem(item: FileItem, mode: 'default' | 'text') {
+  if (item.type !== 'file') return false
+  const capabilities = props.launcherBridgeCapabilities
+  if (!capabilities?.enabled) return false
+  const hasFeature = mode === 'default'
+    ? Boolean(capabilities.features.open_default && capabilities.endpoints.open)
+    : Boolean(capabilities.features.open_text && capabilities.endpoints.open_text)
+  if (!hasFeature) return false
+  return isPathInsideWorkspace(item.path, props.workspaceRoot || capabilities.workspace_root || '')
+}
+
+async function openContextWithLocalApp() {
+  const item = contextMenu.value.item
+  if (!item || !canLauncherOpenItem(item, 'default')) return
+  closeContextMenu()
+  try {
+    await openWithLocalApp(item.path)
+    ElMessage.success(t('message.localOpenStarted'))
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('message.localOpenFailed'))
+  }
+}
+
+async function openContextWithNotepad() {
+  const item = contextMenu.value.item
+  if (!item || !canLauncherOpenItem(item, 'text')) return
+  closeContextMenu()
+  try {
+    await openWithNotepad(item.path)
+    ElMessage.success(t('message.localOpenStarted'))
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('message.localOpenFailed'))
   }
 }
 

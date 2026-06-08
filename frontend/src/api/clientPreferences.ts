@@ -1,4 +1,11 @@
 import { loadClientCache, saveClientPreferences as saveClientPreferencesRequest } from './clientCache'
+import {
+  getCurrentWorkspaceScope,
+  sanitizeClientPreferencesForWorkspace,
+  scopedLocalStorageKey,
+  setCurrentWorkspaceScope,
+  type WorkspaceScope
+} from './workspaceScope'
 import type { ClientPreferences } from '../types/canvasBoard'
 
 const LOCAL_PREFS_KEY = 'chemssh.preferences.v1'
@@ -11,11 +18,21 @@ export function getClientPreferences() {
   return preferences
 }
 
+export function configureClientPreferencesScope(scope: WorkspaceScope) {
+  if (getCurrentWorkspaceScope().key === scope.key) return
+  if (saveTimer) window.clearTimeout(saveTimer)
+  saveTimer = undefined
+  loadPromise = null
+  setCurrentWorkspaceScope(scope)
+  preferences = readLocalPreferences()
+}
+
 export function clearLocalClientPreferences() {
   preferences = { version: 1, logs: { tailLines: 20 } }
   if (saveTimer) window.clearTimeout(saveTimer)
   saveTimer = undefined
   try {
+    window.localStorage.removeItem(scopedLocalStorageKey(LOCAL_PREFS_KEY))
     window.localStorage.removeItem(LOCAL_PREFS_KEY)
   } catch {
     // Ignore storage failures.
@@ -35,7 +52,7 @@ export async function loadClientPreferencesState() {
 
 export function setClientPreferencesState(next: ClientPreferences | null | undefined) {
   const patch = (next ?? { version: 1 }) as unknown as Record<string, unknown>
-  preferences = normalizeClientPreferences(deepMerge(preferences as unknown as Record<string, unknown>, patch))
+  preferences = normalizeScopedPreferences(deepMerge(preferences as unknown as Record<string, unknown>, patch))
   writeLocalPreferences(preferences)
 }
 
@@ -43,7 +60,7 @@ export async function saveClientPreferencesPatch(
   patch: Partial<ClientPreferences>,
   options: { immediate?: boolean } = {}
 ) {
-  preferences = normalizeClientPreferences(deepMerge(preferences as unknown as Record<string, unknown>, patch as Record<string, unknown>))
+  preferences = normalizeScopedPreferences(deepMerge(preferences as unknown as Record<string, unknown>, patch as Record<string, unknown>))
   writeLocalPreferences(preferences)
   if (saveTimer) window.clearTimeout(saveTimer)
   if (options.immediate) {
@@ -96,9 +113,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function readLocalPreferences(): ClientPreferences {
   try {
-    const raw = window.localStorage.getItem(LOCAL_PREFS_KEY)
+    const scopedRaw = window.localStorage.getItem(scopedLocalStorageKey(LOCAL_PREFS_KEY))
+    const raw = scopedRaw ?? window.localStorage.getItem(LOCAL_PREFS_KEY)
     if (!raw) return { version: 1, logs: { tailLines: 20 } }
-    return normalizeClientPreferences(JSON.parse(raw) as ClientPreferences)
+    return normalizeScopedPreferences(JSON.parse(raw) as ClientPreferences)
   } catch {
     return { version: 1, logs: { tailLines: 20 } }
   }
@@ -106,8 +124,14 @@ function readLocalPreferences(): ClientPreferences {
 
 function writeLocalPreferences(value: ClientPreferences) {
   try {
-    window.localStorage.setItem(LOCAL_PREFS_KEY, JSON.stringify(value))
+    window.localStorage.setItem(scopedLocalStorageKey(LOCAL_PREFS_KEY), JSON.stringify(value))
   } catch {
     // Preferences are best-effort; live UI state still updates.
   }
+}
+
+function normalizeScopedPreferences(value: Partial<ClientPreferences> | Record<string, unknown> | null | undefined): ClientPreferences {
+  const normalized = normalizeClientPreferences(value)
+  const workspaceRoot = getCurrentWorkspaceScope().workspaceRoot
+  return workspaceRoot ? sanitizeClientPreferencesForWorkspace(normalized, workspaceRoot) : normalized
 }

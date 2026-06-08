@@ -51,6 +51,7 @@
           :parent-path="listing?.parent"
           :selected-items="selectedItems"
           :preview-providers="previewProviders"
+          :system-icon-provider="launcherSystemIconProvider"
           @selection-change="handleSelectionChange"
           @context-menu="openFileContextMenu"
           @move-items="handleMoveItems"
@@ -72,6 +73,7 @@
       <TerminalPanel
         class="workspace-terminal"
         :initial-cwd="terminalInitialPath"
+        :workspace-root="props.systemInfo?.workspace_root"
         :current-file-manager-path="currentPath"
         :layout-version="terminalLayoutVersion"
         :transfer-upload-handler="handleTerminalTransferUpload"
@@ -254,6 +256,28 @@
         @click.stop
         @contextmenu.prevent
       >
+        <button
+          v-if="contextMenu.item && canLauncherOpenItem(contextMenu.item, 'default')"
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          @click="openContextWithLocalApp"
+        >
+          <el-icon><Open /></el-icon>
+          <span>{{ t('context.openLocal') }}</span>
+          <span />
+        </button>
+        <button
+          v-if="contextMenu.item && canLauncherOpenItem(contextMenu.item, 'text')"
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          @click="openContextWithNotepad"
+        >
+          <el-icon><EditPen /></el-icon>
+          <span>{{ t('context.openNotepad') }}</span>
+          <span />
+        </button>
         <button class="context-menu-item" type="button" role="menuitem" @click="copyContextPath">
           <el-icon><CopyDocument /></el-icon>
           <span>{{ t('context.copyPath') }}</span>
@@ -280,7 +304,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Close, CopyDocument, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowRight, Close, CopyDocument, EditPen, Open, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
   deletePath,
   downloadArchive,
@@ -297,7 +321,12 @@ import {
   type UploadProgress
 } from '../api/files'
 import { API_BASE, downloadUrl, request } from '../api/http'
-import { getClientPreferences, loadClientPreferencesState, saveClientPreferencesPatch } from '../api/clientPreferences'
+import {
+  configureClientPreferencesScope,
+  getClientPreferences,
+  loadClientPreferencesState,
+  saveClientPreferencesPatch
+} from '../api/clientPreferences'
 import { hasChemSSHFileDrag, readChemSSHFileDrag } from '../api/fileDrag'
 import { moveApiErrorMessage, prepareMoveEntries } from '../api/fileMove'
 import {
@@ -307,6 +336,17 @@ import {
 } from '../api/filePreviewProviders'
 import { isStructurePreviewItem } from '../api/fileTypes'
 import { submitJob, type SubmitCommand } from '../api/jobs'
+import {
+  isPathInsideWorkspace,
+  launcherFileIconUrl,
+  loadLauncherBridgeCapabilities,
+  openWithLocalApp,
+  openWithNotepad,
+  parentDirectoryPath,
+  pollLauncherOpenSyncEvents,
+  type LauncherBridgeCapabilities,
+  type LauncherBridgeSyncEvent
+} from '../api/launcherBridge'
 import { activatePlugin, deactivatePlugin, listPlugins, type PluginManifest } from '../api/plugins'
 import {
   confirmLargePreview,
@@ -328,6 +368,11 @@ import {
   type UploadEntry
 } from '../api/uploadEntries'
 import type { SystemInfo } from '../api/system'
+import {
+  createWorkspaceScope,
+  sanitizeTerminalTabs,
+  workspacePathOrRoot
+} from '../api/workspaceScope'
 import type { AsePreviewResponse, StructureSource } from '../types/structure'
 import type { CanvasTerminalTabBinding } from '../types/canvasBoard'
 import FilePreview from '../components/FilePreview.vue'
@@ -427,6 +472,7 @@ const activeWorkPanelId = ref('builtin:preview')
 const pluginManifests = ref<PluginManifest[]>([])
 const previewProviders = ref<FilePreviewProvider[]>([])
 const currentStructureSource = ref<StructureSource>(ASE_STRUCTURE_SOURCE)
+const launcherBridgeCapabilities = ref<LauncherBridgeCapabilities | null>(null)
 const contextMenu = ref<ContextMenuState>({
   visible: false,
   x: 0,
@@ -455,6 +501,10 @@ let previousBodyCursor = ''
 let previousBodyUserSelect = ''
 let previewRequestSerial = 0
 let structurePreviewAbortController: AbortController | null = null
+let launcherSyncTimer: number | undefined
+let launcherLastSyncSeq = 0
+let mounted = false
+let initialized = false
 const workspacePreferencesReady = ref(false)
 
 const SPLITTER_SIZE = 6
@@ -464,7 +514,7 @@ const MIN_SIDE_WIDTH = 300
 const MIN_QUEUE_HEIGHT = 180
 const MIN_LOG_HEIGHT = 120
 const CONTEXT_MENU_WIDTH = 190
-const CONTEXT_MENU_HEIGHT = 88
+const CONTEXT_MENU_HEIGHT = 156
 const DIRECTORY_HISTORY_LIMIT = 20
 
 const workspaceStyle = computed<Record<string, string | undefined>>(() => ({
@@ -488,12 +538,22 @@ const sideStyle = computed<Record<string, string | undefined>>(() => ({
   '--workspace-queue': sideQueueHeight.value === null ? undefined : `${sideQueueHeight.value}px`
 }))
 
-const terminalInitialPath = computed(() => currentPath.value || props.systemInfo?.workspace_root || '')
+const terminalInitialPath = computed(() => workspacePathOrRoot(currentPath.value, props.systemInfo?.workspace_root))
+
+const launcherSystemIconProvider = computed(() => ({
+  enabled: Boolean(
+    launcherBridgeCapabilities.value?.enabled &&
+    launcherBridgeCapabilities.value.features.system_icons &&
+    launcherBridgeCapabilities.value.endpoints.icon
+  ),
+  iconUrl: (item: FileItem) => launcherFileIconUrl(item, 16)
+}))
 
 const workspaceTerminalBindings = computed<CanvasTerminalTabBinding[]>(() => {
   const tabs = getClientPreferences().terminal?.tabs
   if (!Array.isArray(tabs)) return []
-  return tabs.flatMap(item => {
+  const workspaceRoot = props.systemInfo?.workspace_root ?? ''
+  const normalized: CanvasTerminalTabBinding[] = tabs.flatMap(item => {
     if (!item || typeof item !== 'object') return []
     const binding = item as Partial<CanvasTerminalTabBinding>
     if (typeof binding.tabId !== 'string') return []
@@ -506,12 +566,14 @@ const workspaceTerminalBindings = computed<CanvasTerminalTabBinding[]>(() => {
       active: binding.active === true
     }]
   })
+  return sanitizeTerminalTabs(normalized, workspaceRoot) ?? []
 })
 
 function saveWorkspaceTerminalBindings(summary: CanvasTerminalTabBinding[]) {
+  const tabs = sanitizeTerminalTabs(summary, props.systemInfo?.workspace_root ?? '') ?? []
   void saveClientPreferencesPatch({
     version: 1,
-    terminal: { tabs: summary }
+    terminal: { tabs }
   }).catch(() => undefined)
 }
 
@@ -1249,6 +1311,99 @@ function openFileContextMenu(item: FileItem, event: MouseEvent) {
   }
 }
 
+function canLauncherOpenItem(item: FileItem, mode: 'default' | 'text') {
+  if (item.type !== 'file') return false
+  const capabilities = launcherBridgeCapabilities.value
+  if (!capabilities?.enabled) return false
+  const hasFeature = mode === 'default'
+    ? Boolean(capabilities.features.open_default && capabilities.endpoints.open)
+    : Boolean(capabilities.features.open_text && capabilities.endpoints.open_text)
+  if (!hasFeature) return false
+  return isPathInsideWorkspace(item.path, launcherWorkspaceRoot())
+}
+
+function launcherWorkspaceRoot() {
+  return props.systemInfo?.workspace_root || launcherBridgeCapabilities.value?.workspace_root || ''
+}
+
+async function openContextWithLocalApp() {
+  const item = contextMenu.value.item
+  if (!item || !canLauncherOpenItem(item, 'default')) return
+  closeContextMenu()
+  try {
+    await openWithLocalApp(item.path)
+    ElMessage.success(t('message.localOpenStarted'))
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('message.localOpenFailed'))
+  }
+}
+
+async function openContextWithNotepad() {
+  const item = contextMenu.value.item
+  if (!item || !canLauncherOpenItem(item, 'text')) return
+  closeContextMenu()
+  try {
+    await openWithNotepad(item.path)
+    ElMessage.success(t('message.localOpenStarted'))
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('message.localOpenFailed'))
+  }
+}
+
+async function loadLauncherBridge() {
+  launcherBridgeCapabilities.value = await loadLauncherBridgeCapabilities()
+  startLauncherSyncPolling()
+}
+
+function startLauncherSyncPolling() {
+  if (launcherSyncTimer || !launcherBridgeCapabilities.value?.features.open_sync_events) return
+  launcherSyncTimer = window.setInterval(() => {
+    if (document.hidden) return
+    void pollLauncherSyncEvents()
+  }, 2000)
+  void pollLauncherSyncEvents()
+}
+
+async function pollLauncherSyncEvents() {
+  try {
+    const events = await pollLauncherOpenSyncEvents(launcherLastSyncSeq)
+    if (events.length === 0) return
+    launcherLastSyncSeq = Math.max(launcherLastSyncSeq, ...events.map(event => event.seq))
+    await handleLauncherSyncEvents(events)
+  } catch {
+    // Launcher bridge polling is opportunistic; direct ChemSSH usage should stay quiet.
+  }
+}
+
+async function handleLauncherSyncEvents(events: LauncherBridgeSyncEvent[]) {
+  let shouldRefreshDirectory = false
+  let shouldRefreshPreview = false
+  let doneCount = 0
+
+  for (const event of events) {
+    if (event.status === 'error') {
+      ElMessage.error(event.error || t('message.localSyncFailed'))
+      continue
+    }
+    if (event.status !== 'done') continue
+    doneCount += 1
+    if (normalizeRemotePath(parentDirectoryPath(event.remote_path)) === normalizeRemotePath(currentPath.value)) {
+      shouldRefreshDirectory = true
+    }
+    if (normalizeRemotePath(event.remote_path) === normalizeRemotePath(currentPreviewPath() ?? '')) {
+      shouldRefreshPreview = true
+    }
+  }
+
+  if (shouldRefreshDirectory) await loadDirectory(currentPath.value)
+  if (shouldRefreshPreview) await refreshPreview()
+  if (doneCount > 0) ElMessage.success(t('message.localSyncDone'))
+}
+
+function normalizeRemotePath(path: string) {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
 function closeContextMenu(event?: Event) {
   if (!contextMenu.value.visible) return
 
@@ -1669,20 +1824,36 @@ async function confirmDelete() {
   }
 }
 
-onMounted(async () => {
+async function initializeWorkspace() {
+  if (!mounted || initialized || !props.systemInfo) return
+  initialized = true
+  configureClientPreferencesScope(createWorkspaceScope(props.systemInfo))
   applyWorkspacePreferences()
   await loadClientPreferencesState()
   applyWorkspacePreferences()
-  const initialPath = getClientPreferences().workspace?.currentPath || undefined
+  const initialPath = workspacePathOrRoot(getClientPreferences().workspace?.currentPath, props.systemInfo?.workspace_root)
   await loadDirectory(initialPath)
   workspacePreferencesReady.value = true
+  void loadLauncherBridge()
   void loadPluginManifests()
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('message', handlePluginMessage)
   window.addEventListener('resize', closeContextMenu)
   window.addEventListener('scroll', closeContextMenu, true)
+}
+
+onMounted(() => {
+  mounted = true
+  void initializeWorkspace()
 })
+
+watch(
+  () => props.systemInfo?.workspace_root,
+  () => {
+    void initializeWorkspace()
+  }
+)
 
 watch(
   () => props.openPathRequest?.id,
@@ -1706,6 +1877,7 @@ watch(activeWorkPanelId, () => {
 
 onBeforeUnmount(() => {
   if (uploadConflictDialog.value.resolve) chooseUploadConflict('cancel')
+  if (launcherSyncTimer) window.clearInterval(launcherSyncTimer)
   stopResize()
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)

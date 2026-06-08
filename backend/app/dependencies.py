@@ -17,6 +17,7 @@ from backend.app.services.structure_service import StructureService
 
 
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+CLIENT_CACHE_SCOPE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
 
 
 def get_settings_dependency() -> Settings:
@@ -35,6 +36,20 @@ def get_client_id_dependency(
     client_id: str | None = Header(default=None, alias="X-ChemSSH-Client-Id"),
 ) -> str:
     return validate_client_id(client_id)
+
+
+def validate_client_cache_scope(scope: str | None) -> str:
+    if not scope:
+        return "default"
+    if not CLIENT_CACHE_SCOPE_RE.match(scope):
+        raise AppError("INVALID_CLIENT_CACHE_SCOPE", "Invalid client cache scope", 400)
+    return scope
+
+
+def get_client_cache_scope_dependency(
+    scope: str | None = Header(default=None, alias="X-ChemSSH-Cache-Scope"),
+) -> str:
+    return validate_client_cache_scope(scope)
 
 
 def get_file_service(settings: Settings = Depends(get_settings_dependency)) -> FileService:

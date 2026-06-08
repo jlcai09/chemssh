@@ -79,6 +79,35 @@ def test_client_cache_saves_preferences_and_boards(tmp_path: Path) -> None:
     assert data["boards"] == boards
 
 
+def test_client_cache_scopes_preferences_and_boards(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    local_headers = {**HEADERS, "X-ChemSSH-Cache-Scope": "scope_local"}
+    remote_headers = {**HEADERS, "X-ChemSSH-Cache-Scope": "scope_remote"}
+    local_preferences = {"version": 1, "workspace": {"currentPath": "D:\\Git\\chemssh"}}
+    remote_preferences = {"version": 1, "workspace": {"currentPath": "/data/user/chemssh"}}
+
+    local_response = client.put("/api/client-cache/preferences", headers=local_headers, json=local_preferences)
+    remote_response = client.put("/api/client-cache/preferences", headers=remote_headers, json=remote_preferences)
+    local_read = client.get("/api/client-cache", headers=local_headers)
+    remote_read = client.get("/api/client-cache", headers=remote_headers)
+
+    assert local_response.status_code == 200
+    assert remote_response.status_code == 200
+    assert local_read.json()["preferences"] == local_preferences
+    assert remote_read.json()["preferences"] == remote_preferences
+    assert (tmp_path / "cache" / CLIENT_ID / "scopes" / "scope_local" / "preferences.json").exists()
+    assert (tmp_path / "cache" / CLIENT_ID / "scopes" / "scope_remote" / "preferences.json").exists()
+
+
+def test_client_cache_rejects_invalid_scope(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.get("/api/client-cache", headers={**HEADERS, "X-ChemSSH-Cache-Scope": "../bad"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_CLIENT_CACHE_SCOPE"
+
+
 def test_client_cache_rejects_large_payload(tmp_path: Path) -> None:
     client = make_client(tmp_path, max_file_size_kb=16)
 

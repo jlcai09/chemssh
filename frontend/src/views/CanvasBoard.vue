@@ -107,6 +107,8 @@
               v-if="windowState.type === 'file-manager'"
               :initial-path="fileManagerPath(windowState)"
               :refresh-token="fileManagerRefreshToken(windowState.id)"
+              :launcher-bridge-capabilities="launcherBridgeCapabilities"
+              :workspace-root="systemInfo?.workspace_root"
               @path-change="path => updateFileManagerPath(windowState.id, path)"
               @open-file="item => openFileFromManager(windowState, item)"
               @selection-change="(items, primary) => updateFileManagerSelection(windowState.id, items, primary)"
@@ -162,6 +164,7 @@
             <TerminalPanel
               v-else-if="windowState.type === 'terminal'"
               :layout-version="terminalLayoutVersion"
+              :workspace-root="systemInfo?.workspace_root"
               :file-managers="fileManagerTargets"
               :initial-bindings="terminalBindingSummary(windowState)"
               @bound-cwd-change="(managerId, path) => updateBoundFileManagerPath(managerId, path)"
@@ -207,11 +210,19 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Aim, Delete, EditPen, Link, Minus, Plus } from '@element-plus/icons-vue'
 import { heartbeatClientCache, loadClientCache, saveCanvasBoards } from '../api/clientCache'
 import {
+  configureClientPreferencesScope,
   getClientPreferences,
   normalizeClientPreferences,
   saveClientPreferencesPatch,
   setClientPreferencesState
 } from '../api/clientPreferences'
+import {
+  loadLauncherBridgeCapabilities,
+  parentDirectoryPath,
+  pollLauncherOpenSyncEvents,
+  type LauncherBridgeCapabilities,
+  type LauncherBridgeSyncEvent
+} from '../api/launcherBridge'
 import QueueStatus from '../components/QueueStatus.vue'
 import LogViewer from '../components/LogViewer.vue'
 import TerminalPanel from '../components/terminal/TerminalPanel.vue'
@@ -221,6 +232,12 @@ import CanvasPreviewWindow from '../components/canvas/CanvasPreviewWindow.vue'
 import CanvasWindow from '../components/canvas/CanvasWindow.vue'
 import { t } from '../i18n'
 import type { SystemInfo } from '../api/system'
+import {
+  createWorkspaceScope,
+  sanitizeCanvasBoardStateForWorkspace,
+  scopedLocalStorageKey,
+  workspacePathOrRoot
+} from '../api/workspaceScope'
 import {
   DEFAULT_CANVAS_VIEWPORT,
   CANVAS_WINDOW_MINIMIZED_HEIGHT,
@@ -259,9 +276,13 @@ const activeWindowId = ref<string | null>(null)
 const saveStatus = ref<SaveStatus>('saved')
 const terminalLayoutVersion = ref(0)
 const fileManagerRefreshTokens = ref<Record<string, number>>({})
+const launcherBridgeCapabilities = ref<LauncherBridgeCapabilities | null>(null)
 let saveTimer: number | undefined
 let heartbeatTimer: number | undefined
+let launcherSyncTimer: number | undefined
+let launcherLastSyncSeq = 0
 let hydrated = false
+let mounted = false
 
 const activeBoard = computed(() => {
   return boardState.value.boards.find(board => board.id === boardState.value.activeBoardId) ?? boardState.value.boards[0] ?? null
@@ -359,17 +380,33 @@ const bindingLayerStyle = computed(() => {
   }
 })
 
-onMounted(async () => {
+async function initializeCanvasBoard() {
+  if (!mounted || hydrated || !props.systemInfo) return
+  configureClientPreferencesScope(createWorkspaceScope(props.systemInfo))
   await hydrate()
+  void loadLauncherBridge()
   void heartbeatClientCache().catch(() => undefined)
   heartbeatTimer = window.setInterval(() => {
     void heartbeatClientCache().catch(() => undefined)
   }, 5 * 60 * 1000)
+}
+
+onMounted(() => {
+  mounted = true
+  void initializeCanvasBoard()
 })
+
+watch(
+  () => props.systemInfo?.workspace_root,
+  () => {
+    void initializeCanvasBoard()
+  }
+)
 
 onBeforeUnmount(() => {
   if (saveTimer) window.clearTimeout(saveTimer)
   if (heartbeatTimer) window.clearInterval(heartbeatTimer)
+  if (launcherSyncTimer) window.clearInterval(launcherSyncTimer)
 })
 
 watch(
@@ -568,6 +605,48 @@ function refreshFileManagersForDirectories(paths: string[]) {
   fileManagerRefreshTokens.value = next
 }
 
+async function loadLauncherBridge() {
+  launcherBridgeCapabilities.value = await loadLauncherBridgeCapabilities()
+  startLauncherSyncPolling()
+}
+
+function startLauncherSyncPolling() {
+  if (launcherSyncTimer || !launcherBridgeCapabilities.value?.features.open_sync_events) return
+  launcherSyncTimer = window.setInterval(() => {
+    if (document.hidden) return
+    void pollLauncherSyncEvents()
+  }, 2000)
+  void pollLauncherSyncEvents()
+}
+
+async function pollLauncherSyncEvents() {
+  try {
+    const events = await pollLauncherOpenSyncEvents(launcherLastSyncSeq)
+    if (events.length === 0) return
+    launcherLastSyncSeq = Math.max(launcherLastSyncSeq, ...events.map(event => event.seq))
+    handleLauncherSyncEvents(events)
+  } catch {
+    // Launcher bridge polling is best-effort and should stay silent when unavailable.
+  }
+}
+
+function handleLauncherSyncEvents(events: LauncherBridgeSyncEvent[]) {
+  const directories = new Set<string>()
+  let doneCount = 0
+  for (const event of events) {
+    if (event.status === 'error') {
+      ElMessage.error(event.error || t('message.localSyncFailed'))
+      continue
+    }
+    if (event.status !== 'done') continue
+    doneCount += 1
+    const directory = parentDirectoryPath(event.remote_path)
+    if (directory) directories.add(directory)
+  }
+  if (directories.size > 0) refreshFileManagersForDirectories(Array.from(directories))
+  if (doneCount > 0) ElMessage.success(t('message.localSyncDone'))
+}
+
 function updatePreviewPath(windowId: string, path: string, metadata?: { previewType?: PreviewType | null; format?: string | null }) {
   updateWindow(windowId, windowState => {
     const previousPath = typeof windowState.payload?.path === 'string' ? windowState.payload.path : ''
@@ -615,7 +694,7 @@ function pluginPayloadString(windowState: CanvasWindowState, key: string) {
 
 function fileManagerPath(windowState: CanvasWindowState) {
   const path = windowState.payload?.path
-  if (typeof path === 'string') return path
+  if (typeof path === 'string') return workspacePathOrRoot(path, props.systemInfo?.workspace_root)
   return props.systemInfo?.workspace_root ?? ''
 }
 
@@ -978,7 +1057,7 @@ async function persistBoardState() {
 
 function saveLocalBoards() {
   try {
-    window.localStorage.setItem(LOCAL_BOARDS_KEY, JSON.stringify(boardState.value))
+    window.localStorage.setItem(scopedLocalStorageKey(LOCAL_BOARDS_KEY), JSON.stringify(boardState.value))
   } catch {
     // Server cache remains the source of truth when local storage is unavailable.
   }
@@ -986,7 +1065,7 @@ function saveLocalBoards() {
 
 function readLocalBoards() {
   try {
-    const raw = window.localStorage.getItem(LOCAL_BOARDS_KEY)
+    const raw = window.localStorage.getItem(scopedLocalStorageKey(LOCAL_BOARDS_KEY)) ?? window.localStorage.getItem(LOCAL_BOARDS_KEY)
     return raw ? normalizeBoardState(JSON.parse(raw) as CanvasBoardState) : null
   } catch {
     return null
@@ -1006,11 +1085,12 @@ function normalizeBoardState(value: CanvasBoardState | null | undefined): Canvas
     },
     windows: Array.isArray(board.windows) ? board.windows.map(normalizeWindowState) : []
   }))
-  return {
+  const normalized: CanvasBoardState = {
     version: 1,
     activeBoardId: boards.some(board => board.id === value.activeBoardId) ? value.activeBoardId : boards[0].id,
     boards
   }
+  return sanitizeCanvasBoardStateForWorkspace(normalized, props.systemInfo?.workspace_root ?? '')
 }
 
 function normalizeWindowState(windowState: CanvasWindowState): CanvasWindowState {

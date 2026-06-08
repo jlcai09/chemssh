@@ -8,17 +8,30 @@ from .errors import AppError
 
 SCRIPT_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+WINDOWS_ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])")
 
 
 class WorkspaceSecurity:
-    def __init__(self, root: Path) -> None:
-        self.root = root.expanduser().resolve()
+    def __init__(self, root: str | Path) -> None:
+        raw_root = str(root)
+        self.root_platform = _absolute_path_platform(raw_root)
+        self.root = Path(raw_root).expanduser().resolve()
+        self.root_platform = self.root_platform or _absolute_path_platform(str(self.root))
 
     def resolve_path(self, raw_path: str | Path | None = None) -> Path:
         if raw_path is None or str(raw_path).strip() == "":
             return self.root
 
-        path = Path(str(raw_path)).expanduser()
+        raw_value = str(raw_path).strip()
+        path_platform = _absolute_path_platform(raw_value)
+        if path_platform and self.root_platform and path_platform != self.root_platform:
+            raise AppError(
+                "INVALID_PATH_PLATFORM",
+                f"Path platform does not match workspace root: {raw_path}",
+                status_code=400,
+            )
+
+        path = Path(raw_value).expanduser()
         candidate = path if path.is_absolute() else self.root / path
         resolved = candidate.resolve(strict=False)
         if not self.is_allowed(resolved):
@@ -72,3 +85,11 @@ def validate_job_id(job_id: str) -> str:
     if not job_id or not JOB_ID_RE.match(job_id):
         raise AppError("INVALID_JOB_ID", f"Invalid job id: {job_id}", 400)
     return job_id
+
+
+def _absolute_path_platform(value: str) -> str | None:
+    if WINDOWS_ABSOLUTE_RE.match(value):
+        return "windows"
+    if value.startswith("/"):
+        return "posix"
+    return None

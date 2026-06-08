@@ -97,7 +97,15 @@
         @keydown.enter.prevent="emit('open', parentItem)"
       >
         <span class="file-cell file-icon-cell" role="gridcell">
-          <el-icon class="file-kind-icon">
+          <img
+            v-if="systemIconUrl(parentItem)"
+            class="file-system-icon"
+            :src="systemIconUrl(parentItem) ?? undefined"
+            alt=""
+            aria-hidden="true"
+            @error="handleSystemIconError(parentItem)"
+          />
+          <el-icon v-else class="file-kind-icon">
             <Folder />
           </el-icon>
         </span>
@@ -139,7 +147,15 @@
         @keydown="handleKeydown(index, $event)"
       >
         <span class="file-cell file-icon-cell" role="gridcell">
-          <el-icon class="file-kind-icon">
+          <img
+            v-if="systemIconUrl(item)"
+            class="file-system-icon"
+            :src="systemIconUrl(item) ?? undefined"
+            alt=""
+            aria-hidden="true"
+            @error="handleSystemIconError(item)"
+          />
+          <el-icon v-else class="file-kind-icon">
             <Folder v-if="item.type === 'directory'" />
             <View v-else-if="isPreviewableItem(item)" />
             <Document v-else />
@@ -192,6 +208,7 @@ import {
 } from '../api/fileDrag'
 import { hasActivePreviewProvider, type FilePreviewProvider } from '../api/filePreviewProviders'
 import type { FileItem } from '../api/files'
+import { launcherBridgeIconFailureKey } from '../api/launcherBridge'
 import { locale, t } from '../i18n'
 
 const props = withDefaults(
@@ -200,10 +217,15 @@ const props = withDefaults(
     parentPath?: string | null
     selectedItems?: FileItem[]
     previewProviders?: FilePreviewProvider[]
+    systemIconProvider?: {
+      enabled: boolean
+      iconUrl: (item: FileItem) => string | null
+    }
   }>(),
   {
     selectedItems: () => [],
-    previewProviders: () => []
+    previewProviders: () => [],
+    systemIconProvider: undefined
   }
 )
 
@@ -221,6 +243,7 @@ type ColumnResizeTarget = 'name-size' | 'size-time'
 const sortKey = ref<SortKey>('name')
 const sortDirection = ref<SortDirection>('asc')
 const selectedPathSet = computed(() => new Set(props.selectedItems.map(item => item.path)))
+const failedSystemIconKeys = ref(new Set<string>())
 const treeRef = ref<HTMLElement | null>(null)
 const bodyRef = ref<HTMLElement | null>(null)
 const rowRefs = ref<(HTMLElement | null)[]>([])
@@ -318,6 +341,18 @@ function typeRank(item: FileItem) {
 
 function isPreviewableItem(item: FileItem) {
   return item.preview_type === 'structure' || hasActivePreviewProvider(item, props.previewProviders)
+}
+
+function systemIconUrl(item: FileItem | null) {
+  if (!item || !props.systemIconProvider?.enabled) return null
+  if (failedSystemIconKeys.value.has(launcherBridgeIconFailureKey(item))) return null
+  return props.systemIconProvider.iconUrl(item)
+}
+
+function handleSystemIconError(item: FileItem) {
+  const next = new Set(failedSystemIconKeys.value)
+  next.add(launcherBridgeIconFailureKey(item))
+  failedSystemIconKeys.value = next
 }
 
 function nameCompare(a: FileItem, b: FileItem) {

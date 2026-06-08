@@ -21,6 +21,15 @@ def test_workspace_security_blocks_traversal(tmp_path: Path) -> None:
     assert exc.value.code == "FORBIDDEN_PATH"
 
 
+def test_workspace_security_rejects_windows_path_for_posix_workspace() -> None:
+    security = WorkspaceSecurity("/data/user/workspace")  # type: ignore[arg-type]
+
+    with pytest.raises(AppError) as exc:
+        security.resolve_path("D:\\Git\\chemssh")
+
+    assert exc.value.code == "INVALID_PATH_PLATFORM"
+
+
 def test_validate_script_name_rejects_shell_fragments() -> None:
     with pytest.raises(AppError):
         validate_script_name("run.sh;rm")

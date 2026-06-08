@@ -179,6 +179,7 @@ import {
 import { uploadFile } from '../../api/files'
 import { requestBlob } from '../../api/http'
 import { formatFileDragTerminalInput, hasChemSSHFileDrag, readChemSSHFileDrag } from '../../api/fileDrag'
+import { isPathInsideWorkspace, workspacePathOrRoot } from '../../api/workspaceScope'
 import { t } from '../../i18n'
 import type { CanvasFileManagerBindingTarget, CanvasTerminalTabBinding } from '../../types/canvasBoard'
 
@@ -229,6 +230,7 @@ const TERMINAL_FONT_SIZE_MAX = 24
 
 const props = defineProps<{
   initialCwd?: string | null
+  workspaceRoot?: string | null
   currentFileManagerPath?: string | null
   fileManagers?: CanvasFileManagerBindingTarget[]
   initialBindings?: CanvasTerminalTabBinding[]
@@ -259,7 +261,7 @@ let tabsResizeObserver: ResizeObserver | null = null
 let tabSerial = 0
 const TERMINAL_TAB_DRAG_MIME = 'application/x-chemssh-terminal-tab'
 
-const preferredCwd = computed(() => props.currentFileManagerPath || props.initialCwd || undefined)
+const preferredCwd = computed(() => usableWorkspacePath(props.currentFileManagerPath || props.initialCwd || props.workspaceRoot))
 const fileManagerOptions = computed(() => props.fileManagers ?? [])
 const activeTab = computed(() => tabs.value.find(tab => tab.localId === activeTabId.value) ?? null)
 
@@ -364,7 +366,7 @@ function createEmptyTab(cwd?: string): TerminalTab {
   return {
     localId: `terminal_tab_${tabSerial}`,
     sessionId: null,
-    cwd: cwd ?? preferredCwd.value ?? '',
+    cwd: usableWorkspacePath(cwd ?? preferredCwd.value),
     syncMode: 'off',
     connected: false,
     interactiveReady: false,
@@ -388,13 +390,17 @@ function normalizeInitialBindings() {
   const bindings = props.initialBindings ?? []
   return bindings.flatMap(binding => {
     if (!binding || typeof binding.tabId !== 'string') return []
+    const rawCwd = typeof binding.cwd === 'string' ? binding.cwd : ''
+    if (rawCwd && !isUsableWorkspacePath(rawCwd)) return []
+    const cwd = usableWorkspacePath(rawCwd || props.workspaceRoot)
+    if (!cwd) return []
     const syncMode: TerminalSyncMode = binding.syncMode === 'follow' || binding.syncMode === 'bidirectional'
       ? binding.syncMode
       : 'off'
     return [{
       ...binding,
       title: typeof binding.title === 'string' ? binding.title : '',
-      cwd: typeof binding.cwd === 'string' ? binding.cwd : '',
+      cwd,
       syncMode,
       boundFileManagerId: typeof binding.boundFileManagerId === 'string' ? binding.boundFileManagerId : null,
       active: binding.active === true
@@ -407,7 +413,7 @@ async function createTab(cwd?: string, binding?: CanvasTerminalTabBinding) {
   if (binding) {
     tab.syncMode = binding.syncMode
     tab.boundFileManagerId = binding.boundFileManagerId
-    if (binding.cwd) tab.cwd = binding.cwd
+    if (binding.cwd) tab.cwd = usableWorkspacePath(binding.cwd)
   }
   tabs.value.push(tab)
   activeTabId.value = tab.localId
@@ -536,7 +542,7 @@ async function startTabSession(tab: TerminalTab) {
     fitTabTerminal(tab)
     await cleanupDetachedSessions()
     const session = await createTerminalSession({
-      cwd: tab.cwd || preferredCwd.value,
+      cwd: usableWorkspacePath(tab.cwd || preferredCwd.value),
       rows: tab.terminal.rows,
       cols: tab.terminal.cols,
       vim_compatibility: vimCompatibilityMode.value
@@ -862,7 +868,18 @@ function fileManagerPathForTab(tab: TerminalTab) {
   return boundFileManager(tab)?.path || props.currentFileManagerPath || ''
 }
 
+function usableWorkspacePath(path: string | null | undefined) {
+  if (!props.workspaceRoot) return path ?? ''
+  return workspacePathOrRoot(path, props.workspaceRoot)
+}
+
+function isUsableWorkspacePath(path: string | null | undefined) {
+  if (!path) return false
+  return props.workspaceRoot ? isPathInsideWorkspace(path, props.workspaceRoot) : true
+}
+
 function emitTabCwdChange(tab: TerminalTab, path: string) {
+  if (!isUsableWorkspacePath(path)) return
   if (tab.boundFileManagerId) {
     emit('bound-cwd-change', tab.boundFileManagerId, path)
     return
@@ -932,6 +949,7 @@ function sendTabSocketMessage(tab: TerminalTab, payload: Record<string, unknown>
 }
 
 function sendTabSyncCwd(tab: TerminalTab, path: string) {
+  if (!isUsableWorkspacePath(path)) return
   tab.cwd = path
   sendTabSocketMessage(tab, { type: 'sync_cwd', path })
   emitTerminalBindingSummary()
