@@ -69,6 +69,7 @@ const DEFAULT_STYLE: Required<ViewerStyle> = {
 const DEFAULT_LABELS: Required<LabelOptions> = {
   showAtomIndex: false,
   showAtomTag: false,
+  atomIndexBase: 0,
   maxLabels: 600
 }
 
@@ -1381,7 +1382,7 @@ export class ChemSSHStructureViewer {
 
   private selectionAtomLabel(atom: SelectedAtomDetails) {
     const fixed = atom.fixed ? ' fixed' : ''
-    return `#${atom.index} ${atom.symbol} tag=${atom.tag}${fixed} (${atom.position[0].toFixed(3)}, ${atom.position[1].toFixed(3)}, ${atom.position[2].toFixed(3)})`
+    return `#${this.displayAtomIndex(atom.index)} ${atom.symbol} tag=${atom.tag}${fixed} (${atom.position[0].toFixed(3)}, ${atom.position[1].toFixed(3)}, ${atom.position[2].toFixed(3)})`
   }
 
   private drawLabels(context: CanvasRenderingContext2D, atoms: ProjectedAtom[], hovered: ProjectedAtom | null) {
@@ -1448,14 +1449,18 @@ export class ChemSSHStructureViewer {
 
   private atomLabel(atom: ProjectedAtom) {
     const parts: string[] = []
-    if (this.labelOptions.showAtomIndex) parts.push(String(atom.index))
+    if (this.labelOptions.showAtomIndex) parts.push(String(this.displayAtomIndex(atom.index)))
     if (this.labelOptions.showAtomTag) parts.push(`T${atom.tag}`)
     return parts.join(' ')
   }
 
   private hoverLabel(atom: ProjectedAtom) {
     const fixed = atom.fixed ? ' fixed' : ''
-    return `#${atom.index} ${atom.symbol} tag=${atom.tag}${fixed} (${atom.position[0].toFixed(3)}, ${atom.position[1].toFixed(3)}, ${atom.position[2].toFixed(3)})`
+    return `#${this.displayAtomIndex(atom.index)} ${atom.symbol} tag=${atom.tag}${fixed} (${atom.position[0].toFixed(3)}, ${atom.position[1].toFixed(3)}, ${atom.position[2].toFixed(3)})`
+  }
+
+  private displayAtomIndex(index: number) {
+    return index + this.labelOptions.atomIndexBase
   }
 
   private drawText(context: CanvasRenderingContext2D, text: string, x: number, y: number, color: string, background = false) {

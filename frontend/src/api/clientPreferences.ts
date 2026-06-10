@@ -6,9 +6,13 @@ import {
   setCurrentWorkspaceScope,
   type WorkspaceScope
 } from './workspaceScope'
-import type { ClientPreferences } from '../types/canvasBoard'
+import type { ClientPreferences, ThemePreferences } from '../types/canvasBoard'
 
 const LOCAL_PREFS_KEY = 'chemssh.preferences.v1'
+export const DEFAULT_THEME_PREFERENCES: ThemePreferences = {
+  animatedBackdrop: false,
+  glassBlur: true
+}
 
 let preferences: ClientPreferences = readLocalPreferences()
 let loadPromise: Promise<ClientPreferences> | null = null
@@ -28,7 +32,7 @@ export function configureClientPreferencesScope(scope: WorkspaceScope) {
 }
 
 export function clearLocalClientPreferences() {
-  preferences = { version: 1, logs: { tailLines: 20 } }
+  preferences = defaultClientPreferences()
   if (saveTimer) window.clearTimeout(saveTimer)
   saveTimer = undefined
   try {
@@ -79,7 +83,7 @@ async function persistPreferences() {
 }
 
 export function normalizeClientPreferences(value: Partial<ClientPreferences> | Record<string, unknown> | null | undefined): ClientPreferences {
-  if (!value) return { version: 1, logs: { tailLines: 20 } }
+  if (!value) return defaultClientPreferences()
   const typed = value as Partial<ClientPreferences>
   return {
     ...typed,
@@ -91,7 +95,23 @@ export function normalizeClientPreferences(value: Partial<ClientPreferences> | R
     logs: {
       ...(typed.logs ?? {}),
       tailLines: typed.logs?.tailLines ?? 20
-    }
+    },
+    theme: normalizeThemePreferences(typed.theme)
+  }
+}
+
+export function normalizeThemePreferences(value?: Partial<ThemePreferences> | null): ThemePreferences {
+  return {
+    animatedBackdrop: value?.animatedBackdrop === true,
+    glassBlur: value?.glassBlur !== false
+  }
+}
+
+function defaultClientPreferences(): ClientPreferences {
+  return {
+    version: 1,
+    logs: { tailLines: 20 },
+    theme: normalizeThemePreferences(DEFAULT_THEME_PREFERENCES)
   }
 }
 
@@ -115,10 +135,10 @@ function readLocalPreferences(): ClientPreferences {
   try {
     const scopedRaw = window.localStorage.getItem(scopedLocalStorageKey(LOCAL_PREFS_KEY))
     const raw = scopedRaw ?? window.localStorage.getItem(LOCAL_PREFS_KEY)
-    if (!raw) return { version: 1, logs: { tailLines: 20 } }
+    if (!raw) return defaultClientPreferences()
     return normalizeScopedPreferences(JSON.parse(raw) as ClientPreferences)
   } catch {
-    return { version: 1, logs: { tailLines: 20 } }
+    return defaultClientPreferences()
   }
 }
 

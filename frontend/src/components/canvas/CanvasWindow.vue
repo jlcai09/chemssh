@@ -19,12 +19,12 @@
         </span>
       </div>
       <div class="canvas-window-actions" @pointerdown.stop>
-        <el-tooltip :content="window.minimized ? t('canvas.restoreWindow') : t('canvas.minimizeWindow')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip :content="window.minimized ? t('canvas.restoreWindow') : t('canvas.minimizeWindow')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <button class="canvas-window-icon" type="button" @click="$emit('toggle-minimize', window.id)">
             <el-icon><SemiSelect /></el-icon>
           </button>
         </el-tooltip>
-        <el-tooltip :content="t('canvas.closeWindow')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip :content="t('canvas.closeWindow')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <button class="canvas-window-icon is-danger" type="button" @click="$emit('close', window.id)">
             <el-icon><Close /></el-icon>
           </button>

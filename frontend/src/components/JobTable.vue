@@ -47,10 +47,10 @@
           {{ job.reason || job.workdir || '' }}
         </span>
         <span class="job-cell job-action-cell" role="gridcell">
-          <el-tooltip :content="t('job.detail')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-tooltip :content="t('job.detail')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
             <el-button :icon="InfoFilled" circle size="small" @mousedown.stop @click.stop="$emit('detail', job)" />
           </el-tooltip>
-          <el-tooltip :content="t('job.cancel')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-tooltip :content="t('job.cancel')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
             <el-button
               :icon="Close"
               circle

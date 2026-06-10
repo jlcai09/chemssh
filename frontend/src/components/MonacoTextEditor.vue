@@ -5,11 +5,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
-import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
-import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
-import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
-import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 import 'monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js'
 import 'monaco-editor/esm/vs/basic-languages/python/python.contribution.js'
 import 'monaco-editor/esm/vs/basic-languages/shell/shell.contribution.js'
@@ -21,19 +16,43 @@ import 'monaco-editor/esm/vs/language/json/monaco.contribution.js'
 import 'monaco-editor/esm/vs/language/typescript/monaco.contribution.js'
 import 'monaco-editor/min/vs/editor/editor.main.css'
 
+// Worker cache for lazy loading
+const workerCache = new Map<string, Worker>()
+
 const monacoEnvironment = self as typeof self & {
   MonacoEnvironment?: {
-    getWorker: (_moduleId: string, label: string) => Worker
+    getWorker: (_moduleId: string, label: string) => Promise<Worker> | Worker
   }
 }
 
+// Lazy load workers on demand for better performance
 monacoEnvironment.MonacoEnvironment = {
-  getWorker: (_moduleId: string, label: string) => {
-    if (label === 'json') return new jsonWorker()
-    if (label === 'css' || label === 'scss' || label === 'less') return new cssWorker()
-    if (label === 'html' || label === 'handlebars' || label === 'razor') return new htmlWorker()
-    if (label === 'typescript' || label === 'javascript') return new tsWorker()
-    return new editorWorker()
+  getWorker: async (_moduleId: string, label: string) => {
+    const cacheKey = `${_moduleId}:${label}`
+
+    // Return cached worker if available
+    if (workerCache.has(cacheKey)) {
+      return workerCache.get(cacheKey)!
+    }
+
+    let WorkerModule
+
+    // Dynamically import workers based on language
+    if (label === 'json') {
+      WorkerModule = await import('monaco-editor/esm/vs/language/json/json.worker?worker')
+    } else if (label === 'css' || label === 'scss' || label === 'less') {
+      WorkerModule = await import('monaco-editor/esm/vs/language/css/css.worker?worker')
+    } else if (label === 'html' || label === 'handlebars' || label === 'razor') {
+      WorkerModule = await import('monaco-editor/esm/vs/language/html/html.worker?worker')
+    } else if (label === 'typescript' || label === 'javascript') {
+      WorkerModule = await import('monaco-editor/esm/vs/language/typescript/ts.worker?worker')
+    } else {
+      WorkerModule = await import('monaco-editor/esm/vs/editor/editor.worker?worker')
+    }
+
+    const worker = new WorkerModule.default()
+    workerCache.set(cacheKey, worker)
+    return worker
   }
 }
 
@@ -101,7 +120,7 @@ onMounted(async () => {
     language: languageForPath(props.path),
     theme: 'vs',
     readOnly: props.readonly,
-    automaticLayout: true,
+    automaticLayout: false, // Disable automatic layout for better performance
     minimap: { enabled: false },
     fontFamily: '"JetBrains Mono", Consolas, "Liberation Mono", monospace',
     fontSize: 13,
@@ -113,6 +132,15 @@ onMounted(async () => {
     renderWhitespace: 'selection'
   })
   editor.getModel()?.setEOL(monaco.editor.EndOfLineSequence.LF)
+
+  // Manual layout control with ResizeObserver
+  const resizeObserver = new ResizeObserver(() => {
+    editor?.layout()
+  })
+  resizeObserver.observe(containerRef.value)
+
+  // Store resizeObserver for cleanup
+  ;(editor as any)._resizeObserver = resizeObserver
 
   editor.onDidChangeModelContent(() => {
     if (!editor || syncing) return
@@ -141,6 +169,12 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  // Clean up ResizeObserver
+  const resizeObserver = (editor as any)?._resizeObserver
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+  }
+
   editor?.dispose()
   editor = null
 })

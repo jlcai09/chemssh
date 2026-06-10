@@ -25,7 +25,7 @@
           <template #reference>
             <el-button
               class="queue-icon-button"
-              :class="{ 'is-active': filtersActive }"
+              :type="filtersActive ? 'success' : undefined"
               :icon="Filter"
               size="small"
               :aria-label="t('queue.filter')"
@@ -41,7 +41,7 @@
           <template #reference>
             <el-button
               class="queue-icon-button"
-              :class="{ 'is-active': autoRefresh }"
+              :type="autoRefresh ? 'success' : undefined"
               :icon="Refresh"
               size="small"
               :loading="loading"
@@ -74,7 +74,7 @@
       class="queue-alert"
       type="warning"
       :closable="false"
-      :title="response.message"
+      :title="localizeBackendMessage(response.message, 'queue.refreshFailed')"
     />
 
     <div class="queue-table-wrap">
@@ -129,6 +129,7 @@ import {
   type QueueJobAction,
   type QueueResponse
 } from '../api/queue'
+import { apiErrorMessage, localizeBackendMessage } from '../api/apiMessages'
 import { t } from '../i18n'
 import JobTable from './JobTable.vue'
 
@@ -218,7 +219,7 @@ async function refresh() {
     response.value = await listQueue({ currentUserOnly: currentUserFilterEnabled.value })
     syncSelectionWithVisibleJobs()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('queue.refreshFailed'))
+    ElMessage.error(apiErrorMessage(error, 'queue.refreshFailed'))
   } finally {
     loading.value = false
   }
@@ -324,7 +325,7 @@ async function confirmQueueAction(action: QueueJobAction, explicitJobs?: QueueIt
     const firstError = failed[0]
     const message =
       firstError.status === 'rejected' && firstError.reason instanceof Error
-        ? firstError.reason.message
+        ? localizeBackendMessage(firstError.reason.message, 'queue.actionFailed')
         : t('queue.actionFailed')
     ElMessage.error(t('queue.actionPartialFailed', { action: label, failed: failed.length, message }))
   }
@@ -338,7 +339,7 @@ async function openDetail(job: QueueItem) {
     const detail = await getJobDetail(job.job_id)
     detailText.value = JSON.stringify(detail.detail, null, 2)
   } catch (error) {
-    detailText.value = error instanceof Error ? error.message : t('queue.detailReadFailed')
+    detailText.value = apiErrorMessage(error, 'queue.detailReadFailed')
   }
 }
 

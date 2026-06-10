@@ -10,7 +10,36 @@ ChemSSH 是本地信任模型工具。请用拥有目标文件的用户运行，
 
 ## 安装
 
-在项目根目录创建 Python 虚拟环境并安装后端包，然后安装并构建前端。
+### 生产环境（从发行版）
+
+**推荐大多数用户使用。**
+
+如果你从 [GitHub Releases](https://github.com/your-username/chemssh/releases) 下载了发行版，前端已经构建好了，只需要 Python：
+
+```bash
+# 1. 解压发行版
+tar -xzf chemssh-0.3.4.tar.gz
+cd chemssh-0.3.4
+
+# 2. 创建 Python 虚拟环境并安装
+python -m venv .venv
+source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+python -m pip install -e ".[dev]"
+
+# 就这样！不需要 Node.js 或 npm。
+```
+
+预构建的 `frontend/dist/` 目录包含所有优化后的静态文件。
+
+<details>
+<summary>从源码开发安装</summary>
+
+### 开发环境（从源码）
+
+**仅供需要修改代码的开发者使用。**
+
+如果你克隆了代码仓库并想从源码构建：
 
 Windows PowerShell:
 
@@ -35,6 +64,8 @@ python -m pip install -e ".[dev]"
 npm --prefix frontend install
 npm --prefix frontend run build
 ```
+
+</details>
 
 安装完成后命令行入口为：
 
@@ -100,6 +131,29 @@ client_cache:
 
 `security.enable_token` 和 `security.token` 目前只是 settings 模型字段，请求认证尚未接入 API 依赖或 middleware。不要把它们当成已经生效的访问控制机制。
 
+<details>
+<summary>维护者发行打包</summary>
+
+## 如何发行
+
+**仅供维护者创建发行包使用。**
+
+使用专用的发行版打包脚本（版本号自动从 `backend/app/__init__.py` 读取）：
+
+**Linux/Mac/Windows (Git Bash):**
+```bash
+chmod +x create-release-archive.sh
+./create-release-archive.sh
+```
+
+Windows 用户请使用 Git Bash 运行 `.sh` 脚本。该脚本是受支持的发行打包入口，会同时生成 `.tar.gz` 和 `.zip` 格式。
+
+脚本会自动构建前端，创建 `release/chemssh-{版本号}.tar.gz` 和 `.zip` 压缩包及校验和文件。发行包包含预构建的 `frontend/dist/`（用户无需 Node.js）。
+
+详细发行流程见 [docs/RELEASE.md](docs/RELEASE.md)。
+
+</details>
+
 ## 启动
 
 使用已构建的前端启动：
@@ -155,6 +209,9 @@ http://localhost:8888
 
 如果 HPC 登录节点需要用不同 loopback 或内部地址作为服务目标，请相应调整 `-L` 右侧地址。
 
+<details>
+<summary>功能细节</summary>
+
 ## 主要功能
 
 - 工作区文件管理：浏览、新建文件夹/文件、上传文件或文件夹、下载单文件或 zip 选择集、重命名、删除、移动和复制。
@@ -166,6 +223,11 @@ http://localhost:8888
 - 插件：扫描 `plugins/` 和配置目录中的 manifest，按需激活；可挂载 Python 后端路由、iframe 前端资源、文件预览 provider，并提供依赖状态与安装入口。
 - Launcher bridge：当 ChemSSH 通过兼容的 Launcher 同源代理打开时，前端可发现系统图标、本地打开动作和同步事件轮询能力。直接访问 ChemSSH 时这些能力会静默降级。
 - Client cache 隔离：偏好与画板按浏览器 `client_id` 和工作区 scope 存储，不同 origin、用户、主机或 `workspace.root` 不会复用过期路径和布局。
+
+</details>
+
+<details>
+<summary>开发与架构说明</summary>
 
 ## 项目结构
 
@@ -323,3 +385,5 @@ npm run frontend:preview
 - API 和窗口交互参考：[docs/API.md](docs/API.md)
 - 插件开发说明：[docs/PLUGIN_DEVELOPMENT.md](docs/PLUGIN_DEVELOPMENT.md)
 - 服务运行时 FastAPI 文档：`http://127.0.0.1:8888/docs`
+
+</details>

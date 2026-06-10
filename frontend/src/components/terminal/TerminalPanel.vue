@@ -64,7 +64,7 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <el-tooltip :content="syncModeLabel(tab.syncMode)" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-tooltip :content="syncModeLabel(tab.syncMode)" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
             <button
               class="terminal-tab-icon terminal-tab-sync"
               :class="`is-${tab.syncMode}`"
@@ -82,7 +82,7 @@
               </svg>
             </button>
           </el-tooltip>
-          <el-tooltip :content="t('terminal.close')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-tooltip :content="t('terminal.close')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
             <button
               class="terminal-tab-icon terminal-tab-close"
               type="button"
@@ -142,7 +142,7 @@
           </div>
         </div>
       </el-popover>
-      <el-tooltip :content="largeOpen ? t('terminal.exitLarge') : t('terminal.openLarge')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false">
+      <el-tooltip :content="largeOpen ? t('terminal.exitLarge') : t('terminal.openLarge')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
         <button class="terminal-tab-settings terminal-tab-large" type="button" :aria-label="largeOpen ? t('terminal.exitLarge') : t('terminal.openLarge')" @click="toggleLargeOpen">
           <el-icon><FullScreen /></el-icon>
         </button>

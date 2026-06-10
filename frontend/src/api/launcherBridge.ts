@@ -37,6 +37,13 @@ export type LauncherBridgeSyncEvent = {
   error?: string
 }
 
+export type LauncherClientIdentity = {
+  enabled: boolean
+  version: number
+  client_id: string
+  source?: string
+}
+
 let currentCapabilities: LauncherBridgeCapabilities | null = null
 
 export async function loadLauncherBridgeCapabilities(): Promise<LauncherBridgeCapabilities | null> {
@@ -97,6 +104,18 @@ export async function pollLauncherOpenSyncEvents(afterSeq: number): Promise<Laun
   const query = new URLSearchParams({ after: String(afterSeq) })
   const response = await bridgeRequest<{ events?: LauncherBridgeSyncEvent[] }>(`${endpoint}?${query.toString()}`)
   return Array.isArray(response.events) ? response.events : []
+}
+
+export async function loadLauncherClientIdentity(): Promise<LauncherClientIdentity | null> {
+  try {
+    const identity = await bridgeRequest<LauncherClientIdentity>('/api/chemssh-bridge/client-identity')
+    if (!identity?.enabled || !identity.client_id) {
+      return null
+    }
+    return identity
+  } catch {
+    return null
+  }
 }
 
 export function launcherBridgeIconFailureKey(item: Pick<FileItem, 'name' | 'type' | 'extension'>, size = 16) {

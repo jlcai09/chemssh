@@ -17,7 +17,7 @@
           controls-position="right"
         />
         <el-switch v-model="autoRefresh" size="small" :active-text="t('log.auto')" />
-        <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :icon="Refresh" circle size="small" :disabled="!path" :loading="loading" @click="refresh" />
         </el-tooltip>
       </div>

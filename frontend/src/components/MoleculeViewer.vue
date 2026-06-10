@@ -42,16 +42,19 @@
       </div>
 
       <div class="viewer-toolbar-actions">
-        <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :icon="Refresh" circle size="small" @click="refreshStructure" />
         </el-tooltip>
-        <el-tooltip :content="t('viewer.exportScreenshot')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip :content="t('viewer.exportScreenshot')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :icon="Download" circle size="small" @click="exportPng" />
         </el-tooltip>
       </div>
     </div>
     <div class="viewer-stage">
       <div ref="container" class="viewer-canvas" />
+      <div v-if="asePreview" class="atom-index-base-status" aria-live="polite">
+        {{ atomIndexBaseStatus }}
+      </div>
       <div v-if="asePreview" class="viewer-floating-tools">
         <el-popover trigger="click" placement="right-start" :width="260" :teleported="false">
           <template #reference>
@@ -83,10 +86,14 @@
           <div class="display-settings-panel">
             <el-checkbox v-model="showAtomIndex">{{ t('viewer.atomIndex') }}</el-checkbox>
             <el-checkbox v-model="showAtomTag">{{ t('viewer.atomTag') }}</el-checkbox>
+            <div class="atom-index-base-row">
+              <span>{{ t('viewer.atomIndexBase') }}</span>
+              <el-segmented v-model="atomIndexBase" :options="atomIndexBaseOptions" size="small" />
+            </div>
           </div>
         </el-popover>
 
-        <el-tooltip :content="t('viewer.resetView')" placement="right" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip :content="t('viewer.resetView')" placement="right" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :aria-label="t('viewer.resetView')" :icon="ResetViewIcon" circle size="small" @click="resetView" />
         </el-tooltip>
 
@@ -94,7 +101,7 @@
           <template #reference>
             <el-button
               :aria-label="t('viewer.supercellSettings')"
-              :class="{ 'is-active': hasSupercell }"
+              :type="hasSupercell ? 'success' : undefined"
               :disabled="!structureHasCell"
               :icon="Grid"
               circle
@@ -154,10 +161,11 @@
           </div>
         </el-popover>
 
-        <el-tooltip :content="t('viewer.wrapAtoms')" placement="right" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip :content="t('viewer.wrapAtoms')" placement="right" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button
             :aria-label="t('viewer.wrapAtoms')"
-            :class="{ 'is-active': wrapAtoms }"
+            :aria-pressed="wrapAtoms"
+            :type="wrapAtoms ? 'success' : undefined"
             :disabled="!structureHasCell"
             :icon="Crop"
             circle
@@ -185,6 +193,7 @@
           placement="left"
           popper-class="chemssh-passive-tooltip"
           :enterable="false"
+          :show-after="500"
         >
           <span class="viewer-metric-sampled-warning" :aria-label="t('viewer.sampledMetrics')">
             <el-icon><WarningFilled /></el-icon>
@@ -241,12 +250,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import { CaretBottom, CaretTop, Connection, Crop, Download, Grid, Refresh, View, WarningFilled } from '@element-plus/icons-vue'
 import { readStructureFrame, readStructureFrameChunk, readStructureFrameJsonChunk } from '../api/structures'
 import { t } from '../i18n'
 import type { AseFrame, AseFrameChunk, AsePreviewResponse } from '../types/structure'
-import type { StructureFrame, TrajectoryStore, ViewerStyleMode } from '../viewer'
+import type { AtomIndexBase, StructureFrame, TrajectoryStore, ViewerStyleMode } from '../viewer'
 
 type StyleMode = ViewerStyleMode
 type ViewerModule = typeof import('../viewer')
@@ -280,6 +289,11 @@ interface TrajectoryMetricCurve {
     labelY: number
     anchor: 'start' | 'end'
   }
+}
+
+interface PendingFrameChunkRequest {
+  version?: number
+  promise: Promise<void>
 }
 
 const props = withDefaults(
@@ -325,6 +339,7 @@ const selectedStyle = ref<StyleMode>(props.styleMode)
 const bondScale = ref(1.25)
 const showAtomIndex = ref(false)
 const showAtomTag = ref(false)
+const atomIndexBase = ref<AtomIndexBase>(0)
 const supercellX = ref(1)
 const supercellY = ref(1)
 const supercellZ = ref(1)
@@ -346,8 +361,8 @@ let trajectoryStore: TrajectoryStore | null = null
 let viewerModulePromise: Promise<ViewerModule> | null = null
 
 const jsonFrameCache = new Map<number, AseFrame>()
-const pendingChunks = new Map<number, Promise<void>>()
-const pendingJsonChunks = new Map<number, Promise<void>>()
+const pendingChunks = new Map<number, PendingFrameChunkRequest>()
+const pendingJsonChunks = new Map<number, PendingFrameChunkRequest>()
 const chunkSize = 64
 const jsonChunkSize = 16
 const jsonWarmChunkRadius = 1
@@ -359,6 +374,10 @@ const metricChartHeight = 44
 const metricChartPadding = { left: 8, right: 8, top: 7, bottom: 12 }
 const maxMetricPlotPoints = 180
 const metricSamplingFrameThreshold = 1000
+const atomIndexBaseOptions = [
+  { label: '0', value: 0 },
+  { label: '1', value: 1 }
+]
 
 const cacheStatus = computed(() => {
   if (!props.asePreview?.is_trajectory) return ''
@@ -369,6 +388,7 @@ const cacheStatus = computed(() => {
 const hasSupercell = computed(() => supercellX.value > 1 || supercellY.value > 1 || supercellZ.value > 1)
 
 const structureHasCell = computed(() => hasUsableCell(currentFrame.value.cell))
+const atomIndexBaseStatus = computed(() => t('viewer.atomIndexBaseStatus', { start: atomIndexBase.value }))
 const effectiveFrameNumberMode = computed<FrameNumberMode>(() => props.asePreview?.is_trajectory ? frameNumberMode.value : 'frame')
 const frameNumberModeLabel = computed(() => effectiveFrameNumberMode.value === 'frame' ? t('viewer.frame') : t('viewer.index'))
 const frameDisplayMin = computed(() => effectiveFrameNumberMode.value === 'frame' ? 1 : 0)
@@ -383,11 +403,15 @@ const frameDisplayInput = computed({
   }
 })
 const currentFrameDisplayValue = computed(() => frameIndexToDisplayValue(currentFrame.value.frame_index))
+
+// Optimize: Cache chart computation to avoid rebuilding on every tick
 const trajectoryMetricsChart = computed(() => {
   const preview = props.asePreview
-  if (!preview?.is_trajectory || preview.n_frames < 2) return null
+  if (!props.active || !preview?.is_trajectory || preview.n_frames < 2) return null
 
-  const reactiveTick = cachedFrameCount.value + currentFrame.value.frame_index
+  // Only depend on cached frame count, not current frame index for chart data
+  // The chart shows all frames, not just the current one
+  const reactiveTick = cachedFrameCount.value
   void reactiveTick
 
   const energy = buildMetricCurve('energy', 'Energy', '#176b87', 'rgba(23, 107, 135, 0.12)')
@@ -485,7 +509,8 @@ async function renderChemSSHStructure(keepView = false) {
       style: viewerStyle(),
       labelOptions: {
         showAtomIndex: showAtomIndex.value,
-        showAtomTag: showAtomTag.value
+        showAtomTag: showAtomTag.value,
+        atomIndexBase: atomIndexBase.value
       }
     })
   }
@@ -493,7 +518,8 @@ async function renderChemSSHStructure(keepView = false) {
   chemsshViewer.setStyle(viewerStyle())
   chemsshViewer.setLabelOptions({
     showAtomIndex: showAtomIndex.value,
-    showAtomTag: showAtomTag.value
+    showAtomTag: showAtomTag.value,
+    atomIndexBase: atomIndexBase.value
   })
   chemsshViewer.setDisplayOptions(viewerDisplayOptions())
 
@@ -864,7 +890,7 @@ function estimateJsonTrajectoryBytes(preview: AsePreviewResponse) {
 
 async function preloadTrajectoryFrames(version: number) {
   const preview = props.asePreview
-  if (!preview?.is_trajectory) return
+  if (!props.active || !preview?.is_trajectory) return
   if (canPreloadTrajectory(preview) && trajectoryStore) {
     await preloadBinaryTrajectoryFrames(version, preview)
     return
@@ -886,9 +912,9 @@ async function preloadBinaryTrajectoryFrames(version: number, preview: AsePrevie
   })
 
   for (const start of starts) {
-    if (version !== preloadVersion || !props.asePreview || props.asePreview.path !== preview.path) return
+    if (!props.active || version !== preloadVersion || !props.asePreview || props.asePreview.path !== preview.path) return
     try {
-      await ensureChunkStart(start, preview)
+      await ensureChunkStart(start, preview, version)
     } catch {
       return
     }
@@ -905,9 +931,9 @@ async function preloadJsonTrajectoryFrames(version: number, preview: AsePreviewR
   })
 
   for (const start of starts) {
-    if (version !== preloadVersion || !props.asePreview || props.asePreview.path !== preview.path) return
+    if (!props.active || version !== preloadVersion || !props.asePreview || props.asePreview.path !== preview.path) return
     try {
-      await ensureJsonChunkStart(start, preview)
+      await ensureJsonChunkStart(start, preview, version)
     } catch {
       return
     }
@@ -936,11 +962,11 @@ async function ensureChunk(index: number) {
   await ensureChunkStart(chunkStart, props.asePreview)
 }
 
-async function ensureChunkStart(chunkStart: number, preview: AsePreviewResponse) {
+async function ensureChunkStart(chunkStart: number, preview: AsePreviewResponse, version?: number) {
   if (trajectoryStore && isChunkAvailable(trajectoryStore, chunkStart, preview)) return
   const pending = pendingChunks.get(chunkStart)
-  if (pending) {
-    await pending
+  if (pending && pending.version === version) {
+    await pending.promise
     return
   }
   const request = readStructureFrameChunk(
@@ -952,14 +978,15 @@ async function ensureChunkStart(chunkStart: number, preview: AsePreviewResponse)
     preview.size_limit_overridden === true
   )
     .then(chunk => {
+      if (version !== undefined && (version !== preloadVersion || !props.active)) return
       if (!props.asePreview || props.asePreview.path !== preview.path) return
       writeChunkToStore(chunk)
       updateCachedFrameCount()
     })
     .finally(() => {
-      pendingChunks.delete(chunkStart)
+      if (pendingChunks.get(chunkStart)?.promise === request) pendingChunks.delete(chunkStart)
     })
-  pendingChunks.set(chunkStart, request)
+  pendingChunks.set(chunkStart, { version, promise: request })
   await request
 }
 
@@ -967,11 +994,11 @@ async function ensureJsonChunk(index: number, preview: AsePreviewResponse) {
   await ensureJsonChunkStart(jsonChunkStartForIndex(index), preview)
 }
 
-async function ensureJsonChunkStart(chunkStart: number, preview: AsePreviewResponse) {
+async function ensureJsonChunkStart(chunkStart: number, preview: AsePreviewResponse, version?: number) {
   if (isJsonChunkAvailable(chunkStart, preview)) return
   const pending = pendingJsonChunks.get(chunkStart)
-  if (pending) {
-    await pending
+  if (pending && pending.version === version) {
+    await pending.promise
     return
   }
 
@@ -984,6 +1011,7 @@ async function ensureJsonChunkStart(chunkStart: number, preview: AsePreviewRespo
     preview.size_limit_overridden === true
   )
     .then(chunk => {
+      if (version !== undefined && (version !== preloadVersion || !props.active)) return
       if (!props.asePreview || props.asePreview.path !== preview.path) return
       for (const frame of chunk.frames) {
         jsonFrameCache.set(frame.frame_index, frame)
@@ -991,15 +1019,15 @@ async function ensureJsonChunkStart(chunkStart: number, preview: AsePreviewRespo
       updateCachedFrameCount()
     })
     .finally(() => {
-      pendingJsonChunks.delete(chunkStart)
+      if (pendingJsonChunks.get(chunkStart)?.promise === request) pendingJsonChunks.delete(chunkStart)
     })
-  pendingJsonChunks.set(chunkStart, request)
+  pendingJsonChunks.set(chunkStart, { version, promise: request })
   await request
 }
 
 function warmJsonFramesAround(index: number) {
   const preview = props.asePreview
-  if (!preview?.is_trajectory || canPreloadTrajectory(preview)) return
+  if (!props.active || !preview?.is_trajectory || canPreloadTrajectory(preview)) return
   const center = jsonChunkStartForIndex(index)
   const starts: number[] = []
   for (let radius = 0; radius <= jsonWarmChunkRadius; radius += 1) {
@@ -1214,7 +1242,16 @@ function resetAseState() {
   cacheJsonFrame(frame)
   trajectoryStore = props.asePreview ? createTrajectoryStore(props.asePreview) : null
   updateCachedFrameCount()
-  const version = preloadVersion
+  startTrajectoryPreload()
+}
+
+function pauseTrajectoryPreload() {
+  preloadVersion += 1
+}
+
+function startTrajectoryPreload() {
+  if (!props.active || !props.asePreview?.is_trajectory) return
+  const version = ++preloadVersion
   void preloadTrajectoryFrames(version)
 }
 
@@ -1233,10 +1270,24 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // Clean up ResizeObserver
   resizeObserver?.disconnect()
   resizeObserver = null
+
+  // Clean up viewer
   disposeChemSSHViewer()
+
+  // Cancel animation frame
   if (frameRequestHandle) window.cancelAnimationFrame(frameRequestHandle)
+
+  // Clean up caches to free memory
+  jsonFrameCache.clear()
+  pendingChunks.clear()
+  pendingJsonChunks.clear()
+
+  // Clean up trajectory store
+  trajectoryStore = null
+  viewerModulePromise = null
 })
 
 watch(
@@ -1251,42 +1302,47 @@ watch(
 watch(
   () => props.active,
   async active => {
-    if (!active) return
+    if (!active) {
+      pauseTrajectoryPreload()
+      return
+    }
     await nextTick()
     resizeViewer()
+    startTrajectoryPreload()
   },
   { flush: 'post' }
 )
 
-watch(
-  () => [selectedStyle.value, bondScale.value, showAtomIndex.value, showAtomTag.value],
-  () => {
-    if (chemsshViewer && props.asePreview) {
-      chemsshViewer.setStyle(viewerStyle())
-      chemsshViewer.setLabelOptions({
-        showAtomIndex: showAtomIndex.value,
-        showAtomTag: showAtomTag.value
-      })
-    } else {
-      void renderStructure(true)
-    }
-  }
-)
+// Optimize: Combine style and display option watches into a single watchEffect
+watchEffect(() => {
+  // Track dependencies first
+  const styleChanged = [selectedStyle.value, bondScale.value, showAtomIndex.value, showAtomTag.value, atomIndexBase.value]
+  const displayChanged = [supercellX.value, supercellY.value, supercellZ.value, wrapAtoms.value, structureHasCell.value]
 
-watch(
-  () => [supercellX.value, supercellY.value, supercellZ.value, wrapAtoms.value, structureHasCell.value],
-  () => {
-    if (!structureHasCell.value) {
-      resetSupercell()
-      wrapAtoms.value = false
-      return
-    }
-    clampSupercell()
-    if (chemsshViewer && props.asePreview) {
-      chemsshViewer.setDisplayOptions(viewerDisplayOptions())
-    } else {
-      void renderStructure(true)
-    }
+  // Early return if viewer not ready, but still track dependencies
+  if (!chemsshViewer || !props.asePreview) {
+    // If viewer doesn't exist but dependencies changed, trigger re-render
+    void styleChanged
+    void displayChanged
+    void renderStructure(true)
+    return
   }
-)
+
+  // Keep cell-only controls constrained without blocking atom labels or bond styling.
+  if (!structureHasCell.value) {
+    if (supercellX.value !== 1 || supercellY.value !== 1 || supercellZ.value !== 1) resetSupercell()
+    if (wrapAtoms.value) wrapAtoms.value = false
+  } else {
+    clampSupercell()
+  }
+
+  // Apply updates to viewer
+  chemsshViewer.setStyle(viewerStyle())
+  chemsshViewer.setLabelOptions({
+    showAtomIndex: showAtomIndex.value,
+    showAtomTag: showAtomTag.value,
+    atomIndexBase: atomIndexBase.value
+  })
+  chemsshViewer.setDisplayOptions(viewerDisplayOptions())
+})
 </script>

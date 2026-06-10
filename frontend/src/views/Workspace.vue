@@ -21,7 +21,7 @@
           @clear="openDirectory()"
         >
           <template #append>
-            <el-tooltip :content="t('toolbar.go')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+            <el-tooltip :content="t('toolbar.go')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
               <el-button :icon="ArrowRight" @click="openPathFromInput" />
             </el-tooltip>
           </template>
@@ -109,11 +109,10 @@
             @drop="onWorkPanelDrop(panel.id, $event)"
           >
             <span>{{ panelTitle(panel) }}</span>
-            <el-tooltip :content="t('panel.close')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+            <el-tooltip :content="t('panel.close')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
               <el-button
                 class="side-panel-close"
                 :icon="Close"
-                circle
                 size="small"
                 text
                 @click.stop="closeWorkPanel(panel.id)"
@@ -302,7 +301,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowRight, Close, CopyDocument, EditPen, Open, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
@@ -321,6 +320,7 @@ import {
   type UploadProgress
 } from '../api/files'
 import { API_BASE, downloadUrl, request } from '../api/http'
+import { apiErrorMessage, localizeBackendMessage } from '../api/apiMessages'
 import {
   configureClientPreferencesScope,
   getClientPreferences,
@@ -391,9 +391,10 @@ type OpenPathRequest = {
 const props = defineProps<{
   systemInfo?: SystemInfo | null
   openPathRequest?: OpenPathRequest | null
+  syncEvents?: LauncherBridgeSyncEvent[]
 }>()
 
-const listing = ref<DirectoryListing | null>(null)
+const listing = shallowRef<DirectoryListing | null>(null)
 const currentPath = ref('')
 const pathInput = ref('')
 const selectedItems = ref<FileItem[]>([])
@@ -413,6 +414,14 @@ const forcedLargeTextPreviews = new Set<string>()
 const forcedLargeStructurePreviews = new Set<string>()
 
 type ResizeTarget = 'left' | 'right' | 'side'
+type ResizeState = {
+  target: ResizeTarget
+  startClientX: number
+  startClientY: number
+  startLeftWidth: number
+  startSideWidth: number
+  startQueueHeight: number
+}
 type WorkPanelKind = 'preview' | 'queue' | 'plugin'
 type PreviewMode = 'structure' | 'text'
 type WorkPanel = {
@@ -459,7 +468,7 @@ const workspaceRef = ref<HTMLElement | null>(null)
 const leftPaneRef = ref<HTMLElement | null>(null)
 const mainPaneRef = ref<HTMLElement | null>(null)
 const sidePaneRef = ref<HTMLElement | null>(null)
-const activeResize = ref<ResizeTarget | null>(null)
+const activeResize = ref<ResizeState | null>(null)
 const leftPaneWidth = ref<number | null>(null)
 const sidePaneWidth = ref<number | null>(null)
 const sideQueueHeight = ref<number | null>(null)
@@ -501,13 +510,11 @@ let previousBodyCursor = ''
 let previousBodyUserSelect = ''
 let previewRequestSerial = 0
 let structurePreviewAbortController: AbortController | null = null
-let launcherSyncTimer: number | undefined
-let launcherLastSyncSeq = 0
 let mounted = false
 let initialized = false
 const workspacePreferencesReady = ref(false)
 
-const SPLITTER_SIZE = 6
+const WORKSPACE_SPLITTER_SIZE = 12
 const MIN_LEFT_WIDTH = 260
 const MIN_MAIN_WIDTH = 320
 const MIN_SIDE_WIDTH = 300
@@ -519,7 +526,8 @@ const DIRECTORY_HISTORY_LIMIT = 20
 
 const workspaceStyle = computed<Record<string, string | undefined>>(() => ({
   '--workspace-left': leftPaneWidth.value === null ? undefined : `${leftPaneWidth.value}px`,
-  '--workspace-side': sidePaneWidth.value === null ? undefined : `${sidePaneWidth.value}px`
+  '--workspace-side': sidePaneWidth.value === null ? undefined : `${sidePaneWidth.value}px`,
+  '--workspace-splitter-size': `${WORKSPACE_SPLITTER_SIZE}px`
 }))
 
 const dragUploadActive = computed(() => dragUploadDepth.value > 0)
@@ -679,9 +687,18 @@ function startColumnResize(target: 'left' | 'right', event: PointerEvent) {
   if (!workspaceRef.value) return
   event.preventDefault()
   closeContextMenu()
-  activeResize.value = target
-  leftPaneWidth.value = currentLeftWidth()
-  if (isSideVisible()) sidePaneWidth.value = currentSideWidth()
+  const startLeftWidth = currentLeftWidth()
+  const startSideWidth = isSideVisible() ? currentSideWidth() : 0
+  activeResize.value = {
+    target,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startLeftWidth,
+    startSideWidth,
+    startQueueHeight: currentQueueHeight()
+  }
+  leftPaneWidth.value = startLeftWidth
+  if (isSideVisible()) sidePaneWidth.value = startSideWidth
   beginResize('col-resize')
 }
 
@@ -689,52 +706,64 @@ function startSideResize(event: PointerEvent) {
   if (!sidePaneRef.value) return
   event.preventDefault()
   closeContextMenu()
-  activeResize.value = 'side'
-  sideQueueHeight.value = currentQueueHeight()
+  const startQueueHeight = currentQueueHeight()
+  activeResize.value = {
+    target: 'side',
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startLeftWidth: currentLeftWidth(),
+    startSideWidth: currentSideWidth(),
+    startQueueHeight
+  }
+  sideQueueHeight.value = startQueueHeight
   beginResize('row-resize')
 }
 
 function handlePointerMove(event: PointerEvent) {
-  if (!activeResize.value) return
-  if (activeResize.value === 'side') {
-    resizeSide(event.clientY)
+  const resizeState = activeResize.value
+  if (!resizeState) return
+  if (resizeState.target === 'side') {
+    resizeSide(resizeState, event.clientY)
     return
   }
-  resizeColumns(activeResize.value, event.clientX)
+  resizeColumns(resizeState, event.clientX)
 }
 
-function resizeColumns(target: 'left' | 'right', clientX: number) {
+function resizeColumns(resizeState: ResizeState, clientX: number) {
   if (!workspaceRef.value) return
   const rect = workspaceRef.value.getBoundingClientRect()
   const totalWidth = rect.width
   const sideVisible = isSideVisible()
-  const splitterTotal = sideVisible ? SPLITTER_SIZE * 2 : SPLITTER_SIZE
+  const splitterTotal = sideVisible ? WORKSPACE_SPLITTER_SIZE * 2 : WORKSPACE_SPLITTER_SIZE
+  const deltaX = clientX - resizeState.startClientX
 
-  if (target === 'left') {
-    const reservedSide = sideVisible ? currentSideWidth() : 0
+  if (resizeState.target === 'left') {
+    const reservedSide = sideVisible ? resizeState.startSideWidth : 0
     const maxLeft = totalWidth - reservedSide - MIN_MAIN_WIDTH - splitterTotal
-    leftPaneWidth.value = clamp(clientX - rect.left, MIN_LEFT_WIDTH, maxLeft)
+    leftPaneWidth.value = clamp(resizeState.startLeftWidth + deltaX, MIN_LEFT_WIDTH, maxLeft)
     notifyTerminalLayoutChanged()
     return
   }
 
   if (!sideVisible) return
-  const reservedLeft = currentLeftWidth()
+  const reservedLeft = resizeState.startLeftWidth
   const maxSide = totalWidth - reservedLeft - MIN_MAIN_WIDTH - splitterTotal
-  sidePaneWidth.value = clamp(rect.right - clientX, MIN_SIDE_WIDTH, maxSide)
+  sidePaneWidth.value = clamp(resizeState.startSideWidth - deltaX, MIN_SIDE_WIDTH, maxSide)
   notifyTerminalLayoutChanged()
 }
 
-function resizeSide(clientY: number) {
+function resizeSide(resizeState: ResizeState, clientY: number) {
   if (!sidePaneRef.value) return
   const rect = sidePaneRef.value.getBoundingClientRect()
-  const maxQueue = rect.height - MIN_LOG_HEIGHT - SPLITTER_SIZE
-  sideQueueHeight.value = clamp(clientY - rect.top, MIN_QUEUE_HEIGHT, maxQueue)
+  const maxQueue = rect.height - MIN_LOG_HEIGHT - WORKSPACE_SPLITTER_SIZE
+  const deltaY = clientY - resizeState.startClientY
+  sideQueueHeight.value = clamp(resizeState.startQueueHeight + deltaY, MIN_QUEUE_HEIGHT, maxQueue)
 }
 
 function stopResize() {
-  if (!activeResize.value) return
-  const target = activeResize.value
+  const resizeState = activeResize.value
+  if (!resizeState) return
+  const target = resizeState.target
   activeResize.value = null
   document.body.style.cursor = previousBodyCursor
   document.body.style.userSelect = previousBodyUserSelect
@@ -1280,11 +1309,16 @@ async function readStructurePreviewWithLargeConfirmation(
 }
 
 function setPreviewMode(mode: PreviewMode) {
+  if (previewMode.value === mode) return
   previewMode.value = mode
+  void ensurePreviewModeLoaded(mode)
+}
+
+async function ensurePreviewModeLoaded(mode: PreviewMode) {
   if (mode === 'text') {
-    void loadTextPreview()
+    await loadTextPreview()
   } else {
-    void loadStructurePreview()
+    await loadStructurePreview()
   }
 }
 
@@ -1352,41 +1386,25 @@ async function openContextWithNotepad() {
 
 async function loadLauncherBridge() {
   launcherBridgeCapabilities.value = await loadLauncherBridgeCapabilities()
-  startLauncherSyncPolling()
 }
 
-function startLauncherSyncPolling() {
-  if (launcherSyncTimer || !launcherBridgeCapabilities.value?.features.open_sync_events) return
-  launcherSyncTimer = window.setInterval(() => {
-    if (document.hidden) return
-    void pollLauncherSyncEvents()
-  }, 2000)
-  void pollLauncherSyncEvents()
-}
-
-async function pollLauncherSyncEvents() {
-  try {
-    const events = await pollLauncherOpenSyncEvents(launcherLastSyncSeq)
-    if (events.length === 0) return
-    launcherLastSyncSeq = Math.max(launcherLastSyncSeq, ...events.map(event => event.seq))
+// Watch for sync events from App.vue (centralized handling)
+watch(
+  () => props.syncEvents,
+  async (events) => {
+    if (!events || events.length === 0) return
     await handleLauncherSyncEvents(events)
-  } catch {
-    // Launcher bridge polling is opportunistic; direct ChemSSH usage should stay quiet.
   }
-}
+)
 
 async function handleLauncherSyncEvents(events: LauncherBridgeSyncEvent[]) {
   let shouldRefreshDirectory = false
   let shouldRefreshPreview = false
-  let doneCount = 0
 
   for (const event of events) {
-    if (event.status === 'error') {
-      ElMessage.error(event.error || t('message.localSyncFailed'))
-      continue
-    }
+    // Skip error events (already handled by App.vue)
     if (event.status !== 'done') continue
-    doneCount += 1
+
     if (normalizeRemotePath(parentDirectoryPath(event.remote_path)) === normalizeRemotePath(currentPath.value)) {
       shouldRefreshDirectory = true
     }
@@ -1397,7 +1415,7 @@ async function handleLauncherSyncEvents(events: LauncherBridgeSyncEvent[]) {
 
   if (shouldRefreshDirectory) await loadDirectory(currentPath.value)
   if (shouldRefreshPreview) await refreshPreview()
-  if (doneCount > 0) ElMessage.success(t('message.localSyncDone'))
+  // Note: success/error messages are handled by App.vue
 }
 
 function normalizeRemotePath(path: string) {
@@ -1433,9 +1451,9 @@ async function submitContextJob(command: SubmitCommand) {
   closeContextMenu()
   try {
     const response = await submitJob(currentPath.value, item.name, command)
-    ElMessage.success(response.message || t('submit.jobSubmitted', { id: response.job_id ?? '' }))
+    ElMessage.success(localizeBackendMessage(response.message) || t('submit.jobSubmitted', { id: response.job_id ?? '' }))
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('message.submitFailed'))
+    ElMessage.error(apiErrorMessage(error, 'message.submitFailed'))
   }
 }
 
@@ -1877,7 +1895,6 @@ watch(activeWorkPanelId, () => {
 
 onBeforeUnmount(() => {
   if (uploadConflictDialog.value.resolve) chooseUploadConflict('cancel')
-  if (launcherSyncTimer) window.clearInterval(launcherSyncTimer)
   stopResize()
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('keydown', handleGlobalKeydown)

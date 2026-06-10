@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
+    "@vueuse/core": "^14.3.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "element-plus": "^2.9.6",
@@ -19,6 +20,7 @@
   "devDependencies": {
     "@types/three": "^0.184.1",
     "@vitejs/plugin-vue": "^5.2.1",
+    "terser": "^5.48.0",
     "typescript": "^5.7.3",
     "vite": "^6.1.0",
     "vue-tsc": "^2.2.0"

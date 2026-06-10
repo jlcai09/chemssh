@@ -84,7 +84,13 @@ export class ThreeStructureRenderer {
   constructor(container: HTMLElement, style: RendererStyle) {
     this.style = { ...style }
     this.bondGeometry.rotateX(Math.PI / 2)
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      powerPreference: 'high-performance', // Enable GPU acceleration
+      stencil: false, // Disable stencil buffer for better performance
+      depth: true
+    })
     this.renderer.setPixelRatio(1)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.setClearColor(this.style.backgroundColor, 1)
@@ -487,8 +493,16 @@ function atomWorldRadius(symbol: string, style: RendererStyle) {
   return Math.max(0.055, covalentRadius(symbol) * style.atomScale * modeScale)
 }
 
+// Material cache for better performance - avoid creating duplicate materials
+const materialCache = new Map<string, THREE.ShaderMaterial>()
+
 function createAtomMaterial(color: string) {
-  return new THREE.ShaderMaterial({
+  // Check cache first
+  if (materialCache.has(color)) {
+    return materialCache.get(color)!.clone()
+  }
+
+  const material = new THREE.ShaderMaterial({
     uniforms: {
       baseColor: { value: new THREE.Color(color) }
     },
@@ -547,6 +561,10 @@ function createAtomMaterial(color: string) {
       }
     `
   })
+
+  // Cache the material
+  materialCache.set(color, material)
+  return material.clone()
 }
 
 function createAtomPointMaterial() {

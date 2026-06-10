@@ -754,6 +754,10 @@ X-ChemSSH-Client-Id: client_xxx
     "version": 1,
     "logs": {
       "tailLines": 20
+    },
+    "theme": {
+      "animatedBackdrop": false,
+      "glassBlur": true
     }
   },
   "boards": {
@@ -785,6 +789,10 @@ X-ChemSSH-Client-Id: client_xxx
   },
   "canvas": {
     "lastBoardId": "board_xxx"
+  },
+  "theme": {
+    "animatedBackdrop": false,
+    "glassBlur": true
   }
 }
 ```
@@ -798,6 +806,8 @@ X-ChemSSH-Client-Id: client_xxx
 - `workspace.showHiddenFiles`：是否显示隐藏文件。
 - `workspace.activeWorkPanelId`：工作台右侧活跃面板。
 - `logs.tailLines`：tail 行数。
+- `theme.animatedBackdrop`：是否启用全屏动态背景。
+- `theme.glassBlur`：是否启用毛玻璃背景模糊。
 
 ### `PUT /api/client-cache/boards`
 

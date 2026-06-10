@@ -52,6 +52,11 @@ export interface CanvasBoardState {
   boards: CanvasBoard[]
 }
 
+export interface ThemePreferences {
+  animatedBackdrop: boolean
+  glassBlur: boolean
+}
+
 export interface ClientPreferences {
   version: 1
   terminal?: {
@@ -74,6 +79,7 @@ export interface ClientPreferences {
     defaultWindowWidth?: number
     defaultWindowHeight?: number
   }
+  theme?: Partial<ThemePreferences>
 }
 
 export const DEFAULT_CANVAS_VIEWPORT: CanvasViewport = {

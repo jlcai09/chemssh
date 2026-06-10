@@ -16,6 +16,33 @@
       </el-descriptions>
     </section>
 
+    <section class="settings-section">
+      <div class="panel-header">
+        <div>
+          <span class="eyebrow">theme</span>
+          <strong>{{ t('settings.themeTitle') }}</strong>
+        </div>
+      </div>
+      <div class="settings-theme-panel">
+        <label class="settings-theme-row">
+          <span>{{ t('settings.themeAnimatedBackdrop') }}</span>
+          <el-switch
+            :model-value="themePreferences.animatedBackdrop"
+            size="small"
+            @update:model-value="setAnimatedBackdrop"
+          />
+        </label>
+        <label class="settings-theme-row">
+          <span>{{ t('settings.themeGlassBlur') }}</span>
+          <el-switch
+            :model-value="themePreferences.glassBlur"
+            size="small"
+            @update:model-value="setGlassBlur"
+          />
+        </label>
+      </div>
+    </section>
+
     <section class="settings-section settings-danger-section">
       <div class="panel-header">
         <div>
@@ -28,6 +55,14 @@
           <span>{{ t('settings.clientId') }}</span>
           <code>{{ clientId }}</code>
         </div>
+        <div>
+          <span>{{ t('settings.clientIdSource') }}</span>
+          <code>{{ clientIdSourceLabel }}</code>
+        </div>
+        <div>
+          <span>{{ t('settings.workspaceScope') }}</span>
+          <code>{{ workspaceScopeKey }}</code>
+        </div>
         <p>{{ t('settings.cacheDescription') }}</p>
         <el-button type="danger" :loading="clearing" @click="confirmClearCache">
           {{ t('settings.clearCache') }}
@@ -38,21 +73,51 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { clearClientCache } from '../api/clientCache'
 import { clearLocalClientPreferences } from '../api/clientPreferences'
-import { getClientId } from '../api/clientSession'
+import { getClientId, getClientIdSource } from '../api/clientSession'
 import type { SystemInfo } from '../api/system'
-import { scopedLocalStorageKey } from '../api/workspaceScope'
+import type { ThemePreferences } from '../types/canvasBoard'
+import { scopedLocalStorageKey, getCurrentWorkspaceScopeKey } from '../api/workspaceScope'
 import { t } from '../i18n'
 
-defineProps<{
+const props = defineProps<{
   systemInfo?: SystemInfo | null
+  themePreferences: ThemePreferences
+}>()
+
+const emit = defineEmits<{
+  'update:theme-preferences': [preferences: ThemePreferences]
 }>()
 
 const clientId = getClientId()
+const clientIdSource = getClientIdSource()
+const workspaceScopeKey = getCurrentWorkspaceScopeKey()
+
+const clientIdSourceLabel = computed(() => {
+  return clientIdSource === 'launcher'
+    ? t('settings.clientIdSourceLauncher')
+    : t('settings.clientIdSourceBrowser')
+})
+
 const clearing = ref(false)
+
+function setThemePreference(key: keyof ThemePreferences, value: string | number | boolean) {
+  emit('update:theme-preferences', {
+    ...props.themePreferences,
+    [key]: value === true
+  })
+}
+
+function setAnimatedBackdrop(value: string | number | boolean) {
+  setThemePreference('animatedBackdrop', value)
+}
+
+function setGlassBlur(value: string | number | boolean) {
+  setThemePreference('glassBlur', value)
+}
 
 async function confirmClearCache() {
   try {

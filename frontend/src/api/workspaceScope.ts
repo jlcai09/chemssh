@@ -20,10 +20,9 @@ const DEFAULT_SCOPE: WorkspaceScope = {
 
 let currentScope: WorkspaceScope = DEFAULT_SCOPE
 
-export function createWorkspaceScope(systemInfo: SystemInfo, origin = browserOrigin()): WorkspaceScope {
+export function createWorkspaceScope(systemInfo: SystemInfo): WorkspaceScope {
   const workspaceRoot = systemInfo.workspace_root || ''
   const label = [
-    origin,
     systemInfo.username || '',
     systemInfo.hostname || '',
     workspaceRoot

@@ -3,6 +3,7 @@
     <div class="canvas-preview-pathbar">
       <el-input
         v-model="pathInput"
+        class="canvas-file-path"
         size="small"
         clearable
         spellcheck="false"
@@ -10,7 +11,7 @@
         @keyup.enter="openPath(pathInput)"
       >
         <template #append>
-          <el-tooltip :content="t('toolbar.go')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-tooltip :content="t('toolbar.go')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
             <el-button :icon="ArrowRight" @click="openPath(pathInput)" />
           </el-tooltip>
         </template>

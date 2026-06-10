@@ -6,7 +6,7 @@
           <span class="eyebrow">{{ t('canvas.eyebrow') }}</span>
           <strong>{{ t('canvas.title') }}</strong>
         </div>
-        <el-tooltip :content="t('canvas.newBoard')" placement="right" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip :content="t('canvas.newBoard')" placement="right" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :icon="Plus" circle size="small" @click="createBoard" />
         </el-tooltip>
       </div>
@@ -53,7 +53,7 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <el-tooltip :content="t('canvas.fitView')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-tooltip :content="t('canvas.fitView')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
             <el-button :icon="Aim" circle size="small" @click="resetView" />
           </el-tooltip>
         </div>
@@ -255,6 +255,7 @@ import type { FileItem, PreviewType } from '../api/files'
 
 const props = defineProps<{
   systemInfo?: SystemInfo | null
+  syncEvents?: LauncherBridgeSyncEvent[]
 }>()
 
 defineEmits<{
@@ -279,8 +280,6 @@ const fileManagerRefreshTokens = ref<Record<string, number>>({})
 const launcherBridgeCapabilities = ref<LauncherBridgeCapabilities | null>(null)
 let saveTimer: number | undefined
 let heartbeatTimer: number | undefined
-let launcherSyncTimer: number | undefined
-let launcherLastSyncSeq = 0
 let hydrated = false
 let mounted = false
 
@@ -406,7 +405,6 @@ watch(
 onBeforeUnmount(() => {
   if (saveTimer) window.clearTimeout(saveTimer)
   if (heartbeatTimer) window.clearInterval(heartbeatTimer)
-  if (launcherSyncTimer) window.clearInterval(launcherSyncTimer)
 })
 
 watch(
@@ -607,44 +605,30 @@ function refreshFileManagersForDirectories(paths: string[]) {
 
 async function loadLauncherBridge() {
   launcherBridgeCapabilities.value = await loadLauncherBridgeCapabilities()
-  startLauncherSyncPolling()
 }
 
-function startLauncherSyncPolling() {
-  if (launcherSyncTimer || !launcherBridgeCapabilities.value?.features.open_sync_events) return
-  launcherSyncTimer = window.setInterval(() => {
-    if (document.hidden) return
-    void pollLauncherSyncEvents()
-  }, 2000)
-  void pollLauncherSyncEvents()
-}
-
-async function pollLauncherSyncEvents() {
-  try {
-    const events = await pollLauncherOpenSyncEvents(launcherLastSyncSeq)
-    if (events.length === 0) return
-    launcherLastSyncSeq = Math.max(launcherLastSyncSeq, ...events.map(event => event.seq))
+// Watch for sync events from App.vue (centralized handling)
+watch(
+  () => props.syncEvents,
+  (events) => {
+    if (!events || events.length === 0) return
     handleLauncherSyncEvents(events)
-  } catch {
-    // Launcher bridge polling is best-effort and should stay silent when unavailable.
   }
-}
+)
 
 function handleLauncherSyncEvents(events: LauncherBridgeSyncEvent[]) {
   const directories = new Set<string>()
-  let doneCount = 0
+
   for (const event of events) {
-    if (event.status === 'error') {
-      ElMessage.error(event.error || t('message.localSyncFailed'))
-      continue
-    }
+    // Skip error events (already handled by App.vue)
     if (event.status !== 'done') continue
-    doneCount += 1
+
     const directory = parentDirectoryPath(event.remote_path)
     if (directory) directories.add(directory)
   }
+
   if (directories.size > 0) refreshFileManagersForDirectories(Array.from(directories))
-  if (doneCount > 0) ElMessage.success(t('message.localSyncDone'))
+  // Note: success/error messages are handled by App.vue
 }
 
 function updatePreviewPath(windowId: string, path: string, metadata?: { previewType?: PreviewType | null; format?: string | null }) {
@@ -938,8 +922,24 @@ function bindingPath(link: BindingLink) {
   const y1 = bindingPoint(link.startY, 'y')
   const x2 = bindingPoint(link.endX, 'x')
   const y2 = bindingPoint(link.endY, 'y')
-  const curve = Math.max(48, Math.min(160, Math.abs(x2 - x1) * 0.42))
-  return `M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}`
+
+  // 计算距离和控制点
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const distance = Math.sqrt(dx * dx + dy * dy)
+
+  // 类似 iPad 台前调度的优雅曲线
+  // 使用更大的水平偏移和轻微的垂直弧度
+  const horizontalCurve = Math.max(60, Math.min(200, distance * 0.4))
+  const verticalOffset = Math.max(20, Math.min(60, Math.abs(dy) * 0.15))
+
+  // 创建平滑的 S 形曲线
+  const cp1x = x1 + horizontalCurve
+  const cp1y = y1 + (dy > 0 ? verticalOffset : -verticalOffset)
+  const cp2x = x2 - horizontalCurve
+  const cp2y = y2 - (dy > 0 ? verticalOffset : -verticalOffset)
+
+  return `M ${x1} ${y1} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${x2} ${y2}`
 }
 
 function bindingLabelX(link: BindingLink) {

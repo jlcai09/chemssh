@@ -17,7 +17,7 @@
         @keyup.enter="openPath(pathInput)"
       >
         <template #append>
-          <el-tooltip :content="t('toolbar.go')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+          <el-tooltip :content="t('toolbar.go')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
             <el-button :icon="ArrowRight" @click="openPath(pathInput)" />
           </el-tooltip>
         </template>
@@ -183,7 +183,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowRight, CopyDocument, EditPen, Open, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
@@ -194,6 +194,7 @@ import {
 } from '../../api/fileDrag'
 import { copyApiErrorMessage, moveApiErrorMessage, prepareMoveEntries } from '../../api/fileMove'
 import { downloadUrl } from '../../api/http'
+import { apiErrorMessage, localizeBackendMessage } from '../../api/apiMessages'
 import {
   isPathInsideWorkspace,
   launcherFileIconUrl,
@@ -245,7 +246,7 @@ const emit = defineEmits<{
   'directories-change': [paths: string[]]
 }>()
 
-const listing = ref<DirectoryListing | null>(null)
+const listing = shallowRef<DirectoryListing | null>(null)
 const currentPath = ref(props.initialPath ?? '')
 const pathInput = ref(props.initialPath ?? '')
 const selectedItems = ref<FileItem[]>([])
@@ -450,9 +451,9 @@ async function submitContextJob(command: SubmitCommand) {
   closeContextMenu()
   try {
     const response = await submitJob(currentPath.value, item.name, command)
-    ElMessage.success(response.message || t('submit.jobSubmitted', { id: response.job_id ?? '' }))
+    ElMessage.success(localizeBackendMessage(response.message) || t('submit.jobSubmitted', { id: response.job_id ?? '' }))
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('message.submitFailed'))
+    ElMessage.error(apiErrorMessage(error, 'message.submitFailed'))
   }
 }
 

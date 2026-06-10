@@ -1,3 +1,5 @@
+import { cachedRequest, dedupeRequest } from './requestCache'
+
 export const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
 export class ApiError extends Error {
@@ -22,6 +24,20 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     throw new ApiError(error?.code ?? 'HTTP_ERROR', error?.message ?? response.statusText)
   }
   return data as T
+}
+
+/**
+ * Cached GET request with deduplication
+ * Automatically caches GET requests for 5 seconds and deduplicates concurrent requests
+ */
+export async function cachedGet<T>(path: string, ttl?: number): Promise<T> {
+  const cacheKey = `GET:${path}`
+
+  return cachedRequest(
+    cacheKey,
+    () => dedupeRequest(cacheKey, () => request<T>(path, { method: 'GET' })),
+    ttl
+  )
 }
 
 export async function requestBlob(path: string, options: RequestInit = {}) {

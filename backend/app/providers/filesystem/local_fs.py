@@ -12,8 +12,8 @@ from backend.app.providers.filesystem.base import FileSystemProvider
 from backend.app.services.file_types import detect_preview
 
 
-def _mtime_iso(path: Path) -> str:
-    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+def _mtime_iso(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
 
 class LocalFileSystemProvider(FileSystemProvider):
@@ -23,30 +23,38 @@ class LocalFileSystemProvider(FileSystemProvider):
         if not path.is_dir():
             raise AppError("NOT_A_DIRECTORY", f"Path is not a directory: {path}", 400)
 
-        items: list[FileItem] = []
+        entries: list[tuple[bool, str, FileItem]] = []
         try:
-            children = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-            for child in children:
-                try:
-                    stat = child.stat()
-                except OSError:
-                    continue
-                is_dir = child.is_dir()
-                preview_type, fmt = detect_preview(child, is_dir=is_dir)
-                items.append(
-                    FileItem(
-                        name=child.name,
-                        path=str(child),
-                        type="directory" if is_dir else "file",
-                        size=None if is_dir else stat.st_size,
-                        mtime=_mtime_iso(child),
-                        extension="" if is_dir else child.suffix.lower(),
-                        preview_type=preview_type,
-                        format=fmt,
+            with os.scandir(path) as children:
+                for child in children:
+                    try:
+                        is_dir = child.is_dir()
+                        stat = child.stat()
+                    except OSError:
+                        continue
+
+                    child_path = Path(child.path)
+                    preview_type, fmt = detect_preview(child_path, is_dir=is_dir)
+                    entries.append(
+                        (
+                            not is_dir,
+                            child.name.lower(),
+                            FileItem(
+                                name=child.name,
+                                path=child.path,
+                                type="directory" if is_dir else "file",
+                                size=None if is_dir else stat.st_size,
+                                mtime=_mtime_iso(stat.st_mtime),
+                                extension="" if is_dir else child_path.suffix.lower(),
+                                preview_type=preview_type,
+                                format=fmt,
+                            ),
+                        )
                     )
-                )
         except PermissionError as exc:
             raise AppError("PERMISSION_DENIED", f"Cannot list directory: {path}", 403) from exc
+
+        items = [item for _, _, item in sorted(entries, key=lambda entry: (entry[0], entry[1]))]
 
         return DirectoryListing(
             path=str(path),

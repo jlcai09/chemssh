@@ -14,10 +14,10 @@
         <span v-if="structureError" class="preview-error">{{ structureError }}</span>
       </div>
       <div class="preview-actions">
-        <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :icon="Refresh" circle size="small" @click="refreshText" />
         </el-tooltip>
-        <el-tooltip v-if="canEditText" :content="t('preview.edit')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip v-if="canEditText" :content="t('preview.edit')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button
             :icon="EditPen"
             circle
@@ -26,17 +26,19 @@
             @click="enableEditing"
           />
         </el-tooltip>
-        <el-tooltip v-if="canEditText" :content="t('preview.save')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip v-if="canEditText" :content="saveTooltip" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button
             :icon="SaveIcon"
+            class="preview-save-button"
+            :class="saveButtonClass"
             circle
-            type="primary"
+            :type="saveButtonType"
             size="small"
-            :disabled="!editingEnabled || !dirty"
-            @click="$emit('save', draft)"
+            :aria-disabled="!canSave"
+            @click="handleSaveClick"
           />
         </el-tooltip>
-        <el-tooltip v-if="canOpenPopout" :content="t('preview.openExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+        <el-tooltip v-if="canOpenPopout" :content="t('preview.openExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :icon="FullScreen" circle size="small" @click="popoutOpen = true" />
         </el-tooltip>
       </div>
@@ -94,10 +96,10 @@
             <span v-if="structureError" class="preview-error">{{ structureError }}</span>
           </div>
           <div class="preview-actions">
-            <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+            <el-tooltip v-if="canEditText" :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
               <el-button :icon="Refresh" circle size="small" @click="refreshText" />
             </el-tooltip>
-            <el-tooltip v-if="canEditText" :content="t('preview.edit')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+            <el-tooltip v-if="canEditText" :content="t('preview.edit')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
               <el-button
                 :icon="EditPen"
                 circle
@@ -106,17 +108,19 @@
                 @click="enableEditing"
               />
             </el-tooltip>
-            <el-tooltip v-if="canEditText" :content="t('preview.save')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+            <el-tooltip v-if="canEditText" :content="saveTooltip" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
               <el-button
                 :icon="SaveIcon"
+                class="preview-save-button"
+                :class="saveButtonClass"
                 circle
-                type="primary"
+                :type="saveButtonType"
                 size="small"
-                :disabled="!editingEnabled || !dirty"
-                @click="$emit('save', draft)"
+                :aria-disabled="!canSave"
+                @click="handleSaveClick"
               />
             </el-tooltip>
-            <el-tooltip :content="t('preview.exitExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false">
+            <el-tooltip :content="t('preview.exitExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
               <el-button :icon="ScaleToOriginal" circle size="small" @click="popoutOpen = false" />
             </el-tooltip>
           </div>
@@ -171,6 +175,7 @@ import MonacoTextEditor from './MonacoTextEditor.vue'
 import MoleculeViewer from './MoleculeViewer.vue'
 
 type PreviewMode = 'structure' | 'text'
+type SaveState = 'readonly' | 'saved' | 'unsaved'
 
 const props = defineProps<{
   file?: FileReadResponse | null
@@ -231,6 +236,7 @@ watch(
 
 const canEditText = computed(() => props.mode === 'text' && Boolean(props.file))
 const dirty = computed(() => props.mode === 'text' && Boolean(props.file) && draft.value !== props.file?.content)
+const canSave = computed(() => editingEnabled.value && dirty.value)
 const showStructurePane = computed(() => props.mode === 'structure' && Boolean(props.aseStructure))
 const showTextPane = computed(() => props.mode === 'text' && Boolean(props.file))
 const showPopoutStructurePane = computed(() => popoutOpen.value && showStructurePane.value)
@@ -304,13 +310,26 @@ watch(
   }
 )
 const editorStatusClass = computed(() => {
-  if (!editingEnabled.value) return 'is-readonly'
-  return dirty.value ? 'is-unsaved' : 'is-saved'
+  return `is-${saveState.value}`
 })
 const editorStatusLabel = computed(() => {
-  if (!editingEnabled.value) return t('preview.readonly')
-  return dirty.value ? t('preview.statusUnsaved') : t('preview.statusSaved')
+  return saveStateLabel.value
 })
+const saveState = computed<SaveState>(() => {
+  if (!editingEnabled.value) return 'readonly'
+  return dirty.value ? 'unsaved' : 'saved'
+})
+const saveStateLabel = computed(() => {
+  if (saveState.value === 'readonly') return t('preview.readonly')
+  return saveState.value === 'unsaved' ? t('preview.statusUnsaved') : t('preview.statusSaved')
+})
+const saveTooltip = computed(() => saveStateLabel.value)
+const saveButtonType = computed(() => {
+  if (saveState.value === 'saved') return 'success'
+  if (saveState.value === 'unsaved') return 'danger'
+  return undefined
+})
+const saveButtonClass = computed(() => `is-${saveState.value}`)
 
 const modeOptions = computed(() => [
   { label: t('preview.type.structure'), value: 'structure' },
@@ -335,6 +354,11 @@ function enableEditing() {
 function refreshText() {
   editingEnabled.value = false
   emit('refresh')
+}
+
+function handleSaveClick() {
+  if (!canSave.value) return
+  emit('save', draft.value)
 }
 
 function handleStructureRenderStart() {

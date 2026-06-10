@@ -10,7 +10,36 @@ ChemSSH is a local-trust tool. Run it as the user who owns the files, bind it to
 
 ## Install
 
-Create a Python virtual environment in the project root, install the backend package, then install and build the frontend.
+### For Production (from release)
+
+**Recommended for most users.**
+
+If you downloaded a release package from [GitHub Releases](https://github.com/your-username/chemssh/releases), the frontend is already built. You only need Python:
+
+```bash
+# 1. Extract the release package
+tar -xzf chemssh-0.3.4.tar.gz
+cd chemssh-0.3.4
+
+# 2. Create Python virtual environment and install
+python -m venv .venv
+source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+python -m pip install -e ".[dev]"
+
+# That's it! No Node.js or npm needed.
+```
+
+The pre-built `frontend/dist/` directory contains all optimized static files.
+
+<details>
+<summary>Development install from source</summary>
+
+### For Development (from source)
+
+**Only for developers who want to modify the code.**
+
+If you cloned the repository and want to build from source:
 
 Windows PowerShell:
 
@@ -35,6 +64,8 @@ python -m pip install -e ".[dev]"
 npm --prefix frontend install
 npm --prefix frontend run build
 ```
+
+</details>
 
 After installation, the CLI entry point is:
 
@@ -100,6 +131,29 @@ client_cache:
 
 `security.enable_token` and `security.token` currently exist in the settings model, but request authentication is not wired through the API dependencies or middleware. Do not treat them as active access control.
 
+<details>
+<summary>Maintainer release packaging</summary>
+
+## How to Release
+
+**For maintainers creating release packages.**
+
+Use the dedicated release archive script (version is read automatically from `backend/app/__init__.py`):
+
+**Linux/Mac/Windows (Git Bash):**
+```bash
+chmod +x create-release-archive.sh
+./create-release-archive.sh
+```
+
+On Windows, use Git Bash to run the `.sh` script. It is the supported release packaging entry point and generates both `.tar.gz` and `.zip` formats.
+
+This will build the frontend and create `release/chemssh-{VERSION}.tar.gz` and `.zip` with checksums. The release package includes pre-built `frontend/dist/` (no Node.js required for users).
+
+See [docs/RELEASE.md](docs/RELEASE.md) for detailed release procedures.
+
+</details>
+
 ## Run
 
 Start ChemSSH with the built frontend:
@@ -155,6 +209,9 @@ http://localhost:8888
 
 If an HPC login node uses a different loopback or internal address for the service target, adjust the right side of `-L` accordingly.
 
+<details>
+<summary>Feature details</summary>
+
 ## Main Features
 
 - Workspace file management: browse, create folders/files, upload files or folders, download single files or zip selections, rename, delete, move, and copy.
@@ -166,6 +223,11 @@ If an HPC login node uses a different loopback or internal address for the servi
 - Plugins: manifest-scanned plugins under `plugins/` and configured plugin directories; activation is on demand, with optional Python backend routes, iframe frontend assets, preview-provider registration, and dependency management.
 - Launcher bridge integration: when opened through a compatible Launcher same-origin proxy, the frontend can discover bridge capabilities for system icons, local open actions, and sync-event polling. Direct ChemSSH access degrades quietly when bridge endpoints are absent.
 - Client cache isolation: preferences and canvas boards are stored per browser `client_id` and per workspace scope, so different origins/users/hosts/workspace roots do not reuse stale paths and layouts.
+
+</details>
+
+<details>
+<summary>Developer and architecture notes</summary>
 
 ## Project Layout
 
@@ -323,3 +385,5 @@ npm run frontend:preview
 - API and window interaction reference: [docs/API.md](docs/API.md)
 - Plugin development: [docs/PLUGIN_DEVELOPMENT.md](docs/PLUGIN_DEVELOPMENT.md)
 - FastAPI docs while running: `http://127.0.0.1:8888/docs`
+
+</details>

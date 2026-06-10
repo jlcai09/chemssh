@@ -1,4 +1,5 @@
 export type ViewerStyleMode = 'stick' | 'sphere' | 'line'
+export type AtomIndexBase = 0 | 1
 
 export interface ViewerStyle {
   mode?: ViewerStyleMode
@@ -12,6 +13,7 @@ export interface ViewerStyle {
 export interface LabelOptions {
   showAtomIndex?: boolean
   showAtomTag?: boolean
+  atomIndexBase?: AtomIndexBase
   maxLabels?: number
 }
 

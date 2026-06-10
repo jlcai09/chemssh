@@ -79,7 +79,7 @@
         </button>
       </span>
     </div>
-    <div ref="bodyRef" class="file-list-body" role="rowgroup" @scroll="updateScrollbars" @mousedown.left="beginBlankSelect">
+    <div ref="bodyRef" class="file-list-body" role="rowgroup" @scroll="handleBodyScroll" @mousedown.left="beginBlankSelect">
       <div
         v-if="parentItem"
         class="file-row file-parent-row is-directory"
@@ -115,8 +115,9 @@
         <span class="file-column-divider file-column-divider-size-time" aria-hidden="true" />
         <span class="file-cell file-time-cell" role="gridcell" />
       </div>
+      <div class="file-list-virtual-spacer" :style="{ height: `${topSpacerHeight}px` }" aria-hidden="true" />
       <div
-        v-for="(item, index) in sortedItems"
+        v-for="{ item, index } in virtualRows"
         :key="item.path"
         :ref="el => setRowRef(el, index)"
         class="file-row"
@@ -167,6 +168,7 @@
         <span class="file-column-divider file-column-divider-size-time" aria-hidden="true" />
         <span class="file-cell file-time-cell" role="gridcell">{{ formatDate(item.mtime) }}</span>
       </div>
+      <div class="file-list-virtual-spacer" :style="{ height: `${bottomSpacerHeight}px` }" aria-hidden="true" />
     </div>
     <div
       v-if="scrollState.showVertical"
@@ -258,6 +260,8 @@ const exportDragPathSet = ref(new Set<string>())
 const exportDragArmed = ref(false)
 const exportDragActive = ref(false)
 const moveDropTargetPath = ref<string | null>(null)
+const bodyScrollTop = ref(0)
+const bodyViewportHeight = ref(0)
 const scrollState = ref({
   showVertical: false,
   showHorizontal: false,
@@ -301,6 +305,9 @@ const MAX_TIME_COLUMN_WIDTH = 260
 const FILE_ICON_COLUMN_WIDTH = 34
 const FILE_COLUMN_RESIZER_WIDTH = 10
 const FLOATING_SCROLLBAR_MIN_THUMB = 28
+const FILE_ROW_SLOT_HEIGHT = 40
+const FILE_BODY_VERTICAL_PADDING = 4
+const VIRTUAL_ROW_OVERSCAN = 8
 
 const activeColumnResize = ref<ColumnResizeTarget | null>(null)
 const sizeColumnWidth = ref(DEFAULT_SIZE_COLUMN_WIDTH)
@@ -309,6 +316,11 @@ const timeColumnWidth = ref(DEFAULT_TIME_COLUMN_WIDTH)
 const columnStyle = computed<Record<string, string>>(() => ({
   '--file-size-col': `${sizeColumnWidth.value}px`,
   '--file-time-col': `${timeColumnWidth.value}px`
+}))
+
+const nameCollator = computed(() => new Intl.Collator(locale.value === 'zh' ? 'zh-CN' : 'en-US', {
+  numeric: true,
+  sensitivity: 'base'
 }))
 
 const sortedItems = computed(() => {
@@ -335,6 +347,35 @@ const parentItem = computed<FileItem | null>(() => {
   }
 })
 
+const parentSlotHeight = computed(() => parentItem.value ? FILE_ROW_SLOT_HEIGHT : 0)
+
+const virtualRange = computed(() => {
+  const count = sortedItems.value.length
+  if (count === 0) return { start: 0, end: 0 }
+
+  const viewportHeight = bodyViewportHeight.value || 0
+  const itemScrollTop = Math.max(0, bodyScrollTop.value - parentSlotHeight.value)
+  const visibleSlots = Math.ceil(viewportHeight / FILE_ROW_SLOT_HEIGHT)
+  const firstVisible = clamp(Math.floor(itemScrollTop / FILE_ROW_SLOT_HEIGHT), 0, Math.max(0, count - 1))
+  const lastVisible = Math.min(count, firstVisible + visibleSlots)
+
+  return {
+    start: clamp(firstVisible - VIRTUAL_ROW_OVERSCAN, 0, count),
+    end: clamp(lastVisible + VIRTUAL_ROW_OVERSCAN, 0, count)
+  }
+})
+
+const virtualRows = computed(() => {
+  const { start, end } = virtualRange.value
+  return sortedItems.value.slice(start, end).map((item, offset) => ({
+    item,
+    index: start + offset
+  }))
+})
+
+const topSpacerHeight = computed(() => virtualRange.value.start * FILE_ROW_SLOT_HEIGHT)
+const bottomSpacerHeight = computed(() => Math.max(0, (sortedItems.value.length - virtualRange.value.end) * FILE_ROW_SLOT_HEIGHT))
+
 function typeRank(item: FileItem) {
   return item.type === 'directory' ? 0 : 1
 }
@@ -356,10 +397,7 @@ function handleSystemIconError(item: FileItem) {
 }
 
 function nameCompare(a: FileItem, b: FileItem) {
-  return a.name.localeCompare(b.name, locale.value === 'zh' ? 'zh-CN' : 'en-US', {
-    numeric: true,
-    sensitivity: 'base'
-  })
+  return nameCollator.value.compare(a.name, b.name)
 }
 
 function timestamp(value: string) {
@@ -470,6 +508,18 @@ function setRowRef(el: unknown, index: number) {
   rowRefs.value[index] = el instanceof HTMLElement ? el : null
 }
 
+function updateVirtualMetrics() {
+  const body = bodyRef.value
+  if (!body) return
+  bodyScrollTop.value = body.scrollTop
+  bodyViewportHeight.value = body.clientHeight
+  updateScrollbars()
+}
+
+function handleBodyScroll() {
+  updateVirtualMetrics()
+}
+
 function updateScrollbars() {
   const body = bodyRef.value
   if (!body) return
@@ -532,7 +582,7 @@ function handleScrollbarThumbMove(event: PointerEvent) {
   const scrollDelta = drag.maxThumbOffset <= 0 ? 0 : (delta / drag.maxThumbOffset) * drag.maxScroll
   if (drag.axis === 'vertical') body.scrollTop = drag.startScroll + scrollDelta
   else body.scrollLeft = drag.startScroll + scrollDelta
-  updateScrollbars()
+  updateVirtualMetrics()
 }
 
 function stopScrollbarThumbDrag() {
@@ -555,7 +605,7 @@ function handleScrollbarTrackPointerDown(axis: 'vertical' | 'horizontal', event:
     const targetRatio = clamp((event.clientX - rect.left) / rect.width, 0, 1)
     body.scrollLeft = targetRatio * Math.max(0, body.scrollWidth - body.clientWidth)
   }
-  updateScrollbars()
+  updateVirtualMetrics()
 }
 
 function isScrollbarEvent(element: HTMLElement, event: MouseEvent) {
@@ -576,10 +626,29 @@ async function focusRow(index: number) {
   const next = clampIndex(index)
   if (next < 0) return
   focusedIndex.value = next
+  scrollIndexIntoView(next)
   await nextTick()
   const row = rowRefs.value[next]
   row?.focus()
-  row?.scrollIntoView({ block: 'nearest' })
+}
+
+function scrollIndexIntoView(index: number) {
+  const body = bodyRef.value
+  if (!body) return
+
+  const stickyOffset = parentSlotHeight.value
+  const rowTop = stickyOffset + index * FILE_ROW_SLOT_HEIGHT
+  const rowBottom = rowTop + FILE_ROW_SLOT_HEIGHT
+  const visibleTop = body.scrollTop + stickyOffset
+  const visibleBottom = body.scrollTop + body.clientHeight
+
+  if (rowTop < visibleTop) {
+    body.scrollTop = Math.max(0, rowTop - stickyOffset)
+  } else if (rowBottom > visibleBottom) {
+    body.scrollTop = rowBottom - body.clientHeight
+  }
+
+  updateVirtualMetrics()
 }
 
 function emitSelection(paths: Set<string>, primary: FileItem | null) {
@@ -740,6 +809,7 @@ function handleBlankDragMove(event: MouseEvent) {
 }
 
 function updateBlankDragSelection() {
+  const body = bodyRef.value
   const left = Math.min(blankDragStartX, blankDragCurrentX)
   const right = Math.max(blankDragStartX, blankDragCurrentX)
   const top = Math.min(blankDragStartY, blankDragCurrentY)
@@ -747,15 +817,24 @@ function updateBlankDragSelection() {
   const next = new Set<string>()
   const selectedIndices: number[] = []
 
-  rowRefs.value.forEach((row, index) => {
-    const item = sortedItems.value[index]
-    if (!row || !item) return
-    const rect = row.getBoundingClientRect()
-    const intersects = rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom
-    if (!intersects) return
-    next.add(item.path)
-    selectedIndices.push(index)
-  })
+  if (body && sortedItems.value.length > 0) {
+    const bodyRect = body.getBoundingClientRect()
+    const contentTop = bodyRect.top + FILE_BODY_VERTICAL_PADDING + parentSlotHeight.value - body.scrollTop
+    const contentBottom = contentTop + sortedItems.value.length * FILE_ROW_SLOT_HEIGHT
+    const intersectsHorizontally = right >= bodyRect.left && left <= bodyRect.right
+
+    if (intersectsHorizontally && bottom >= contentTop && top <= contentBottom) {
+      const firstIndex = clamp(Math.floor((top - contentTop) / FILE_ROW_SLOT_HEIGHT), 0, sortedItems.value.length - 1)
+      const lastIndex = clamp(Math.floor((bottom - contentTop) / FILE_ROW_SLOT_HEIGHT), 0, sortedItems.value.length - 1)
+
+      for (let index = firstIndex; index <= lastIndex; index += 1) {
+        const item = sortedItems.value[index]
+        if (!item) continue
+        next.add(item.path)
+        selectedIndices.push(index)
+      }
+    }
+  }
 
   blankDragPathSet.value = next
   const primaryIndex = selectedIndices.length === 0
@@ -1019,15 +1098,15 @@ watch(
   () => {
     rowRefs.value = []
     syncFocusedSelection()
-    void nextTick(updateScrollbars)
+    void nextTick(updateVirtualMetrics)
   }
 )
 
 onMounted(() => {
   window.addEventListener('mouseup', finishSelection)
   void nextTick(() => {
-    updateScrollbars()
-    scrollResizeObserver = new ResizeObserver(updateScrollbars)
+    updateVirtualMetrics()
+    scrollResizeObserver = new ResizeObserver(updateVirtualMetrics)
     if (bodyRef.value) scrollResizeObserver.observe(bodyRef.value)
     if (treeRef.value) scrollResizeObserver.observe(treeRef.value)
   })
