@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Xterm DOM Structure Test</title>
+  <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
+</head>
+<body>
+  <div id="terminal"></div>
+  <button onclick="inspectDOM()">Inspect DOM</button>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { Terminal } from './node_modules/@xterm/xterm/lib/xterm.js';
+    
+    const terminal = new Terminal();
+    terminal.open(document.getElementById('terminal'));
+    terminal.writeln('Hello World');
+    terminal.writeln('Test line 1');
+    terminal.writeln('Test line 2');
+    
+    window.terminal = terminal;
+    window.inspectDOM = function() {
+      const output = document.getElementById('output');
+      const buffer = terminal.buffer.active;
+      
+      let info = `Buffer length: ${buffer.length}\n`;
+      info += `Viewport Y: ${buffer.viewportY}\n\n`;
+      
+      // 查找第一行的 DOM 结构
+      const rows = terminal.element.querySelectorAll('.xterm-rows > *');
+      info += `Total rows in DOM: ${rows.length}\n\n`;
+      
+      if (rows[0]) {
+        info += 'First row HTML:\n';
+        info += rows[0].outerHTML + '\n\n';
+        info += 'Attributes:\n';
+        for (let attr of rows[0].attributes) {
+          info += `  ${attr.name}="${attr.value}"\n`;
+        }
+      }
+      
+      output.textContent = info;
+    };
+  </script>
+</body>
+</html>

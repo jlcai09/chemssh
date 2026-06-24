@@ -11,7 +11,7 @@ import type { ClientPreferences, ThemePreferences } from '../types/canvasBoard'
 const LOCAL_PREFS_KEY = 'chemssh.preferences.v1'
 export const DEFAULT_THEME_PREFERENCES: ThemePreferences = {
   animatedBackdrop: false,
-  glassBlur: true
+  glassBlur: false
 }
 
 let preferences: ClientPreferences = readLocalPreferences()
@@ -103,7 +103,7 @@ export function normalizeClientPreferences(value: Partial<ClientPreferences> | R
 export function normalizeThemePreferences(value?: Partial<ThemePreferences> | null): ThemePreferences {
   return {
     animatedBackdrop: value?.animatedBackdrop === true,
-    glassBlur: value?.glassBlur !== false
+    glassBlur: value?.glassBlur === true
   }
 }
 

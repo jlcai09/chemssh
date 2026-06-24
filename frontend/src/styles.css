@@ -40,25 +40,25 @@ button {
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.1);
+  background: transparent;
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 9999px;
-  background: rgba(100, 116, 139, 0.4);
+  background: rgba(100, 116, 139, 0.35);
   background-clip: content-box;
-  transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background var(--dur-base) var(--ease-standard);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(71, 85, 105, 0.6);
+  background: rgba(71, 85, 105, 0.55);
   background-clip: content-box;
 }
 
@@ -72,7 +72,8 @@ button {
   height: 100dvh;
   min-height: 0;
   display: grid;
-  grid-template-rows: 46px minmax(0, 1fr);
+  /* auto 让 topbar 按内容自然撑开，避免 46px 固定高度挤压 brand-mark(36px)+padding(24px) 内容。 */
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 /* 移除旧的 topbar 样式，使用 Liquid Glass 样式 */
@@ -87,8 +88,9 @@ button {
 }
 
 .topbar-actions > .el-segmented {
-  width: 300px;
-  flex: 0 0 300px;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .topbar-actions > .el-segmented .el-segmented__group {
@@ -96,12 +98,12 @@ button {
 }
 
 .topbar-actions > .el-segmented .el-segmented__item {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
 .topbar-actions > .el-segmented .el-segmented__item-label {
-  padding: 0 8px;
+  padding: 0 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -195,6 +197,79 @@ p {
 .app-main {
   min-height: 0;
   overflow: hidden;
+}
+
+.async-view-state {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  color: var(--text-muted);
+}
+
+.async-view-card {
+  width: min(360px, 100%);
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+}
+
+.async-view-card.is-error {
+  align-items: flex-start;
+  border-color: rgba(220, 38, 38, 0.22);
+}
+
+.async-view-spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(23, 107, 135, 0.18);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: chemssh-spin 0.8s linear infinite;
+}
+
+.async-view-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.async-view-copy strong {
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.async-view-copy span {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.async-view-retry {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid rgba(23, 107, 135, 0.24);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.async-view-retry:hover {
+  border-color: rgba(23, 107, 135, 0.38);
+  background: #f2fbfd;
 }
 
 /* 工作区样式 - 应用 Liquid Glass 效果 */
@@ -450,6 +525,7 @@ p {
 }
 
 .workspace-main {
+  position: relative;
   display: grid;
   overflow: hidden;
 }
@@ -756,7 +832,11 @@ p {
 .file-tree {
   position: relative;
   display: grid;
-  grid-template-rows: 34px minmax(0, 1fr);
+  grid-template-rows: 34px minmax(0, 1fr) 24px;
+}
+
+.file-tree.is-loading {
+  cursor: progress;
 }
 
 .file-list-header,
@@ -772,10 +852,14 @@ p {
 .file-list-header {
   min-height: 36px;
   padding: 0 8px;
-  border-bottom: 1px solid var(--panel-border);
-  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-  color: var(--text-muted);
+  border-bottom: 1px solid var(--glass-border-color);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.9) 0%, rgba(241, 245, 249, 0.85) 100%);
+  backdrop-filter: blur(var(--blur-sm));
+  -webkit-backdrop-filter: blur(var(--blur-sm));
+  color: var(--color-text-muted);
   font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
   user-select: none;
 }
 
@@ -913,9 +997,42 @@ p {
   height: 0;
 }
 
+.file-tree-status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  color: var(--text-muted);
+  background: rgba(248, 250, 252, 0.76);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+
 .file-list-virtual-spacer {
   min-height: 0;
   pointer-events: none;
+}
+
+.file-tree-loading-indicator {
+  position: absolute;
+  top: 42px;
+  right: 12px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--accent);
+  opacity: 0.72;
+}
+
+.file-tree-loading-indicator .el-icon {
+  font-size: 16px;
 }
 
 .file-row {
@@ -991,13 +1108,13 @@ p {
 .file-floating-scrollbar.is-vertical {
   top: 42px;
   right: 3px;
-  bottom: 12px;
+  bottom: 36px;
   width: 8px;
 }
 
 .file-floating-scrollbar.is-horizontal {
   right: 12px;
-  bottom: 3px;
+  bottom: 27px;
   left: 8px;
   height: 8px;
 }
@@ -1068,11 +1185,12 @@ p {
 }
 
 .file-row:hover {
-  background: rgba(246, 249, 252, 0.8);
-  backdrop-filter: blur(8px);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.25),
-              0 2px 8px rgba(15, 23, 42, 0.05);
-  transform: translateX(2px);
+  background: rgba(246, 249, 252, 0.7);
+  backdrop-filter: blur(var(--blur-sm));
+  -webkit-backdrop-filter: blur(var(--blur-sm));
+  box-shadow: inset 0 0 0 1px var(--color-border),
+              0 1px 4px rgba(15, 23, 42, 0.04);
+  transform: translateX(1px);
 }
 
 .file-row.is-drag-range {
@@ -1217,6 +1335,32 @@ p {
   height: 100%;
 }
 
+.preview-structure-warning {
+  grid-column: 1;
+  grid-row: 2;
+  z-index: 5;
+  align-self: start;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 12px 0;
+  padding: 9px 12px;
+  border: 1px solid rgba(220, 38, 38, 0.36);
+  border-radius: 6px;
+  color: #991b1b;
+  background: #fef2f2;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.preview-structure-warning .el-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #dc2626;
+  font-size: 16px;
+}
+
 .preview-loading {
   position: relative;
   z-index: 6;
@@ -1272,9 +1416,11 @@ p {
 .panel-header {
   min-width: 0;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--panel-border);
+  border-bottom: 1px solid var(--color-border);
   justify-content: space-between;
-  background: #fbfcfe;
+  background: var(--color-surface-sunken);
+  backdrop-filter: blur(var(--blur-sm));
+  -webkit-backdrop-filter: blur(var(--blur-sm));
   overflow: hidden;
 }
 
@@ -1501,8 +1647,15 @@ p {
   min-height: 0;
   display: grid;
   place-items: center;
-  padding: 16px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  padding: var(--space-6);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.6) 0%, rgba(248, 250, 252, 0.5) 100%);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.empty-state .el-icon {
+  color: var(--color-text-muted);
+  opacity: 0.5;
 }
 
 .molecule-viewer {
@@ -1786,6 +1939,93 @@ p {
   transform: translateX(-50%);
 }
 
+.structure-warning-banner {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: min(560px, calc(100% - 32px));
+  padding: 8px 36px 8px 12px;
+  border: 1px solid rgba(220, 38, 38, 0.36);
+  border-radius: 6px;
+  color: #991b1b;
+  background: rgba(254, 242, 242, 0.94);
+  box-shadow: 0 10px 26px rgba(127, 29, 29, 0.14);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+  transform: translateX(-50%);
+}
+
+.structure-warning-banner > .el-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #dc2626;
+  font-size: 16px;
+}
+
+.structure-warning-close {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  color: #b91c1c;
+  background: transparent;
+  cursor: pointer;
+}
+
+.structure-warning-close:hover,
+.structure-warning-close:focus-visible {
+  color: #7f1d1d;
+  background: rgba(220, 38, 38, 0.1);
+  outline: 0;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.18);
+}
+
+.structure-warning-close .el-icon {
+  font-size: 14px;
+}
+
+.structure-warning-indicator {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(220, 38, 38, 0.38);
+  border-radius: 999px;
+  color: #dc2626;
+  background: rgba(254, 242, 242, 0.94);
+  box-shadow: 0 8px 20px rgba(127, 29, 29, 0.14);
+  cursor: default;
+  transform: translateX(-50%);
+}
+
+.structure-warning-indicator:hover,
+.structure-warning-indicator:focus-visible {
+  border-color: rgba(220, 38, 38, 0.56);
+  background: #fff1f2;
+  outline: 0;
+  box-shadow:
+    0 8px 20px rgba(127, 29, 29, 0.16),
+    0 0 0 2px rgba(220, 38, 38, 0.16);
+}
+
+.structure-warning-indicator .el-icon {
+  font-size: 18px;
+}
+
 .viewer-floating-tools {
   position: absolute;
   top: 10px;
@@ -2054,6 +2294,31 @@ p {
   place-items: center;
   padding: 20px;
   background: rgba(255, 255, 255, 0.56);
+  pointer-events: none;
+}
+
+.viewer-loading-card {
+  min-width: 160px;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  padding: 12px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+}
+
+.viewer-loading-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #26323f;
+}
+
+.viewer-loading-frame {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
 }
 
 .side-work-panel {
@@ -2366,6 +2631,20 @@ button.context-menu-item {
   overflow: auto;
 }
 
+.job-virtual-list {
+  min-width: 830px;
+  position: relative;
+}
+
+.job-virtual-list.is-virtual .job-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  will-change: transform;
+}
+
 .job-list-header,
 .job-row {
   min-width: 830px;
@@ -2567,6 +2846,7 @@ button.context-menu-item {
 }
 
 .terminal-panel {
+  position: relative;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -2815,7 +3095,8 @@ button.context-menu-item {
   align-self: flex-start;
 }
 
-.terminal-tabs .el-popover__reference-wrapper {
+.terminal-tabs .el-popover__reference-wrapper,
+.terminal-tabs > .el-dropdown {
   display: inline-grid;
   flex: 0 0 auto;
   align-self: flex-start;
@@ -2837,6 +3118,44 @@ button.context-menu-item {
   border-color: var(--accent);
   background: #1d2a35;
   outline: 0;
+}
+
+.terminal-tools-option {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.terminal-tools-option .el-icon {
+  flex: 0 0 auto;
+  font-size: 16px;
+  opacity: 0.8;
+}
+
+.terminal-tools-dropdown {
+  border-radius: 10px !important;
+  border: 1px solid rgba(148, 163, 184, 0.15) !important;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.12),
+              0 2px 8px rgba(15, 23, 42, 0.08) !important;
+  backdrop-filter: blur(12px) !important;
+  padding: 4px !important;
+}
+
+.terminal-tools-dropdown .el-dropdown-menu__item {
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0;
+  font-size: 13px;
+  color: #334155;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.terminal-tools-dropdown .el-dropdown-menu__item:hover {
+  background: rgba(23, 107, 135, 0.08);
+  color: #176b87;
 }
 
 .terminal-bind-option {
@@ -3048,6 +3367,198 @@ button.context-menu-item {
 
 .terminal-shell .xterm-viewport {
   background: #151b22 !important;
+}
+
+.terminal-search-panel {
+  position: absolute;
+  z-index: 9999;
+  width: min(420px, calc(100% - 24px));
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(24px) saturate(1.8);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 14px;
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.18),
+              0 8px 16px rgba(15, 23, 42, 0.08);
+  color: #1e293b;
+  pointer-events: auto;
+}
+
+.terminal-search-panel-floating {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.terminal-search-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.terminal-search-header strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+
+.terminal-search-close {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  color: #64748b;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.terminal-search-close:hover,
+.terminal-search-close:focus-visible {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.06);
+  outline: 0;
+}
+
+.terminal-search-close:active {
+  transform: scale(0.95);
+}
+
+.terminal-search-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.terminal-search-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.terminal-search-input {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.terminal-search-input-row .el-checkbox {
+  height: 22px;
+  font-size: 11px;
+  font-weight: 500;
+  flex: 0 0 auto;
+}
+
+.terminal-search-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.terminal-search-count {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-search-index-input {
+  width: 48px;
+}
+
+.terminal-search-index-input .el-input__wrapper {
+  padding: 0 6px;
+  text-align: center;
+}
+
+.terminal-search-index-input .el-input__inner {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.terminal-search-index-display {
+  display: inline-block;
+  width: 48px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.terminal-search-divider {
+  color: #94a3b8;
+}
+
+.terminal-search-total {
+  font-weight: 600;
+  color: #475569;
+}
+
+.terminal-search-options {
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.terminal-search-options .el-checkbox {
+  height: 22px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.terminal-search-panel .el-button {
+  min-width: 72px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.terminal-search-panel .el-button--primary {
+  background: linear-gradient(135deg, #176b87 0%, #0d5a70 100%);
+  border-color: transparent;
+  box-shadow: 0 2px 8px rgba(23, 107, 135, 0.25);
+}
+
+.terminal-search-panel .el-button--primary:hover {
+  background: linear-gradient(135deg, #0d5a70 0%, #094958 100%);
+  box-shadow: 0 4px 12px rgba(23, 107, 135, 0.35);
+  transform: translateY(-1px);
+}
+
+.terminal-search-panel .el-button--primary:active {
+  transform: translateY(0);
+}
+
+/* 搜索高亮样式 */
+.terminal-shell .chemssh-search-highlight {
+  position: absolute;
+  background-color: rgba(245, 230, 107, 0.35);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.terminal-shell .chemssh-search-current {
+  position: absolute;
+  background-color: rgba(255, 140, 0, 0.6);
+  border: 1px solid rgba(255, 140, 0, 0.9);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+  box-shadow: 0 0 8px rgba(255, 140, 0, 0.4);
 }
 
 .canvas-board-view {
@@ -3453,8 +3964,22 @@ button.context-menu-item {
   overflow: hidden;
   cursor: default;
   transition: border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
-              box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+              box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 分层合成优化：提升到独立GPU合成层 */
+  will-change: transform;
+  contain: layout style paint;
+  transform: translate3d(0, 0, 0);
+}
+
+/* 拖动时禁用过渡和复杂效果以提升性能 */
+.canvas-window.is-dragging {
+  transition: none;
+  pointer-events: none;
+}
+
+.canvas-window.is-dragging * {
+  pointer-events: none;
 }
 
 .canvas-window::before {
@@ -3474,6 +3999,10 @@ button.context-menu-item {
               0 24px 80px rgba(15, 23, 42, 0.2),
               0 0 0 1px rgba(23, 107, 135, 0.1),
               inset 0 1px 0 var(--glass-border-light);
+}
+
+/* 拖动时不应用 hover 变换效果 */
+.canvas-window.is-active:not(.is-dragging) {
   transform: translateY(-2px);
 }
 
@@ -3582,9 +4111,19 @@ button.context-menu-item {
 }
 
 .canvas-window-body {
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+
+  /* 分层合成优化：窗口内容独立合成 */
+  will-change: contents;
+  contain: strict;
+}
+
+/* 拖动时窗口内容不参与重绘 */
+.canvas-window.is-dragging .canvas-window-body {
+  will-change: auto;
 }
 
 .canvas-window-resize {
@@ -4529,4 +5068,49 @@ button.context-menu-item {
     margin-left: 0;
     padding: 0 12px;
   }
+}
+
+/* 关闭毛玻璃效果时：使用实心填充以提升性能 */
+body:not(.chemssh-theme-glass-blur) .canvas-window {
+  background: rgb(248, 250, 252);
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-color: rgba(148, 163, 184, 0.4);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08),
+              0 8px 32px rgba(15, 23, 42, 0.06);
+}
+
+body:not(.chemssh-theme-glass-blur) .canvas-window.is-active {
+  background: rgb(255, 255, 255);
+  border-color: rgba(23, 107, 135, 0.5);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12),
+              0 16px 48px rgba(15, 23, 42, 0.1),
+              0 0 0 1px rgba(23, 107, 135, 0.15);
+}
+
+/* 拖动时进一步简化视觉效果 */
+body:not(.chemssh-theme-glass-blur) .canvas-window.is-dragging {
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+}
+
+body:not(.chemssh-theme-glass-blur) .canvas-window.is-dragging::before {
+  opacity: 0;
+}
+
+body:not(.chemssh-theme-glass-blur) .canvas-workspace {
+  background: rgb(255, 255, 255);
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+body:not(.chemssh-theme-glass-blur) .canvas-sidebar {
+  background: rgb(255, 255, 255);
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+body:not(.chemssh-theme-glass-blur) .settings-section {
+  background: rgb(255, 255, 255);
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }

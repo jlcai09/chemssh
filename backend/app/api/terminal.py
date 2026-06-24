@@ -78,7 +78,7 @@ async def terminal_ws(
         while True:
             message = await websocket.receive_json()
             await _handle_terminal_message(websocket, send_lock, session, message)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, ValueError):
         pass
     finally:
         reader_task.cancel()

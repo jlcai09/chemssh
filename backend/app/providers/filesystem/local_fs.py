@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
+import logging
 import os
+import stat
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -11,9 +14,15 @@ from backend.app.models.file import DirectoryListing, FileItem
 from backend.app.providers.filesystem.base import FileSystemProvider
 from backend.app.services.file_types import detect_preview
 
+logger = logging.getLogger(__name__)
+
 
 def _mtime_iso(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 class LocalFileSystemProvider(FileSystemProvider):
@@ -105,39 +114,82 @@ class LocalFileSystemProvider(FileSystemProvider):
             return "", False
 
         block_size = 8192
-        data = bytearray()
+        chunks: list[bytes] = []
+        total_bytes = 0
+        newline_count = 0
         truncated = False
         try:
             with path.open("rb") as handle:
                 handle.seek(0, os.SEEK_END)
                 remaining = handle.tell()
-                while remaining > 0 and data.count(b"\n") <= lines:
+                while remaining > 0:
                     read_size = min(block_size, remaining)
                     remaining -= read_size
                     handle.seek(remaining)
-                    data[:0] = handle.read(read_size)
-                    if len(data) >= max_bytes:
+                    chunk = handle.read(read_size)
+                    chunks.append(chunk)
+                    total_bytes += len(chunk)
+                    newline_count += chunk.count(b"\n")
+                    if newline_count >= lines:
+                        break
+                    if total_bytes >= max_bytes:
                         truncated = True
                         break
         except PermissionError as exc:
             raise AppError("PERMISSION_DENIED", f"Cannot read file: {path}", 403) from exc
 
-        raw_lines = bytes(data).splitlines()[-lines:]
+        data = b"".join(reversed(chunks))
+        raw_lines = data.splitlines()[-lines:]
         text = b"\n".join(raw_lines).decode("utf-8", errors="replace")
-        if data.endswith(b"\n"):
+        if data.endswith(b"\n") and raw_lines:
             text += "\n"
         return text, truncated
 
     def delete_path(self, path: Path) -> None:
-        if not path.exists():
-            raise AppError("PATH_NOT_FOUND", f"Path not found: {path}", 404)
+        """删除文件或目录，使用 lstat() 防止 TOCTOU 符号链接攻击。"""
         try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
+            stat_info = path.lstat()
+        except FileNotFoundError:
+            raise AppError("PATH_NOT_FOUND", f"Path not found: {path}", 404)
+        except OSError as exc:
+            raise AppError("DELETE_FAILED", f"Cannot access path: {path} - {exc}", 500) from exc
+
+        try:
+            if stat.S_ISLNK(stat_info.st_mode):
                 path.unlink()
+            elif stat.S_ISREG(stat_info.st_mode):
+                path.unlink()
+            elif stat.S_ISDIR(stat_info.st_mode):
+                self._native_rm_tree(path)
+            else:
+                raise AppError("UNSUPPORTED_TYPE", f"Cannot delete path of type {stat_info.st_mode}: {path}", 400)
         except PermissionError as exc:
             raise AppError("PERMISSION_DENIED", f"Cannot delete path: {path}", 403) from exc
+        except OSError as exc:
+            raise AppError("DELETE_FAILED", self._delete_error_message(path, self._os_error_reason(exc)), 500) from exc
+
+    def _native_rm_tree(self, path: Path) -> None:
+        if _is_windows():
+            shutil.rmtree(path)
+            return
+
+        rm = shutil.which("rm")
+        if rm:
+            command = [rm, "-rf", "--", str(path)]
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, check=False)
+            except PermissionError as exc:
+                raise AppError("PERMISSION_DENIED", f"Cannot delete path: {path}", 403) from exc
+            if result.returncode != 0:
+                reason = result.stderr.strip() or result.stdout.strip() or f"rm command exited with {result.returncode}"
+                raise AppError("DELETE_FAILED", self._delete_error_message(path, reason), 500)
+            return
+
+        shutil.rmtree(path)
+
+    def _delete_error_message(self, path: Path, reason: str) -> str:
+        reason_label = reason.strip() or "unknown error"
+        return f"Cannot delete path: {path}. Reason: {reason_label}"
 
     def rename_path(self, old_path: Path, new_path: Path) -> None:
         if not old_path.exists():
@@ -285,10 +337,7 @@ class LocalFileSystemProvider(FileSystemProvider):
             if source.is_dir():
                 shutil.copytree(source, destination, copy_function=shutil.copy2)
             else:
-                if overwrite:
-                    shutil.copy2(source, destination)
-                else:
-                    shutil.copy2(source, destination)
+                shutil.copy2(source, destination)
         except PermissionError as exc:
             raise AppError("PERMISSION_DENIED", self._copy_error_message([source], destination, "权限不足，无法执行复制操作"), 403) from exc
         except OSError as exc:

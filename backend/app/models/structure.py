@@ -30,6 +30,9 @@ class AsePreviewResponse(BaseModel):
     topology_stable: bool = True
     size_limit_overridden: bool = False
     frame: AseFrame
+    file_incomplete: bool = False
+    scan_completed: bool = True
+    warnings: list[str] = Field(default_factory=list)
 
 
 class AseFrameChunkResponse(BaseModel):

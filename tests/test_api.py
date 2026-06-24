@@ -7,7 +7,7 @@ from zipfile import ZipFile
 from fastapi.testclient import TestClient
 
 from backend.app import __version__
-from backend.app.core.config import BrotliConfig, CompressionConfig, PluginsConfig, SchedulerConfig, Settings, WorkspaceConfig
+from backend.app.core.config import BrotliConfig, CompressionConfig, PluginsConfig, SchedulerConfig, SecurityConfig, Settings, WorkspaceConfig
 from backend.app.main import create_app
 from backend.app.providers.scheduler import pbs as pbs_provider
 from backend.app.providers.scheduler import slurm as slurm_provider
@@ -31,6 +31,14 @@ def make_client_with_read_limit(root: Path, max_read_size_mb: int) -> TestClient
     return TestClient(create_app(settings))
 
 
+def make_client_with_token(root: Path, token: str = "test-secret") -> TestClient:
+    settings = Settings(
+        workspace=WorkspaceConfig(root=root),
+        security=SecurityConfig(enable_token=True, token=token),
+    )
+    return TestClient(create_app(settings))
+
+
 def test_openapi_uses_project_version(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
@@ -38,6 +46,37 @@ def test_openapi_uses_project_version(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["info"]["version"] == __version__
+
+
+def test_token_auth_protects_api_requests(tmp_path: Path) -> None:
+    client = make_client_with_token(tmp_path)
+
+    missing = client.get("/api/system/info")
+    bad = client.get("/api/system/info", headers={"Authorization": "Bearer wrong"})
+    good = client.get("/api/system/info", headers={"Authorization": "Bearer test-secret"})
+    cookie_good = client.get("/api/files/list")
+    query_good = TestClient(client.app).get("/api/system/identity", params={"token": "test-secret"})
+
+    assert missing.status_code == 401
+    assert missing.json()["error"]["code"] == "AUTH_REQUIRED"
+    assert bad.status_code == 401
+    assert good.status_code == 200
+    assert "chemssh_token=" in good.headers.get("set-cookie", "")
+    assert cookie_good.status_code == 200
+    assert query_good.status_code == 200
+
+
+def test_token_auth_401_includes_cors_headers_for_allowed_origin(tmp_path: Path) -> None:
+    client = make_client_with_token(tmp_path)
+
+    # Simulate a cross-origin request from a whitelisted origin
+    response = client.get(
+        "/api/system/info",
+        headers={"Origin": "http://127.0.0.1:5173"},
+    )
+    assert response.status_code == 401
+    assert response.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
+    assert response.headers.get("access-control-allow-credentials") == "true"
 
 
 def test_system_info_and_file_roundtrip(tmp_path: Path) -> None:
@@ -274,6 +313,41 @@ def test_download_selection_get_archives_multiple_paths(tmp_path: Path) -> None:
         assert "sample.txt" in names
         assert "folder/" in names
         assert "folder/nested.txt" in names
+
+
+def test_delete_directory_uses_native_rm_recursive(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    directory = tmp_path / "case"
+    nested = directory / "nested"
+    nested.mkdir(parents=True)
+    (nested / "input.inp").write_text("input\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_which(command: str) -> str | None:
+        return "/usr/bin/rm" if command == "rm" else None
+
+    def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        target = Path(command[-1])
+        for child in sorted(target.rglob("*"), reverse=True):
+            if child.is_file():
+                child.unlink()
+            else:
+                child.rmdir()
+        target.rmdir()
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.shutil.which", fake_which)
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs.subprocess.run", fake_run)
+    monkeypatch.setattr("backend.app.providers.filesystem.local_fs._is_windows", lambda: False)
+
+    response = client.delete("/api/files/delete", params={"path": str(directory)})
+
+    assert response.status_code == 200
+    assert captured["command"] == ["/usr/bin/rm", "-rf", "--", str(directory.resolve())]
+    assert captured["kwargs"] == {"capture_output": True, "text": True, "check": False}
+    assert not directory.exists()
 
 
 def test_upload_accepts_relative_path_and_overwrites_nested_file(tmp_path: Path) -> None:

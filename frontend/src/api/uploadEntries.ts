@@ -59,7 +59,7 @@ export async function prepareUploadEntries(
   const { entries: normalized, invalidCount, renamedCount } = normalizeUploadEntries(entries)
   if (normalized.length === 0) return { entries: [], invalidCount, renamedCount, cancelled: false }
 
-  const topLevelItems = new Map((await listFiles(options.targetPath)).items.map(item => [item.name, item] as const))
+  const topLevelItems = new Map((await listFiles(options.targetPath, { refresh: true })).items.map(item => [item.name, item] as const))
   const resolved: UploadEntry[] = []
   let applyAllAction: UploadConflictAction | null = null
   const groups = new Map<string, UploadEntry[]>()

@@ -21,6 +21,7 @@ from backend.app.core.errors import (
 )
 from backend.app.middleware.brotli import BrotliMiddleware
 from backend.app.middleware.idle_shutdown import IdleShutdownManager, IdleShutdownMiddleware, ShutdownCallback
+from backend.app.middleware.token_auth import TokenAuthMiddleware
 from backend.app.services.client_cache_service import ClientCacheService
 from backend.app.services.plugin_service import PluginService
 
@@ -68,9 +69,10 @@ def create_app(settings: Settings | None = None, *, idle_shutdown_callback: Shut
     app.add_exception_handler(HTTPException, http_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
 
+    app.add_middleware(TokenAuthMiddleware, settings=active_settings)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_origins=active_settings.server.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

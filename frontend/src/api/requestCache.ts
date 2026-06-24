@@ -11,6 +11,11 @@ interface CacheEntry<T> {
 
 const requestCache = new Map<string, CacheEntry<any>>()
 const DEFAULT_CACHE_TTL = 5000 // 5 seconds
+const cacheGenerations = new Map<string, number>()
+let globalCacheGeneration = 0
+
+// Request deduplication
+const pendingRequests = new Map<string, Promise<any>>()
 
 /**
  * Cached request wrapper
@@ -27,20 +32,28 @@ export async function cachedRequest<T>(
     return cached.data
   }
 
+  const generation = cacheGenerations.get(key) ?? globalCacheGeneration
   const data = await fetcher()
-  requestCache.set(key, { data, timestamp: Date.now() })
+  if ((cacheGenerations.get(key) ?? globalCacheGeneration) === generation) {
+    requestCache.set(key, { data, timestamp: Date.now() })
+  }
 
   return data
 }
 
 /**
- * Clear cache for a specific key or all cache
+ * Clear cache and pending deduplicated request for a specific key or all requests
  */
 export function clearCache(key?: string): void {
   if (key) {
     requestCache.delete(key)
+    pendingRequests.delete(key)
+    cacheGenerations.set(key, (cacheGenerations.get(key) ?? globalCacheGeneration) + 1)
   } else {
     requestCache.clear()
+    pendingRequests.clear()
+    cacheGenerations.clear()
+    globalCacheGeneration += 1
   }
 }
 
@@ -55,9 +68,6 @@ export function clearExpiredCache(ttl: number = DEFAULT_CACHE_TTL): void {
     }
   }
 }
-
-// Request deduplication
-const pendingRequests = new Map<string, Promise<any>>()
 
 /**
  * Deduplicate concurrent requests
@@ -78,7 +88,9 @@ export async function dedupeRequest<T>(
     const result = await promise
     return result
   } finally {
-    pendingRequests.delete(key)
+    if (pendingRequests.get(key) === promise) {
+      pendingRequests.delete(key)
+    }
   }
 }
 

@@ -1,4 +1,4 @@
-import { API_BASE, ApiError } from './http'
+import { API_BASE, ApiError, applyAuthQuery, authHeaders, fetchWithAuthRetry } from './http'
 import { isPathInsideWorkspace } from './workspaceScope'
 import type { FileItem } from './files'
 
@@ -68,12 +68,12 @@ export async function loadLauncherBridgeCapabilities(): Promise<LauncherBridgeCa
 export function launcherFileIconUrl(item: Pick<FileItem, 'name' | 'type'>, size = 16): string | null {
   const endpoint = currentCapabilities?.endpoints.icon
   if (!currentCapabilities?.enabled || !currentCapabilities.features.system_icons || !endpoint) return null
-  const query = new URLSearchParams({
-    name: item.type === 'directory' ? 'folder' : item.name,
-    is_dir: item.type === 'directory' ? '1' : '0',
-    size: String(size)
-  })
-  return `${bridgeUrl(endpoint)}?${query.toString()}`
+  const url = new URL(bridgeUrl(endpoint), window.location.href)
+  url.searchParams.set('name', item.type === 'directory' ? 'folder' : item.name)
+  url.searchParams.set('is_dir', item.type === 'directory' ? '1' : '0')
+  url.searchParams.set('size', String(size))
+  applyAuthQuery(url.searchParams)
+  return url.toString()
 }
 
 export function openWithLocalApp(path: string): Promise<LauncherBridgeOpenResponse> {
@@ -139,16 +139,28 @@ function normalizeRemotePath(path: string) {
 }
 
 async function bridgeRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(bridgeUrl(endpoint), {
-    headers: options.body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
-    ...options
+  const headers = authHeaders(options.headers)
+  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  const { headers: _headers, credentials, ...rest } = options
+  const response = await fetchWithAuthRetry(bridgeUrl(endpoint), {
+    ...rest,
+    credentials: credentials ?? 'include',
+    headers
+  }, replaceAuth => {
+    const retryHeaders = authHeaders(options.headers, { replaceAuth })
+    if (!(options.body instanceof FormData) && !retryHeaders.has('Content-Type')) {
+      retryHeaders.set('Content-Type', 'application/json')
+    }
+    return retryHeaders
   })
   const text = await response.text()
   const data = text ? JSON.parse(text) : null
 
   if (!response.ok) {
     const error = data?.error
-    throw new ApiError(error?.code ?? 'HTTP_ERROR', error?.message ?? response.statusText)
+    throw new ApiError(error?.code ?? 'HTTP_ERROR', error?.message ?? response.statusText, response.status)
   }
   return data as T
 }

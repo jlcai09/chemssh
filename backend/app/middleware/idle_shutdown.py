@@ -73,16 +73,18 @@ class IdleShutdownManager:
             self._last_activity_at = self.clock()
 
     async def _monitor(self) -> None:
-        try:
-            while True:
+        while True:
+            try:
                 await asyncio.sleep(self.check_interval_seconds)
                 if await self._timed_out():
-                    await self._request_shutdown()
-                    return
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Idle shutdown monitor failed")
+                    success = await self._request_shutdown()
+                    if success:
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Idle shutdown monitor failed, will retry")
+                await asyncio.sleep(self.check_interval_seconds)
 
     async def _timed_out(self) -> bool:
         async with self._lock:
@@ -90,20 +92,31 @@ class IdleShutdownManager:
                 return False
             return self.clock() - self._last_activity_at >= self.timeout_seconds
 
-    async def _request_shutdown(self) -> None:
+    async def _request_shutdown(self) -> bool:
+        """Request shutdown. Returns True if shutdown was initiated successfully."""
         async with self._lock:
             if self._shutdown_requested:
-                return
-            self._shutdown_requested = True
+                return True
 
         logger.info("No requests received for %.0f seconds; shutting down backend.", self.timeout_seconds)
         if self.shutdown_callback is None:
             logger.warning("Idle shutdown requested, but no shutdown callback is configured.")
-            return
+            async with self._lock:
+                self._shutdown_requested = True
+            return True
 
-        result = self.shutdown_callback()
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = self.shutdown_callback()
+            if inspect.isawaitable(result):
+                await result
+
+            async with self._lock:
+                self._shutdown_requested = True
+            return True
+
+        except Exception:
+            logger.exception("Shutdown callback failed, will retry on next timeout")
+            return False
 
     @staticmethod
     def _default_check_interval(timeout_seconds: float) -> float:

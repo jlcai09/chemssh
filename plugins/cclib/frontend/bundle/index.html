@@ -162,8 +162,12 @@
       }
 
       async function request(path, options) {
+        const headers = { 'Content-Type': 'application/json' }
+        if (context && context.authToken) {
+          headers.Authorization = `Bearer ${context.authToken}`
+        }
         const response = await fetch(pluginBase() + path, {
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           ...options
         })
         const text = await response.text()

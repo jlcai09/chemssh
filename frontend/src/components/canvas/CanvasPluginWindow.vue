@@ -34,7 +34,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { API_BASE } from '../../api/http'
+import { API_BASE, apiUrl, getAuthToken } from '../../api/http'
 import { activatePlugin, listPlugins, type PluginManifest, type PluginPanel } from '../../api/plugins'
 import { t } from '../../i18n'
 
@@ -56,7 +56,8 @@ const plugins = ref<PluginManifest[]>([])
 const loading = ref(false)
 const activePluginId = ref(props.pluginId ?? '')
 const activePanelId = ref(props.panelId ?? '')
-const activeAssetUrl = ref(props.assetUrl ?? '')
+const activeAssetPath = ref(props.assetUrl ?? '')
+const activeAssetUrl = ref(props.assetUrl ? apiUrl(props.assetUrl) : '')
 const activeApiBase = ref(props.apiBase ?? '')
 const activeTitle = ref('')
 
@@ -107,14 +108,15 @@ async function openPanel(pluginId: string, panelId: string) {
     const activatedPanel = activation.panels.find(item => item.id === panelId) ?? panel
     activePluginId.value = pluginId
     activePanelId.value = panelId
-    activeAssetUrl.value = activation.asset_url
+    activeAssetPath.value = activation.asset_url
+    activeAssetUrl.value = apiUrl(activeAssetPath.value)
     activeApiBase.value = activation.api_base
     activeTitle.value = activatedPanel?.title || manifest?.name || pluginId
     emit('title-change', activeTitle.value)
     emit('payload-change', {
       pluginId,
       panelId,
-      assetUrl: activeAssetUrl.value,
+      assetUrl: activeAssetPath.value,
       apiBase: activeApiBase.value,
       title: activeTitle.value
     })
@@ -138,6 +140,7 @@ function sendInit() {
     theme: 'light',
     apiBase: activeApiBase.value,
     assetBase: activeAssetUrl.value,
+    authToken: getAuthToken(),
     initialFile: null
   }, new URL(activeAssetUrl.value, window.location.href).origin)
 }

@@ -15,6 +15,8 @@ STRUCTURE_EXTENSIONS = {
     ".vasp": "vasp",
     ".xsf": "xsf",
     ".xsd": "xsd",
+    ".xtd": "xtd",
+    ".arc": "dmol-arc",
     ".cube": "cube",
     ".gen": "gen",
     ".db": "db",
@@ -70,7 +72,7 @@ def detect_preview(path: Path, *, is_dir: bool = False) -> tuple[str, Optional[s
     if is_forced_structure_name(path):
         return "structure", None
 
-    if path.name.upper() in ASE_STRUCTURE_NAMES or path.name.lower() in ASE_STRUCTURE_NAMES:
+    if "OUTCAR" in path.name.upper() or path.name.upper() in ASE_STRUCTURE_NAMES or path.name.lower() in ASE_STRUCTURE_NAMES:
         return "structure", None
 
     suffix = path.suffix.lower()

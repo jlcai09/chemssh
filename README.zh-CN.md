@@ -117,6 +117,10 @@ terminal:
   max_sessions: 10  # 每个浏览器 client_id 的限制
   allow_sync_cwd: true
 
+security:
+  enable_token: false
+  token: change-me
+
 plugins:
   enabled: true
   directories: []
@@ -129,7 +133,7 @@ client_cache:
 
 也可以用 `CHEMSSH_WORKSPACE` 或 `chemssh --workspace-root ...` 覆盖 `workspace.root`。
 
-`security.enable_token` 和 `security.token` 目前只是 settings 模型字段，请求认证尚未接入 API 依赖或 middleware。不要把它们当成已经生效的访问控制机制。
+设置 `security.enable_token: true` 后，所有 `/api` HTTP 请求和 `/api` WebSocket 连接都必须携带配置中的 token。HTTP 客户端推荐发送 `Authorization: Bearer <token>`；浏览器下载、插件 iframe 和终端 WebSocket URL 可以使用 `token=<token>` 查询参数。服务暴露到可信 localhost 隧道之外前，请把 `change-me` 换成长随机 token。
 
 <details>
 <summary>维护者发行打包</summary>
@@ -148,7 +152,7 @@ chmod +x create-release-archive.sh
 
 Windows 用户请使用 Git Bash 运行 `.sh` 脚本。该脚本是受支持的发行打包入口，会同时生成 `.tar.gz` 和 `.zip` 格式。
 
-脚本会自动构建前端，创建 `release/chemssh-{版本号}.tar.gz` 和 `.zip` 压缩包及校验和文件。发行包包含预构建的 `frontend/dist/`（用户无需 Node.js）。
+脚本会自动构建前端，创建 `release/chemssh-{版本号}/` 发行目录、`.tar.gz` 和 `.zip` 压缩包及校验和文件。发行包包含预构建的 `frontend/dist/`（用户无需 Node.js）。
 
 详细发行流程见 [docs/RELEASE.md](docs/RELEASE.md)。
 

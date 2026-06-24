@@ -1,4 +1,4 @@
-import { request } from './http'
+import { authHeaders, fetchWithAuthRetry, request } from './http'
 import { API_BASE, ApiError } from './http'
 import type {
   AseFrame,
@@ -78,9 +78,10 @@ export async function readStructureFrameChunk(source: StructureSource | null | u
   params.set('start', String(start))
   params.set('count', String(count))
 
-  const response = await fetch(`${API_BASE}${sourceBase(source)}/frames.bin?${params.toString()}`, {
-    headers: { Accept: 'application/vnd.chemssh.structure+bin' }
-  })
+  const response = await fetchWithAuthRetry(`${API_BASE}${sourceBase(source)}/frames.bin?${params.toString()}`, {
+    credentials: 'include',
+    headers: authHeaders({ Accept: 'application/vnd.chemssh.structure+bin' })
+  }, replaceAuth => authHeaders({ Accept: 'application/vnd.chemssh.structure+bin' }, { replaceAuth }))
 
   if (!response.ok) {
     const text = await response.text()
@@ -95,7 +96,7 @@ export async function readStructureFrameChunk(source: StructureSource | null | u
         message = text
       }
     }
-    throw new ApiError(code, message)
+    throw new ApiError(code, message, response.status)
   }
 
   const buffer = await response.arrayBuffer()

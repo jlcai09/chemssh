@@ -48,32 +48,43 @@
       <el-skeleton :rows="7" animated />
     </div>
 
-    <MoleculeViewer
-      v-if="structurePaneMounted"
-      v-show="showStructurePane"
-      class="preview-pane"
-      :ase-preview="aseStructure"
-      :active="showStructurePane && !showPopoutStructurePane"
-      @refresh="$emit('refresh')"
-      @render-start="handleStructureRenderStart"
-      @render-complete="handleStructureRenderComplete"
-    />
+    <Teleport :disabled="!shouldTeleportToPopout" :to="popoutPaneContainer ?? 'body'">
+      <MoleculeViewer
+        v-if="structurePaneMounted"
+        v-show="showStructurePane"
+        :class="shouldTeleportToPopout ? 'preview-popout-pane' : 'preview-pane'"
+        :ase-preview="aseStructure"
+        :active="showStructurePane"
+        @refresh="$emit('refresh')"
+        @render-start="handleStructureRenderStart"
+        @render-complete="handleStructureRenderComplete"
+      />
+
+      <div
+        v-if="textPaneMounted"
+        v-show="showTextPane"
+        :class="[shouldTeleportToPopout ? 'preview-popout-pane' : 'preview-pane', 'text-editor-wrap']"
+      >
+        <MonacoTextEditor
+          v-model="draft"
+          class="text-editor"
+          :path="file?.path"
+          :readonly="!editingEnabled"
+        />
+        <div class="editor-status-badge" :class="editorStatusClass" aria-live="polite">
+          {{ editorStatusLabel }}
+        </div>
+      </div>
+    </Teleport>
 
     <div v-if="showStructureLoadingOverlay" class="structure-loading-overlay" aria-live="polite" aria-busy="true">
       <el-icon class="structure-loading-spinner"><Loading /></el-icon>
       <span>{{ t('common.loading') }}</span>
     </div>
 
-    <div v-if="textPaneMounted" v-show="showTextPane" class="preview-pane text-editor-wrap">
-      <MonacoTextEditor
-        v-model="draft"
-        class="text-editor"
-        :path="file?.path"
-        :readonly="!editingEnabled"
-      />
-      <div class="editor-status-badge" :class="editorStatusClass" aria-live="polite">
-        {{ editorStatusLabel }}
-      </div>
+    <div v-if="showStructureErrorWarning" class="preview-structure-warning" role="status">
+      <el-icon><WarningFilled /></el-icon>
+      <span>{{ t('viewer.vaspOutcarMdWarning') }}</span>
     </div>
 
     <div v-if="showEmptyState" class="empty-state">
@@ -132,32 +143,11 @@
             <span>{{ t('common.loading') }}</span>
           </div>
 
-          <MoleculeViewer
-            v-if="popoutStructurePaneMounted"
-            v-show="showPopoutStructurePane"
-            class="preview-popout-pane"
-            :ase-preview="aseStructure"
-            :active="showPopoutStructurePane"
-            @refresh="$emit('refresh')"
-            @render-start="handleStructureRenderStart"
-            @render-complete="handleStructureRenderComplete"
-          />
+          <div ref="popoutPaneContainer" class="preview-popout-pane" />
 
           <div v-if="showPopoutStructureLoadingOverlay" class="structure-loading-overlay" aria-live="polite" aria-busy="true">
             <el-icon class="structure-loading-spinner"><Loading /></el-icon>
             <span>{{ t('common.loading') }}</span>
-          </div>
-
-          <div v-if="popoutTextPaneMounted" v-show="showPopoutTextPane" class="preview-popout-pane text-editor-wrap">
-            <MonacoTextEditor
-              v-model="draft"
-              class="text-editor"
-              :path="file?.path"
-              :readonly="!editingEnabled"
-            />
-            <div class="editor-status-badge" :class="editorStatusClass" aria-live="polite">
-              {{ editorStatusLabel }}
-            </div>
           </div>
         </div>
       </div>
@@ -166,12 +156,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, ref, watch } from 'vue'
-import { EditPen, FullScreen, Loading, Refresh, ScaleToOriginal } from '@element-plus/icons-vue'
+import { computed, defineAsyncComponent, defineComponent, h, ref, watch } from 'vue'
+import { EditPen, FullScreen, Loading, Refresh, ScaleToOriginal, WarningFilled } from '@element-plus/icons-vue'
 import type { FileReadResponse } from '../api/files'
 import { t } from '../i18n'
 import type { AsePreviewResponse } from '../types/structure'
-import MonacoTextEditor from './MonacoTextEditor.vue'
+// Monaco 体积巨大，异步加载以确保其主包与 CSS 不进入首屏，仅在实际打开文本文件预览时才拉取。
+const MonacoTextEditor = defineAsyncComponent(() => import('./MonacoTextEditor.vue'))
 import MoleculeViewer from './MoleculeViewer.vue'
 
 type PreviewMode = 'structure' | 'text'
@@ -210,10 +201,10 @@ const editingEnabled = ref(false)
 const currentFilePath = ref<string | null>(null)
 const structurePaneMounted = ref(false)
 const textPaneMounted = ref(false)
-const popoutStructurePaneMounted = ref(false)
-const popoutTextPaneMounted = ref(false)
 const structureRenderPending = ref(false)
 const popoutOpen = ref(false)
+const popoutPaneContainer = ref<HTMLElement | null>(null)
+const shouldTeleportToPopout = ref(false)
 
 watch(
   () => props.file,
@@ -240,11 +231,11 @@ const canSave = computed(() => editingEnabled.value && dirty.value)
 const showStructurePane = computed(() => props.mode === 'structure' && Boolean(props.aseStructure))
 const showTextPane = computed(() => props.mode === 'text' && Boolean(props.file))
 const showPopoutStructurePane = computed(() => popoutOpen.value && showStructurePane.value)
-const showPopoutTextPane = computed(() => popoutOpen.value && showTextPane.value)
 const showEmptyState = computed(() => !props.loading && !showStructurePane.value && !showTextPane.value)
 const showStructureLoadingOverlay = computed(() => showStructurePane.value && (props.loading || structureRenderPending.value))
 const showPopoutStructureLoadingOverlay = computed(() => showPopoutStructurePane.value && (props.loading || structureRenderPending.value))
-const showPopoutLoadingOverlay = computed(() => popoutOpen.value && props.loading && !showPopoutStructurePane.value && !showPopoutTextPane.value)
+const showPopoutLoadingOverlay = computed(() => popoutOpen.value && props.loading && !showStructurePane.value && !showTextPane.value)
+const showStructureErrorWarning = computed(() => Boolean(props.structureError && isOutcarPath(displayPath.value)))
 const canOpenPopout = computed(() =>
   showStructurePane.value ||
   showTextPane.value ||
@@ -268,28 +259,11 @@ watch(
 )
 
 watch(
-  showPopoutStructurePane,
-  active => {
-    if (active) popoutStructurePaneMounted.value = true
+  [popoutOpen, popoutPaneContainer],
+  ([open, container]) => {
+    shouldTeleportToPopout.value = Boolean(open && container)
   },
   { immediate: true }
-)
-
-watch(
-  showPopoutTextPane,
-  active => {
-    if (active) popoutTextPaneMounted.value = true
-  },
-  { immediate: true }
-)
-
-watch(
-  popoutOpen,
-  open => {
-    if (open) return
-    popoutStructurePaneMounted.value = false
-    popoutTextPaneMounted.value = false
-  }
 )
 
 watch(
@@ -346,6 +320,11 @@ const displayPath = computed(() => {
   if (props.mode === 'structure') return props.aseStructure?.path ?? ''
   return props.file?.path ?? props.aseStructure?.path ?? ''
 })
+
+function isOutcarPath(path: string) {
+  const name = path.split(/[\\/]/).pop()?.toUpperCase() ?? ''
+  return name.includes('OUTCAR')
+}
 
 function enableEditing() {
   editingEnabled.value = true

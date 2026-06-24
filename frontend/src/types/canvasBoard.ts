@@ -61,6 +61,7 @@ export interface ClientPreferences {
   version: 1
   terminal?: {
     fontSize?: number
+    autoCopySelection?: boolean
     tabs?: CanvasTerminalTabBinding[]
   }
   logs?: {

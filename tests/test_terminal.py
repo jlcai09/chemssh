@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from backend.app.core.config import Settings, TerminalConfig, WorkspaceConfig
+from backend.app.core.config import SecurityConfig, Settings, TerminalConfig, WorkspaceConfig
 from backend.app.core.errors import AppError
 from backend.app.core.security import WorkspaceSecurity
 from backend.app.main import create_app
@@ -299,3 +300,17 @@ def test_terminal_sessions_api(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     closed = client.delete(f"/api/terminal/sessions/{session_id}", headers=CLIENT_A_HEADERS)
     assert closed.status_code == 200
     assert closed.json()["success"] is True
+
+
+def test_terminal_websocket_requires_token_when_enabled(tmp_path: Path) -> None:
+    settings = Settings(
+        workspace=WorkspaceConfig(root=tmp_path),
+        security=SecurityConfig(enable_token=True, token="test-secret"),
+    )
+    client = TestClient(create_app(settings))
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/api/terminal/ws/missing?client_id={CLIENT_A}"):
+            pass
+
+    assert exc.value.code == 1008

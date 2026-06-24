@@ -59,6 +59,8 @@ cd frontend
 npm.cmd run build
 ```
 
+Give frontend builds a generous timeout (at least 240 seconds) because `vue-tsc` + Vite can take over 100 seconds on this workspace; avoid retrying just because a shorter tool timeout expired after the build had effectively completed.
+
 If sandboxed `npm` fails on Windows, rerun the same command with approval outside the sandbox.
 
 ## Window Interaction Conventions

@@ -4,13 +4,16 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8888
     idle_shutdown_seconds: int = Field(default=0, ge=0)
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"]
+    )
 
 
 class WorkspaceConfig(BaseModel):
@@ -45,6 +48,12 @@ class ViewerConfig(BaseModel):
 class SecurityConfig(BaseModel):
     enable_token: bool = False
     token: str = "change-me"
+
+    @model_validator(mode="after")
+    def validate_token_config(self) -> "SecurityConfig":
+        if self.enable_token and not self.token:
+            raise ValueError("security.token cannot be empty when security.enable_token is True")
+        return self
 
 
 class LogConfig(BaseModel):

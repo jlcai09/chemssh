@@ -29,7 +29,7 @@
       :can-go-back="canGoBack"
       :history-entries="directoryHistoryEntries"
       :show-hidden-files="showHiddenFiles"
-      @refresh="loadDirectory(currentPath)"
+      @refresh="loadDirectory(currentPath, { refresh: true })"
       @go-back="goBack"
       @history-select="openHistoryPath"
       @create-file="promptCreateFile"
@@ -41,11 +41,12 @@
       @update:show-hidden-files="value => showHiddenFiles = value"
     />
 
-    <div class="canvas-file-tree-shell" v-loading="loading">
+    <div class="canvas-file-tree-shell">
       <FileTree
         :items="visibleItems"
         :parent-path="listing?.parent"
         :selected-items="selectedItems"
+        :loading="loading"
         :system-icon-provider="launcherSystemIconProvider"
         @selection-change="handleSelectionChange"
         @context-menu="handleContextMenu"
@@ -111,7 +112,9 @@
           role="menuitem"
           @click="openContextWithLocalApp"
         >
-          <el-icon><Open /></el-icon>
+          <el-icon>
+            <component :is="contextMenu.item?.type === 'directory' ? FolderOpened : Document" />
+          </el-icon>
           <span>{{ t('context.openLocal') }}</span>
           <span />
         </button>
@@ -185,7 +188,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, CopyDocument, EditPen, Open, Promotion, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowRight, CopyDocument, Document, EditPen, FolderOpened, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
   getActiveChemSSHFileDragPayload,
   hasChemSSHFileDrag,
@@ -351,15 +354,15 @@ watch(
   () => props.refreshToken,
   (token, previous) => {
     if (token === previous) return
-    void loadDirectory(currentPath.value || props.initialPath || undefined, { recordHistory: false })
+    void loadDirectory(currentPath.value || props.initialPath || undefined, { recordHistory: false, refresh: true })
   }
 )
 
-async function loadDirectory(path?: string, options: { recordHistory?: boolean } = {}) {
+async function loadDirectory(path?: string, options: { recordHistory?: boolean; refresh?: boolean } = {}) {
   const previousPath = currentPath.value
   loading.value = true
   try {
-    const response = await listFiles(path || undefined)
+    const response = await listFiles(path || undefined, { refresh: options.refresh })
     listing.value = response
     currentPath.value = response.path
     pathInput.value = response.path
@@ -548,7 +551,7 @@ async function promptCreateFile() {
   }
   try {
     await writeFile(joinDisplayPath(currentPath.value, name), '')
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.fileCreated'))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.createFailed'))
@@ -569,7 +572,7 @@ async function promptMkdir() {
   }
   try {
     await makeDirectory(currentPath.value, result.value)
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.folderCreated'))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.createFailed'))
@@ -604,7 +607,7 @@ async function handleUploadEntries(entries: UploadEntry[], targetPath = currentP
     }
   }
 
-  await loadDirectory(currentPath.value)
+  await loadDirectory(currentPath.value, { refresh: true })
   const failed = prepared.length - uploaded + preparedResult.invalidCount
   if (failed === 0) {
     ElMessage.success(prepared.length === 1 ? t('message.uploadComplete') : t('message.uploadCompleteMany', { count: prepared.length }))
@@ -713,7 +716,7 @@ async function handleMoveItems(items: FileItem[], targetDirectory: FileItem) {
       return
     }
     await movePaths(prepared.entries.map(entry => entry.path), targetDirectory.path, prepared.entries)
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     emit('directories-change', changedDirectories)
     ElMessage.success(t('message.moved'))
   } catch (error) {
@@ -735,7 +738,7 @@ async function handleCopyItems(items: FileItem[], targetDirectory: FileItem) {
       return
     }
     await copyPaths(prepared.entries.map(entry => entry.path), targetDirectory.path, prepared.entries)
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     emit('directories-change', changedDirectories)
     ElMessage.success(t('message.copied'))
   } catch (error) {
@@ -762,7 +765,7 @@ async function promptRename() {
   const parent = oldPath.split(/[\\/]/).slice(0, -1).join(separator)
   try {
     await renamePath(oldPath, `${parent}${separator}${result.value}`)
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.renamed'))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.renameFailed'))
@@ -787,7 +790,7 @@ async function confirmDelete() {
     }
     selectedItems.value = []
     selectedItem.value = null
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.deleted'))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.deleteFailed'))

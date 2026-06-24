@@ -10,10 +10,8 @@ from typing import Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-import uvicorn
-
-from backend.app.core.config import load_settings
-from backend.app.main import create_app
+# Delay import of heavy modules (uvicorn, fastapi, create_app) until actually needed
+# This significantly speeds up --check-port and reuse-existing scenarios
 
 
 @dataclass(frozen=True)
@@ -84,17 +82,24 @@ def _same_workspace(left: str | None, right: Path) -> bool:
         return False
 
 
-def _probe_existing_server(host: str, port: int, *, timeout: float = 1.0) -> PortProbeResult:
+def _probe_existing_server(host: str, port: int, *, token: str | None = None, timeout: float = 1.0) -> PortProbeResult:
     client_host = _probe_host(host)
+
+    # Use shorter timeout for localhost connections (should be instant)
+    socket_timeout = 0.1 if client_host in ("127.0.0.1", "::1") else timeout
+
     try:
-        with socket.create_connection((client_host, port), timeout=timeout):
+        with socket.create_connection((client_host, port), timeout=socket_timeout):
             pass
     except OSError:
         return PortProbeResult(occupied=False)
 
     base_url = _server_url(host, port)
     identity_url = f"{base_url}/api/system/identity"
-    request = Request(identity_url, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(identity_url, headers=headers)
     try:
         with urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -116,8 +121,8 @@ def _probe_existing_server(host: str, port: int, *, timeout: float = 1.0) -> Por
     )
 
 
-def _handle_existing_server(args: argparse.Namespace, host: str, port: int, workspace_root: Path) -> bool:
-    probe = _probe_existing_server(host, port)
+def _handle_existing_server(args: argparse.Namespace, host: str, port: int, workspace_root: Path, token: str | None = None) -> bool:
+    probe = _probe_existing_server(host, port, token=token) if token else _probe_existing_server(host, port)
     if not probe.occupied:
         return False
 
@@ -149,8 +154,8 @@ def _handle_existing_server(args: argparse.Namespace, host: str, port: int, work
     return True
 
 
-def _check_port_only(args: argparse.Namespace, host: str, port: int, workspace_root: Path) -> int:
-    probe = _probe_existing_server(host, port)
+def _check_port_only(args: argparse.Namespace, host: str, port: int, workspace_root: Path, token: str | None = None) -> int:
+    probe = _probe_existing_server(host, port, token=token) if token else _probe_existing_server(host, port)
     if not probe.occupied:
         print(f"Port {port} on {host} is available.")
         return 0
@@ -187,21 +192,60 @@ def _check_port_only(args: argparse.Namespace, host: str, port: int, workspace_r
     return 0
 
 
+def _get_minimal_config(args: argparse.Namespace) -> tuple[str, int, Path, str | None]:
+    """Get minimal configuration needed for port detection.
+
+    Only imports config module if defaults are needed, avoiding heavy FastAPI imports.
+    """
+    # Try to get everything from command line args first
+    host = args.host
+    port = args.port
+    workspace_root = args.workspace_root
+
+    token: str | None = None
+
+    # Load config if values are missing or if a configured token may be needed
+    # to identify an already-running protected ChemSSH server.
+    if args.config or not (host and port and workspace_root):
+        from backend.app.core.config import load_settings
+        settings = load_settings(args.config, workspace_root=args.workspace_root)
+        host = host or settings.server.host
+        port = port or settings.server.port
+        workspace_root = workspace_root or str(settings.workspace.root)
+        if settings.security.enable_token:
+            token = settings.security.token
+
+    return host, port, Path(workspace_root).expanduser().resolve(), token
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    settings = load_settings(args.config, workspace_root=args.workspace_root)
-    host = args.host or settings.server.host
-    port = args.port or settings.server.port
 
+    # Step 1: Get minimal config for detection (fast path, minimal imports)
+    host, port, workspace_root, token = _get_minimal_config(args)
+
+    # Step 2: --check-port mode - detect and exit immediately
     if args.check_port:
-        raise SystemExit(_check_port_only(args, host, port, settings.workspace.root))
+        raise SystemExit(_check_port_only(args, host, port, workspace_root, token))
 
+    # Step 3: Check if we can reuse an existing server (fast path)
     try:
-        if _handle_existing_server(args, host, port, settings.workspace.root):
+        if _handle_existing_server(args, host, port, workspace_root, token):
+            # Found reusable server, exit without importing heavy modules
             return
     except RuntimeError as exc:
         print(f"chemssh: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+
+    # Step 4: Need to start a new server - now import heavy modules
+    import uvicorn
+    from backend.app.core.config import load_settings
+    from backend.app.main import create_app
+
+    # Load full settings for server startup
+    settings = load_settings(args.config, workspace_root=args.workspace_root)
+    host = args.host or settings.server.host
+    port = args.port or settings.server.port
 
     if args.reload:
         uvicorn.run(

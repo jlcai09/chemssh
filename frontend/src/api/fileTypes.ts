@@ -11,6 +11,8 @@ const STRUCTURE_FALLBACK_EXTENSIONS = new Set([
   '.vasp',
   '.xsf',
   '.xsd',
+  '.xtd',
+  '.arc',
   '.cube',
   '.gen',
   '.db',

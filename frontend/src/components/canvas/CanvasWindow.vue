@@ -1,7 +1,8 @@
 <template>
   <section
+    ref="windowRef"
     class="canvas-window"
-    :class="{ 'is-active': active, 'is-minimized': window.minimized }"
+    :class="{ 'is-active': active, 'is-minimized': window.minimized, 'is-dragging': isDragging }"
     :style="windowStyle"
     @pointerdown="$emit('activate', window.id)"
   >
@@ -45,7 +46,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Close, SemiSelect } from '@element-plus/icons-vue'
 import { t } from '../../i18n'
 import { CANVAS_WINDOW_MINIMIZED_HEIGHT, type CanvasWindowState } from '../../types/canvasBoard'
@@ -66,6 +67,9 @@ const emit = defineEmits<{
   resize: [id: string, width: number, height: number]
   'toggle-minimize': [id: string]
 }>()
+
+const windowRef = ref<HTMLElement | null>(null)
+const isDragging = ref(false)
 
 const windowStyle = computed(() => ({
   left: `${props.window.x}px`,
@@ -105,13 +109,50 @@ function startDrag(event: PointerEvent) {
   const originY = props.window.y
   const zoom = props.zoom || 1
   const target = event.currentTarget as HTMLElement
+  const element = windowRef.value
+
   target.setPointerCapture(event.pointerId)
   emit('activate', props.window.id)
+  isDragging.value = true
+
+  let rafId: number | null = null
+  let pendingX = originX
+  let pendingY = originY
 
   const move = (moveEvent: PointerEvent) => {
-    emit('move', props.window.id, originX + (moveEvent.clientX - startX) / zoom, originY + (moveEvent.clientY - startY) / zoom)
+    // 计算新位置，但不立即发送事件
+    pendingX = originX + (moveEvent.clientX - startX) / zoom
+    pendingY = originY + (moveEvent.clientY - startY) / zoom
+
+    // 使用 transform 实现即时视觉反馈，避免等待状态更新
+    if (element) {
+      element.style.transform = `translate(${pendingX - originX}px, ${pendingY - originY}px)`
+    }
+
+    // 使用 RAF 批量更新状态，降低 Vue 更新频率
+    if (rafId === null) {
+      rafId = requestAnimationFrame(() => {
+        emit('move', props.window.id, pendingX, pendingY)
+        rafId = null
+      })
+    }
   }
+
   const done = () => {
+    isDragging.value = false
+
+    // 取消待处理的 RAF
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId)
+      rafId = null
+    }
+
+    // 发送最终位置并清除 transform
+    emit('move', props.window.id, pendingX, pendingY)
+    if (element) {
+      element.style.transform = ''
+    }
+
     target.removeEventListener('pointermove', move)
     target.removeEventListener('pointerup', done)
     target.removeEventListener('pointercancel', done)

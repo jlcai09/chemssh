@@ -1,4 +1,32 @@
-import * as THREE from 'three'
+import {
+  AmbientLight,
+  BackSide,
+  BufferGeometry,
+  Color,
+  CylinderGeometry,
+  DirectionalLight,
+  DynamicDrawUsage,
+  Float32BufferAttribute,
+  Group,
+  InstancedBufferAttribute,
+  InstancedMesh,
+  LineBasicMaterial,
+  LineSegments,
+  Matrix4,
+  MeshBasicMaterial,
+  OrthographicCamera,
+  Points,
+  Quaternion,
+  Scene,
+  ShaderMaterial,
+  SphereGeometry,
+  SRGBColorSpace,
+  Vector3,
+  WebGLRenderer,
+  type Material,
+  type Mesh,
+  type Object3D
+} from 'three'
 import type { ViewerStyle } from './types'
 
 type Vec3 = [number, number, number]
@@ -37,31 +65,31 @@ interface RendererStyle extends Required<ViewerStyle> {}
 export class ThreeStructureRenderer {
   readonly canvas: HTMLCanvasElement
 
-  private readonly renderer: THREE.WebGLRenderer
-  private readonly scene = new THREE.Scene()
-  private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -100, 100)
-  private readonly model = new THREE.Group()
+  private readonly renderer: WebGLRenderer
+  private readonly scene = new Scene()
+  private readonly camera = new OrthographicCamera(-1, 1, 1, -1, -100, 100)
+  private readonly model = new Group()
   private readonly atomGeometries = [
-    new THREE.SphereGeometry(1, 24, 16),
-    new THREE.SphereGeometry(1, 16, 10),
-    new THREE.SphereGeometry(1, 10, 6)
+    new SphereGeometry(1, 24, 16),
+    new SphereGeometry(1, 16, 10),
+    new SphereGeometry(1, 10, 6)
   ]
-  private readonly selectionGeometry = new THREE.SphereGeometry(1, 12, 8)
-  private readonly bondGeometry = new THREE.CylinderGeometry(1, 1, 1, 12, 1)
-  private readonly bondMaterial = new THREE.MeshBasicMaterial({ color: 0x596575 })
-  private readonly cellMaterial = new THREE.LineBasicMaterial({ color: 0x8b99a6, transparent: true, opacity: 0.78 })
-  private readonly lightAtomOutlineMaterial = new THREE.MeshBasicMaterial({ color: 0x465568, side: THREE.BackSide })
-  private readonly selectionBackMaterial = new THREE.MeshBasicMaterial({ color: 0x0b0f14, side: THREE.BackSide })
-  private readonly selectionFrontMaterial = new THREE.MeshBasicMaterial({ color: 0xfaff00, side: THREE.BackSide })
-  private atomMeshes: THREE.InstancedMesh[] = []
-  private atomMaterials: THREE.Material[] = []
-  private atomPointCloud: THREE.Points | null = null
+  private readonly selectionGeometry = new SphereGeometry(1, 12, 8)
+  private readonly bondGeometry = new CylinderGeometry(1, 1, 1, 12, 1)
+  private readonly bondMaterial = new MeshBasicMaterial({ color: 0x596575 })
+  private readonly cellMaterial = new LineBasicMaterial({ color: 0x8b99a6, transparent: true, opacity: 0.78 })
+  private readonly lightAtomOutlineMaterial = new MeshBasicMaterial({ color: 0x465568, side: BackSide })
+  private readonly selectionBackMaterial = new MeshBasicMaterial({ color: 0x0b0f14, side: BackSide })
+  private readonly selectionFrontMaterial = new MeshBasicMaterial({ color: 0xfaff00, side: BackSide })
+  private atomMeshes: InstancedMesh[] = []
+  private atomMaterials: Material[] = []
+  private atomPointCloud: Points | null = null
   private readonly atomPointMaterial = createAtomPointMaterial()
-  private selectionMeshes: THREE.InstancedMesh[] = []
-  private selectionPointCloud: THREE.Points | null = null
+  private selectionMeshes: InstancedMesh[] = []
+  private selectionPointCloud: Points | null = null
   private readonly selectionPointMaterial = createSelectionPointMaterial()
-  private bondMesh: THREE.InstancedMesh | null = null
-  private cellLines: THREE.LineSegments | null = null
+  private bondMesh: InstancedMesh | null = null
+  private cellLines: LineSegments | null = null
   private frame: RenderAtomFrame | null = null
   private bonds: RenderBond[] = []
   private style: RendererStyle
@@ -71,20 +99,20 @@ export class ThreeStructureRenderer {
   private renderHeight = 0
   private renderDpr = 0
   private center: Vec3 = [0, 0, 0]
-  private readonly matrix = new THREE.Matrix4()
-  private readonly position = new THREE.Vector3()
-  private readonly scale = new THREE.Vector3()
-  private readonly quaternion = new THREE.Quaternion()
-  private readonly bondStart = new THREE.Vector3()
-  private readonly bondEnd = new THREE.Vector3()
-  private readonly bondMid = new THREE.Vector3()
-  private readonly bondDirection = new THREE.Vector3()
-  private readonly zAxis = new THREE.Vector3(0, 0, 1)
+  private readonly matrix = new Matrix4()
+  private readonly position = new Vector3()
+  private readonly scale = new Vector3()
+  private readonly quaternion = new Quaternion()
+  private readonly bondStart = new Vector3()
+  private readonly bondEnd = new Vector3()
+  private readonly bondMid = new Vector3()
+  private readonly bondDirection = new Vector3()
+  private readonly zAxis = new Vector3(0, 0, 1)
 
   constructor(container: HTMLElement, style: RendererStyle) {
     this.style = { ...style }
     this.bondGeometry.rotateX(Math.PI / 2)
-    this.renderer = new THREE.WebGLRenderer({
+    this.renderer = new WebGLRenderer({
       antialias: true,
       alpha: false,
       powerPreference: 'high-performance', // Enable GPU acceleration
@@ -92,7 +120,7 @@ export class ThreeStructureRenderer {
       depth: true
     })
     this.renderer.setPixelRatio(1)
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace
+    this.renderer.outputColorSpace = SRGBColorSpace
     this.renderer.setClearColor(this.style.backgroundColor, 1)
     this.canvas = this.renderer.domElement
     this.canvas.style.position = 'absolute'
@@ -101,11 +129,11 @@ export class ThreeStructureRenderer {
     this.canvas.style.height = '100%'
     this.canvas.style.cursor = 'crosshair'
 
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.58))
-    const key = new THREE.DirectionalLight(0xffffff, 0.88)
+    this.scene.add(new AmbientLight(0xffffff, 0.58))
+    const key = new DirectionalLight(0xffffff, 0.88)
     key.position.set(-0.45, 0.68, 1.0)
     this.scene.add(key)
-    const fill = new THREE.DirectionalLight(0xffffff, 0.28)
+    const fill = new DirectionalLight(0xffffff, 0.28)
     fill.position.set(0.5, -0.4, -0.8)
     this.scene.add(fill)
 
@@ -248,15 +276,15 @@ export class ThreeStructureRenderer {
       const color = elementColor(symbol)
       const geometry = atomGeometry.clone()
       const fixedFlags = new Float32Array(indices.length)
-      geometry.setAttribute('fixedFlag', new THREE.InstancedBufferAttribute(fixedFlags, 1))
+      geometry.setAttribute('fixedFlag', new InstancedBufferAttribute(fixedFlags, 1))
       const material = createAtomMaterial(color)
-      const mesh = new THREE.InstancedMesh(geometry, material, indices.length)
+      const mesh = new InstancedMesh(geometry, material, indices.length)
       const outlineScale = lightAtomOutlineScale(symbol, color)
-      const outlineMesh = outlineScale > 1 ? new THREE.InstancedMesh(atomGeometry, this.lightAtomOutlineMaterial, indices.length) : null
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      const outlineMesh = outlineScale > 1 ? new InstancedMesh(atomGeometry, this.lightAtomOutlineMaterial, indices.length) : null
+      mesh.instanceMatrix.setUsage(DynamicDrawUsage)
       mesh.frustumCulled = false
       if (outlineMesh) {
-        outlineMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        outlineMesh.instanceMatrix.setUsage(DynamicDrawUsage)
         outlineMesh.frustumCulled = false
       }
       const radius = atomWorldRadius(symbol, this.style)
@@ -308,10 +336,10 @@ export class ThreeStructureRenderer {
       return
     }
 
-    const back = new THREE.InstancedMesh(this.selectionGeometry, this.selectionBackMaterial, valid.length)
-    const front = new THREE.InstancedMesh(this.selectionGeometry, this.selectionFrontMaterial, valid.length)
-    back.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    front.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    const back = new InstancedMesh(this.selectionGeometry, this.selectionBackMaterial, valid.length)
+    const front = new InstancedMesh(this.selectionGeometry, this.selectionFrontMaterial, valid.length)
+    back.instanceMatrix.setUsage(DynamicDrawUsage)
+    front.instanceMatrix.setUsage(DynamicDrawUsage)
     back.frustumCulled = false
     front.frustumCulled = false
 
@@ -359,14 +387,14 @@ export class ThreeStructureRenderer {
       frontRatios[instanceIndex] = clampRatio(frontRadius / backRadius)
     }
 
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-    geometry.setAttribute('selectionRadius', new THREE.Float32BufferAttribute(backRadii, 1))
-    geometry.setAttribute('atomRatio', new THREE.Float32BufferAttribute(atomRatios, 1))
-    geometry.setAttribute('frontRatio', new THREE.Float32BufferAttribute(frontRatios, 1))
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('selectionRadius', new Float32BufferAttribute(backRadii, 1))
+    geometry.setAttribute('atomRatio', new Float32BufferAttribute(atomRatios, 1))
+    geometry.setAttribute('frontRatio', new Float32BufferAttribute(frontRatios, 1))
     geometry.computeBoundingSphere()
 
-    const points = new THREE.Points(geometry, this.selectionPointMaterial)
+    const points = new Points(geometry, this.selectionPointMaterial)
     points.frustumCulled = false
     points.renderOrder = 10
     this.selectionPointCloud = points
@@ -379,8 +407,8 @@ export class ThreeStructureRenderer {
     const frame = this.frame
     if (!frame?.nAtoms || this.atomPointCloud || this.style.mode === 'sphere' || !this.bonds.length) return
 
-    const mesh = new THREE.InstancedMesh(this.bondGeometry, this.bondMaterial, this.bonds.length)
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    const mesh = new InstancedMesh(this.bondGeometry, this.bondMaterial, this.bonds.length)
+    mesh.instanceMatrix.setUsage(DynamicDrawUsage)
     mesh.frustumCulled = false
     const radius = this.style.mode === 'line' ? 0.018 : this.style.bondRadius
 
@@ -413,15 +441,15 @@ export class ThreeStructureRenderer {
     if (!this.style.showCell || !this.frame?.cell || !hasCell(this.frame.cell)) return
 
     const vertices = cellLineVertices(this.frame.cell, this.frame.cellCopies, this.center)
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
-    const lines = new THREE.LineSegments(geometry, this.cellMaterial)
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new Float32BufferAttribute(vertices, 3))
+    const lines = new LineSegments(geometry, this.cellMaterial)
     lines.frustumCulled = false
     this.cellLines = lines
     this.model.add(lines)
   }
 
-  private setAtomPosition(frame: RenderAtomFrame, index: number, target: THREE.Vector3) {
+  private setAtomPosition(frame: RenderAtomFrame, index: number, target: Vector3) {
     const offset = index * 3
     target.set(
       (frame.positions[offset] ?? 0) - this.center[0],
@@ -430,10 +458,10 @@ export class ThreeStructureRenderer {
     )
   }
 
-  private disposeObject(object: THREE.Object3D | null) {
+  private disposeObject(object: Object3D | null) {
     if (!object) return
     object.removeFromParent()
-    const geometry = (object as THREE.Mesh | THREE.LineSegments).geometry
+    const geometry = (object as Mesh | LineSegments).geometry
     if (geometry && !this.isSharedGeometry(geometry)) geometry.dispose()
   }
 
@@ -452,7 +480,7 @@ export class ThreeStructureRenderer {
     const colors = new Float32Array(frame.nAtoms * 3)
     const radii = new Float32Array(frame.nAtoms)
     const fixedFlags = new Float32Array(frame.nAtoms)
-    const color = new THREE.Color()
+    const color = new Color()
 
     for (let index = 0; index < frame.nAtoms; index += 1) {
       const sourceOffset = index * 3
@@ -469,21 +497,21 @@ export class ThreeStructureRenderer {
       fixedFlags[index] = this.fixedMarkersVisible && frame.fixedMask?.[index] === 1 ? 1 : 0
     }
 
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-    geometry.setAttribute('atomColor', new THREE.Float32BufferAttribute(colors, 3))
-    geometry.setAttribute('atomRadius', new THREE.Float32BufferAttribute(radii, 1))
-    geometry.setAttribute('fixedFlag', new THREE.Float32BufferAttribute(fixedFlags, 1))
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('atomColor', new Float32BufferAttribute(colors, 3))
+    geometry.setAttribute('atomRadius', new Float32BufferAttribute(radii, 1))
+    geometry.setAttribute('fixedFlag', new Float32BufferAttribute(fixedFlags, 1))
     geometry.computeBoundingSphere()
 
-    const points = new THREE.Points(geometry, this.atomPointMaterial)
+    const points = new Points(geometry, this.atomPointMaterial)
     points.frustumCulled = false
     this.atomPointCloud = points
     this.model.add(points)
   }
 
-  private isSharedGeometry(geometry: THREE.BufferGeometry) {
-    return geometry === this.bondGeometry || geometry === this.selectionGeometry || this.atomGeometries.includes(geometry as THREE.SphereGeometry)
+  private isSharedGeometry(geometry: BufferGeometry) {
+    return geometry === this.bondGeometry || geometry === this.selectionGeometry || this.atomGeometries.includes(geometry as SphereGeometry)
   }
 }
 
@@ -494,7 +522,7 @@ function atomWorldRadius(symbol: string, style: RendererStyle) {
 }
 
 // Material cache for better performance - avoid creating duplicate materials
-const materialCache = new Map<string, THREE.ShaderMaterial>()
+const materialCache = new Map<string, ShaderMaterial>()
 
 function createAtomMaterial(color: string) {
   // Check cache first
@@ -502,9 +530,9 @@ function createAtomMaterial(color: string) {
     return materialCache.get(color)!.clone()
   }
 
-  const material = new THREE.ShaderMaterial({
+  const material = new ShaderMaterial({
     uniforms: {
-      baseColor: { value: new THREE.Color(color) }
+      baseColor: { value: new Color(color) }
     },
     vertexShader: `
       varying vec3 vViewNormal;
@@ -568,7 +596,7 @@ function createAtomMaterial(color: string) {
 }
 
 function createAtomPointMaterial() {
-  return new THREE.ShaderMaterial({
+  return new ShaderMaterial({
     uniforms: {
       pixelScale: { value: 1 }
     },
@@ -634,7 +662,7 @@ function createAtomPointMaterial() {
 }
 
 function createSelectionPointMaterial() {
-  return new THREE.ShaderMaterial({
+  return new ShaderMaterial({
     uniforms: {
       pixelScale: { value: 1 }
     },

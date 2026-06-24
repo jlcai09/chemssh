@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body" :disabled="!largeOpen">
-    <div class="terminal-panel" :class="{ 'is-large': largeOpen }">
+    <div class="terminal-panel" :class="{ 'is-large': largeOpen }" ref="terminalPanelRef">
       <div
         ref="tabsRef"
         class="terminal-tabs"
@@ -98,6 +98,26 @@
       <button class="terminal-tab-new" type="button" :aria-label="t('terminal.newTab')" @click="createTab()">
         <el-icon><Plus /></el-icon>
       </button>
+      <el-dropdown
+        trigger="click"
+        placement="bottom-end"
+        popper-class="terminal-tools-dropdown"
+        @command="handleTerminalToolCommand"
+      >
+        <button class="terminal-tab-settings terminal-tab-tools" type="button" :aria-label="t('terminal.tools')">
+          <el-icon><MoreFilled /></el-icon>
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="search">
+              <span class="terminal-tools-option">
+                <el-icon><SearchIcon /></el-icon>
+                <span>{{ t('terminal.search') }}</span>
+              </span>
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <el-popover trigger="click" placement="top-end" :width="280" popper-class="terminal-settings-popper">
         <template #reference>
           <button class="terminal-tab-settings" type="button" :aria-label="t('terminal.settings')">
@@ -110,13 +130,13 @@
             <span>{{ t('terminal.vimCompatibility') }}</span>
             <el-switch v-model="vimCompatibilityMode" size="small" />
           </label>
-          <div class="terminal-settings-node">
-            <span>{{ t('terminal.font') }}</span>
-            <el-icon><ArrowRight /></el-icon>
-          </div>
+          <label class="terminal-settings-toggle">
+            <span>{{ t('terminal.autoCopySelection') }}</span>
+            <el-switch v-model="autoCopySelection" size="small" />
+          </label>
           <div class="terminal-settings-submenu">
             <div class="terminal-font-size-header">
-              <span>{{ t('terminal.fontSize') }}</span>
+              <span style="font-weight: 700;">{{ t('terminal.fontSize') }}</span>
               <strong>{{ terminalFontSize }}px</strong>
             </div>
             <div class="terminal-font-size-controls">
@@ -160,12 +180,69 @@
         <div v-if="activeTab?.awaitingVisibleShellOutput" class="terminal-overlay">{{ t('terminal.starting') }}</div>
       </div>
     </div>
+    <!-- 搜索面板独立于终端，可拖动到当前页面（工作台/画板）的任意位置 -->
+    <Teleport :to="searchPanelContainer" :disabled="!searchPanelContainer">
+      <div
+        v-if="searchOpen"
+        ref="searchPanelRef"
+        class="terminal-search-panel terminal-search-panel-floating"
+        :style="searchPanelStyle"
+        role="dialog"
+        :aria-label="t('terminal.search')"
+        @keydown.esc.stop.prevent="closeSearchPanel"
+      >
+        <div
+          class="terminal-search-header"
+          @mousedown="handleSearchPanelDragStart"
+        >
+          <strong>{{ t('terminal.search') }}</strong>
+          <button class="terminal-search-close" type="button" :aria-label="t('terminal.searchClose')" @click="closeSearchPanel">
+            <el-icon><Close /></el-icon>
+          </button>
+        </div>
+        <div class="terminal-search-body">
+          <div class="terminal-search-input-row">
+            <el-input
+              ref="searchInputRef"
+              v-model="searchTerm"
+              class="terminal-search-input"
+              size="small"
+              clearable
+              :placeholder="t('terminal.searchPlaceholder')"
+              @keydown.enter.prevent="handleSearchEnter"
+            />
+            <el-checkbox v-model="searchCaseSensitive" size="small">{{ t('terminal.searchCaseSensitive') }}</el-checkbox>
+            <el-checkbox v-model="searchRegex" size="small">{{ t('terminal.searchRegex') }}</el-checkbox>
+          </div>
+          <div class="terminal-search-actions">
+            <el-button size="small" @click="findPreviousInTerminal">{{ t('terminal.searchPrevious') }}</el-button>
+            <el-button size="small" type="primary" @click="findNextInTerminal">{{ t('terminal.searchNext') }}</el-button>
+            <div class="terminal-search-count">
+              <el-input-number
+                v-if="searchResultCount > 0"
+                v-model="searchResultIndexInput"
+                class="terminal-search-index-input"
+                size="small"
+                :min="1"
+                :max="searchResultCount"
+                :controls="false"
+                @change="handleSearchIndexChange"
+              />
+              <span v-else class="terminal-search-index-display">-</span>
+              <span class="terminal-search-divider">/</span>
+              <span class="terminal-search-total">{{ searchResultCount }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ArrowRight, Close, FullScreen, Link, Plus, Setting } from '@element-plus/icons-vue'
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
+import { Close, FullScreen, Link, MoreFilled, Plus, Search as SearchIcon, Setting } from '@element-plus/icons-vue'
+import { BrowserClipboardProvider, ClipboardAddon, type ClipboardSelectionType } from '@xterm/addon-clipboard'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal, type IDisposable } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
@@ -176,12 +253,13 @@ import {
   terminalWebSocketUrl,
   type TerminalSession
 } from '../../api/terminal'
-import { uploadFile } from '../../api/files'
-import { requestBlob } from '../../api/http'
 import { formatFileDragTerminalInput, hasChemSSHFileDrag, readChemSSHFileDrag } from '../../api/fileDrag'
 import { isPathInsideWorkspace, workspacePathOrRoot } from '../../api/workspaceScope'
 import { t } from '../../i18n'
 import type { CanvasFileManagerBindingTarget, CanvasTerminalTabBinding } from '../../types/canvasBoard'
+import { useTerminalSettings } from '../../composables/useTerminalSettings'
+import { useTerminalTransfer } from '../../composables/useTerminalTransfer'
+import { useTerminalSearch, type SearchableTab } from '../../composables/useTerminalSearch'
 
 type TerminalMessage =
   | { type: 'output'; data: string }
@@ -200,6 +278,12 @@ type TerminalMessage =
 
 type TerminalSyncMode = 'off' | 'follow' | 'bidirectional'
 
+type SearchMatch = {
+  row: number
+  col: number
+  length: number
+}
+
 type TerminalTab = {
   localId: string
   sessionId: string | null
@@ -210,23 +294,29 @@ type TerminalTab = {
   awaitingVisibleShellOutput: boolean
   starting: boolean
   terminal: Terminal | null
+  clipboardAddon: ClipboardAddon | null
   fitAddon: FitAddon | null
+  searchMatches: SearchMatch[]
+  searchCurrentIndex: number
   socket: WebSocket | null
   inputDisposable: IDisposable | null
   selectionDisposable: IDisposable | null
+  renderDisposable: IDisposable | null
+  scrollDisposable: IDisposable | null
   middleClickCleanup: (() => void) | null
   latestSelection: string
+  lastAutoCopiedSelection: string
   preservingMiddleClickSelection: boolean
+  suppressAutoCopySelection: boolean
   resizeObserver: ResizeObserver | null
   fitFrame: number
+  autoCopyFrame: number
+  searchHighlightFrame: number
+  searchHighlightTimer: number
   boundFileManagerId: string | null
 }
 
-const TERMINAL_FONT_SIZE_STORAGE_KEY = 'chemssh.terminal.fontSize'
-const TERMINAL_VIM_COMPATIBILITY_STORAGE_KEY = 'chemssh.terminal.vimCompatibility'
-const DEFAULT_TERMINAL_FONT_SIZE = 13
-const TERMINAL_FONT_SIZE_MIN = 10
-const TERMINAL_FONT_SIZE_MAX = 24
+const SYSTEM_CLIPBOARD_SELECTION = 'c' as ClipboardSelectionType
 
 const props = defineProps<{
   initialCwd?: string | null
@@ -249,14 +339,41 @@ const tabs = ref<TerminalTab[]>([])
 const activeTabId = ref<string | null>(null)
 const tabsRef = ref<HTMLElement | null>(null)
 const tabsOverflowing = ref(false)
-const terminalFontSize = ref(readStoredTerminalFontSize())
-const vimCompatibilityMode = ref(readStoredVimCompatibilityMode())
+const terminalPanelRef = ref<HTMLElement | null>(null)
+
+const {
+  TERMINAL_FONT_SIZE_MIN,
+  TERMINAL_FONT_SIZE_MAX,
+  terminalFontSize,
+  vimCompatibilityMode,
+  autoCopySelection,
+  setTerminalFontSize,
+  storeTerminalFontSize,
+  storeVimCompatibilityMode,
+  storeAutoCopySelection
+} = useTerminalSettings()
+
 const largeOpen = ref(false)
+const searchInputRef = ref<{ focus: () => void } | null>(null)
+const searchPanelRef = ref<HTMLElement | null>(null)
+const searchPanelPosition = ref<{ x: number; y: number } | null>(null)
+const searchPanelDragging = ref(false)
+const searchPanelContainer = ref<string | null>(null)
 const terminalFontSizeModel = computed({
   get: () => terminalFontSize.value,
   set: (value: number | undefined) => setTerminalFontSize(value)
 })
+const searchPanelStyle = computed(() => {
+  if (!searchPanelPosition.value) return {}
+  return {
+    top: `${searchPanelPosition.value.y}px`,
+    left: `${searchPanelPosition.value.x}px`,
+    right: 'auto',
+    transform: 'none'
+  }
+})
 const terminalHosts = new Map<string, HTMLElement>()
+const clipboardProvider = new BrowserClipboardProvider()
 let tabsResizeObserver: ResizeObserver | null = null
 let tabSerial = 0
 const TERMINAL_TAB_DRAG_MIME = 'application/x-chemssh-terminal-tab'
@@ -265,9 +382,34 @@ const preferredCwd = computed(() => usableWorkspacePath(props.currentFileManager
 const fileManagerOptions = computed(() => props.fileManagers ?? [])
 const activeTab = computed(() => tabs.value.find(tab => tab.localId === activeTabId.value) ?? null)
 
+const {
+  searchOpen,
+  searchTerm,
+  searchCaseSensitive,
+  searchRegex,
+  searchResultCount,
+  searchResultIndexInput,
+  performSearch,
+  findNextInTerminal,
+  findPreviousInTerminal,
+  handleSearchIndexChange,
+  scheduleSearchHighlightRefresh,
+  scheduleSearchHighlightRefreshAfterInteraction,
+  syncSearchWithActiveTab,
+  closeSearchPanel,
+  clearAllSearchHighlights,
+  updateSearchStatus
+} = useTerminalSearch(activeTab as Ref<SearchableTab | null>, tabs as Ref<SearchableTab[]>)
+
+const { handleTransferRequest } = useTerminalTransfer()
+
 onMounted(async () => {
   window.addEventListener('resize', handleLayoutChange)
   window.addEventListener('chemssh:terminal-fit', handleLayoutChange)
+
+  // 查找搜索面板应该传送到的容器
+  detectSearchPanelContainer()
+
   await nextTick()
   await document.fonts?.ready
   if (tabsRef.value && typeof ResizeObserver !== 'undefined') {
@@ -281,6 +423,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  stopSearchPanelDrag()
   window.removeEventListener('resize', handleLayoutChange)
   window.removeEventListener('chemssh:terminal-fit', handleLayoutChange)
   tabsResizeObserver?.disconnect()
@@ -333,6 +476,7 @@ watch(
 
 watch(activeTabId, () => {
   requestActiveTabFit()
+  syncSearchWithActiveTab()
   emitTerminalBindingSummary()
 })
 
@@ -361,6 +505,18 @@ watch(vimCompatibilityMode, value => {
   storeVimCompatibilityMode(value)
 })
 
+watch(autoCopySelection, value => {
+  storeAutoCopySelection(value)
+})
+
+watch(
+  [searchTerm, searchCaseSensitive, searchRegex],
+  () => {
+    if (!searchOpen.value) return
+    performSearch()
+  }
+)
+
 function createEmptyTab(cwd?: string): TerminalTab {
   tabSerial += 1
   return {
@@ -373,15 +529,25 @@ function createEmptyTab(cwd?: string): TerminalTab {
     awaitingVisibleShellOutput: false,
     starting: false,
     terminal: null,
+    clipboardAddon: null,
     fitAddon: null,
+    searchMatches: [],
+    searchCurrentIndex: -1,
     socket: null,
     inputDisposable: null,
     selectionDisposable: null,
+    renderDisposable: null,
+    scrollDisposable: null,
     middleClickCleanup: null,
     latestSelection: '',
+    lastAutoCopiedSelection: '',
     preservingMiddleClickSelection: false,
+    suppressAutoCopySelection: false,
     resizeObserver: null,
     fitFrame: 0,
+    autoCopyFrame: 0,
+    searchHighlightFrame: 0,
+    searchHighlightTimer: 0,
     boundFileManagerId: null
   }
 }
@@ -492,7 +658,7 @@ async function initializeTabTerminal(tab: TerminalTab) {
   const host = terminalHosts.get(tab.localId)
   if (!host) return
 
-  const terminal = new Terminal({
+  const terminal = markRaw(new Terminal({
     cursorBlink: true,
     fontFamily: '"JetBrains Mono", Consolas, "Liberation Mono", monospace',
     fontSize: terminalFontSize.value,
@@ -504,9 +670,11 @@ async function initializeTabTerminal(tab: TerminalTab) {
       cursor: '#f7c46c',
       selectionBackground: '#36546a'
     }
-  })
-  const fitAddon = new FitAddon()
+  }))
+  const fitAddon = markRaw(new FitAddon())
+  const clipboardAddon = markRaw(new ClipboardAddon(undefined, clipboardProvider))
   terminal.loadAddon(fitAddon)
+  terminal.loadAddon(clipboardAddon)
   terminal.open(host)
   terminal.attachCustomKeyEventHandler(event => {
     if (event.type === 'keydown' && event.key === 'Backspace') {
@@ -519,13 +687,24 @@ async function initializeTabTerminal(tab: TerminalTab) {
 
   tab.terminal = terminal
   tab.fitAddon = fitAddon
-  tab.inputDisposable = terminal.onData(data => {
-    sendTabSocketMessage(tab, { type: 'input', data })
-  })
+  tab.clipboardAddon = clipboardAddon
   tab.selectionDisposable = terminal.onSelectionChange(() => {
     const selection = terminal.getSelection()
     if (selection || !tab.preservingMiddleClickSelection) tab.latestSelection = selection
+    queueAutoCopySelection(tab, selection)
   })
+  tab.renderDisposable = terminal.onRender(() => {
+    scheduleSearchHighlightRefresh(tab)
+  })
+  tab.scrollDisposable = terminal.onScroll(() => {
+    scheduleSearchHighlightRefresh(tab)
+  })
+
+  // 监听终端数据变化
+  tab.inputDisposable = terminal.onData(data => {
+    sendTabSocketMessage(tab, { type: 'input', data })
+  })
+
   tab.resizeObserver = new ResizeObserver(() => scheduleTabFit(tab))
   tab.resizeObserver.observe(host)
 
@@ -566,7 +745,7 @@ function connectTabSocket(tab: TerminalTab, id: string) {
   closeTabSocket(tab)
   let ws: WebSocket
   try {
-    ws = new WebSocket(terminalWebSocketUrl(id))
+    ws = markRaw(new WebSocket(terminalWebSocketUrl(id)))
   } catch (error) {
     tab.sessionId = null
     tab.cwd = ''
@@ -614,10 +793,11 @@ function handleTabSocketMessage(tab: TerminalTab, raw: string) {
   if (message.type === 'output') {
     tab.terminal.write(message.data)
     if (!tab.interactiveReady && hasVisibleTerminalContent(message.data)) markTabInteractive(tab)
+    if (tab.localId === activeTabId.value) scheduleSearchHighlightRefresh(tab, 50)
   } else if (message.type === 'cwd') {
     applyTabCwd(tab, message.path)
   } else if (message.type === 'transfer_request') {
-    void handleTransferRequest(tab, message)
+    void handleTransferRequestComposable(tab, message)
   } else if (message.type === 'error') {
     tab.awaitingVisibleShellOutput = false
     tab.terminal.writeln(`\r\n[${message.code ?? 'ERROR'}] ${message.message ?? ''}`)
@@ -628,131 +808,14 @@ function handleTabSocketMessage(tab: TerminalTab, raw: string) {
   }
 }
 
-async function handleTransferRequest(tab: TerminalTab, message: Extract<TerminalMessage, { type: 'transfer_request' }>) {
+async function handleTransferRequestComposable(tab: TerminalTab, message: Extract<TerminalMessage, { type: 'transfer_request' }>) {
   if (!tab.terminal) return
-  if (message.error) {
-    tab.terminal.writeln(`\r\n${t('terminal.transferFailed')}: ${message.error}`)
-    sendTabSocketMessage(tab, {
-      type: 'transfer_result',
-      transfer_id: message.transfer_id,
-      success: false,
-      message: message.error
-    })
-    return
-  }
-
-  try {
-    if (message.direction === 'upload') {
-      const files = await chooseTransferFiles()
-      if (files.length === 0) {
-        sendTabSocketMessage(tab, {
-          type: 'transfer_result',
-          transfer_id: message.transfer_id,
-          success: false,
-          message: t('terminal.transferCancelled')
-        })
-        return
-      }
-
-      tab.terminal.writeln(`\r\n${t('terminal.transferUploading', { count: files.length })}`)
-      if (props.transferUploadHandler) {
-        await props.transferUploadHandler(message.cwd, files)
-      } else {
-        for (const file of files) {
-          await uploadFile(message.cwd, file)
-        }
-      }
-      sendTabSocketMessage(tab, {
-        type: 'transfer_result',
-        transfer_id: message.transfer_id,
-        success: true,
-        message: t('terminal.transferUploaded', { count: files.length })
-      })
-      return
-    }
-
-    const paths = message.paths ?? []
-    if (paths.length === 0) {
-      throw new Error(t('terminal.transferNoFiles'))
-    }
-    await triggerTransferDownload(paths)
-    sendTabSocketMessage(tab, {
-      type: 'transfer_result',
-      transfer_id: message.transfer_id,
-      success: true,
-      message: t('terminal.transferDownloadStarted')
-    })
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    tab.terminal.writeln(`\r\n${t('terminal.transferFailed')}: ${detail}`)
-    sendTabSocketMessage(tab, {
-      type: 'transfer_result',
-      transfer_id: message.transfer_id,
-      success: false,
-      message: detail
-    })
-  }
-}
-
-function chooseTransferFiles(): Promise<File[]> {
-  return new Promise(resolve => {
-    const input = document.createElement('input')
-    let settled = false
-    input.type = 'file'
-    input.multiple = true
-    input.style.position = 'fixed'
-    input.style.left = '-9999px'
-    input.style.top = '-9999px'
-    const cleanup = () => {
-      input.removeEventListener('change', handleChange)
-      input.removeEventListener('cancel', handleCancel)
-      window.removeEventListener('focus', handleFocus)
-      window.setTimeout(() => input.remove(), 0)
-    }
-    const settle = (files: File[]) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve(files)
-    }
-    const handleChange = () => {
-      settle(Array.from(input.files ?? []))
-    }
-    const handleCancel = () => {
-      settle([])
-    }
-    const handleFocus = () => {
-      window.setTimeout(() => {
-        if (!settled && (!input.files || input.files.length === 0)) settle([])
-      }, 300)
-    }
-    input.addEventListener('change', handleChange)
-    input.addEventListener('cancel', handleCancel)
-    window.addEventListener('focus', handleFocus)
-    document.body.appendChild(input)
-    input.click()
-  })
-}
-
-async function triggerTransferDownload(paths: string[]) {
-  const query = paths.length === 1
-    ? `/api/files/download?path=${encodeURIComponent(paths[0])}`
-    : `/api/files/download-selection?${downloadSelectionQuery(paths)}`
-  const response = await requestBlob(query)
-  const url = URL.createObjectURL(response.blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = response.filename ?? (paths.length === 1 ? pathBaseName(paths[0]) : 'chemssh-selection.zip')
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-function downloadSelectionQuery(paths: string[]) {
-  const query = new URLSearchParams()
-  for (const path of paths) query.append('path', path)
-  return query.toString()
+  await handleTransferRequest(
+    message,
+    text => tab.terminal?.writeln(text),
+    payload => sendTabSocketMessage(tab, { type: 'transfer_result', ...payload }),
+    props.transferUploadHandler
+  )
 }
 
 async function closeTab(tabId: string) {
@@ -775,23 +838,39 @@ async function disposeTab(tab: TerminalTab, closeSession: boolean) {
   tab.resizeObserver?.disconnect()
   tab.inputDisposable?.dispose()
   tab.selectionDisposable?.dispose()
+  tab.renderDisposable?.dispose()
+  tab.scrollDisposable?.dispose()
   tab.middleClickCleanup?.()
+  tab.clipboardAddon?.dispose()
   tab.terminal?.dispose()
   if (tab.fitFrame) window.cancelAnimationFrame(tab.fitFrame)
+  if (tab.autoCopyFrame) window.cancelAnimationFrame(tab.autoCopyFrame)
+  if (tab.searchHighlightFrame) window.cancelAnimationFrame(tab.searchHighlightFrame)
+  if (tab.searchHighlightTimer) window.clearTimeout(tab.searchHighlightTimer)
   terminalHosts.delete(tab.localId)
   const sessionId = tab.sessionId
 
   tab.sessionId = null
   tab.connected = false
   tab.terminal = null
+  tab.clipboardAddon = null
   tab.fitAddon = null
+  tab.searchMatches = []
+  tab.searchCurrentIndex = -1
   tab.inputDisposable = null
   tab.selectionDisposable = null
+  tab.renderDisposable = null
+  tab.scrollDisposable = null
   tab.middleClickCleanup = null
   tab.latestSelection = ''
+  tab.lastAutoCopiedSelection = ''
   tab.preservingMiddleClickSelection = false
+  tab.suppressAutoCopySelection = false
+  tab.searchHighlightFrame = 0
+  tab.searchHighlightTimer = 0
   tab.resizeObserver = null
   tab.fitFrame = 0
+  tab.autoCopyFrame = 0
   resetTabInteraction(tab)
 
   if (!closeSession || !sessionId) return
@@ -955,6 +1034,130 @@ function sendTabSyncCwd(tab: TerminalTab, path: string) {
   emitTerminalBindingSummary()
 }
 
+function handleTerminalToolCommand(command: unknown) {
+  if (command === 'search') openSearchPanel()
+}
+
+function openSearchPanel() {
+  searchOpen.value = true
+  searchPanelPosition.value = null // 重置位置
+  detectSearchPanelContainer() // 重新检测容器
+  void nextTick(() => {
+    searchInputRef.value?.focus()
+    if (searchTerm.value) performSearch()
+  })
+}
+
+function detectSearchPanelContainer() {
+  // 向上查找容器：优先查找 .workspace-view（工作台）或 .canvas-workspace（画板）
+  let element = terminalPanelRef.value?.parentElement
+  while (element) {
+    if (element.classList.contains('workspace-view')) {
+      searchPanelContainer.value = '.workspace-view'
+      return
+    }
+    if (element.classList.contains('canvas-stage')) {
+      searchPanelContainer.value = '.canvas-stage'
+      return
+    }
+    element = element.parentElement
+  }
+  // 如果没找到，回退到 body
+  searchPanelContainer.value = 'body'
+}
+
+// --- 搜索面板拖拽监听器（暴露到组件作用域以便 onBeforeUnmount 清理） ---
+let searchPanelDragMouseMove: ((e: MouseEvent) => void) | null = null
+let searchPanelDragMouseUp: (() => void) | null = null
+
+function stopSearchPanelDrag() {
+  if (searchPanelDragMouseMove) {
+    document.removeEventListener('mousemove', searchPanelDragMouseMove)
+    searchPanelDragMouseMove = null
+  }
+  if (searchPanelDragMouseUp) {
+    document.removeEventListener('mouseup', searchPanelDragMouseUp)
+    searchPanelDragMouseUp = null
+  }
+  searchPanelDragging.value = false
+}
+
+function handleSearchPanelDragStart(event: MouseEvent) {
+  if (event.button !== 0) return // 只响应左键
+
+  event.preventDefault()
+  event.stopPropagation()
+
+  const panel = searchPanelRef.value
+  if (!panel) return
+
+  // 获取容器元素
+  let container: HTMLElement | null = null
+  if (searchPanelContainer.value) {
+    container = document.querySelector(searchPanelContainer.value)
+  }
+  if (!container) return
+
+  const startX = event.clientX
+  const startY = event.clientY
+  const rect = panel.getBoundingClientRect()
+  const containerRect = container.getBoundingClientRect()
+
+  // 如果还没有自定义位置，使用当前位置（相对于容器）
+  const initialX = searchPanelPosition.value?.x ?? (rect.left - containerRect.left)
+  const initialY = searchPanelPosition.value?.y ?? (rect.top - containerRect.top)
+
+  searchPanelDragging.value = true
+
+  const handleMouseMove = (e: MouseEvent) => {
+    e.preventDefault()
+    const deltaX = e.clientX - startX
+    const deltaY = e.clientY - startY
+
+    // 更新容器尺寸（可能窗口大小改变）
+    const currentContainerRect = container!.getBoundingClientRect()
+    const maxX = currentContainerRect.width - rect.width
+    const maxY = currentContainerRect.height - rect.height
+
+    searchPanelPosition.value = {
+      x: Math.max(0, Math.min(maxX, initialX + deltaX)),
+      y: Math.max(0, Math.min(maxY, initialY + deltaY))
+    }
+  }
+
+  const handleMouseUp = () => {
+    stopSearchPanelDrag()
+  }
+
+  searchPanelDragMouseMove = handleMouseMove
+  searchPanelDragMouseUp = handleMouseUp
+
+  document.addEventListener('mousemove', searchPanelDragMouseMove)
+  document.addEventListener('mouseup', searchPanelDragMouseUp)
+}
+
+function handleSearchEnter(event: KeyboardEvent) {
+  if (event.shiftKey) {
+    findPreviousInTerminal()
+    return
+  }
+  findNextInTerminal()
+}
+
+function queueAutoCopySelection(tab: TerminalTab, selection: string) {
+  if (tab.suppressAutoCopySelection) return
+  if (!autoCopySelection.value || !selection || selection === tab.lastAutoCopiedSelection) return
+  if (tab.autoCopyFrame) window.cancelAnimationFrame(tab.autoCopyFrame)
+  tab.autoCopyFrame = window.requestAnimationFrame(() => {
+    tab.autoCopyFrame = 0
+    const currentSelection = tab.terminal?.getSelection() || selection
+    if (!autoCopySelection.value || !currentSelection || currentSelection === tab.lastAutoCopiedSelection) return
+    void clipboardProvider.writeText(SYSTEM_CLIPBOARD_SELECTION, currentSelection).then(() => {
+      tab.lastAutoCopiedSelection = currentSelection
+    }).catch(() => undefined)
+  })
+}
+
 function handleFileDragOver(event: DragEvent) {
   if (!hasChemSSHFileDrag(event)) return
   event.preventDefault()
@@ -972,67 +1175,70 @@ function handleFileDrop(event: DragEvent) {
 }
 
 function bindTerminalMiddleClickPaste(tab: TerminalTab, host: HTMLElement) {
-  let pendingText = ''
   let handledCurrentClick = false
 
   const handleMouseDown = (event: MouseEvent) => {
     if (event.button !== 1) return
-    pendingText = tab.terminal?.getSelection() || tab.latestSelection
     tab.preservingMiddleClickSelection = true
     handledCurrentClick = false
     event.preventDefault()
     event.stopPropagation()
   }
 
+  const handleClick = (event: MouseEvent) => {
+    if (event.button !== 0) return
+    scheduleSearchHighlightRefreshAfterInteraction(tab)
+  }
+
   const handleMouseUp = (event: MouseEvent) => {
     if (event.button !== 1) return
     event.preventDefault()
     event.stopPropagation()
-    pastePendingMiddleClickSelection(tab, pendingText || tab.terminal?.getSelection() || tab.latestSelection, handledCurrentClick)
+    pasteMiddleClickClipboard(tab, handledCurrentClick)
     handledCurrentClick = true
-    finishMiddleClickSelection(tab, () => {
-      pendingText = ''
-    })
+    finishMiddleClickSelection(tab)
   }
 
   const handleAuxClick = (event: MouseEvent) => {
     if (event.button !== 1) return
     event.preventDefault()
     event.stopPropagation()
-    pastePendingMiddleClickSelection(tab, pendingText || tab.terminal?.getSelection() || tab.latestSelection, handledCurrentClick)
+    pasteMiddleClickClipboard(tab, handledCurrentClick)
     handledCurrentClick = true
-    finishMiddleClickSelection(tab, () => {
-      pendingText = ''
-    })
+    finishMiddleClickSelection(tab)
   }
 
   host.addEventListener('mousedown', handleMouseDown, { capture: true })
+  host.addEventListener('click', handleClick, { capture: true })
   host.addEventListener('mouseup', handleMouseUp, { capture: true })
   host.addEventListener('auxclick', handleAuxClick, { capture: true })
 
   return () => {
     host.removeEventListener('mousedown', handleMouseDown, { capture: true })
+    host.removeEventListener('click', handleClick, { capture: true })
     host.removeEventListener('mouseup', handleMouseUp, { capture: true })
     host.removeEventListener('auxclick', handleAuxClick, { capture: true })
   }
 }
 
-function finishMiddleClickSelection(tab: TerminalTab, callback: () => void) {
+function finishMiddleClickSelection(tab: TerminalTab) {
   window.setTimeout(() => {
-    callback()
     tab.preservingMiddleClickSelection = false
   }, 0)
 }
 
-function pastePendingMiddleClickSelection(tab: TerminalTab, text: string, alreadyHandled: boolean) {
+async function pasteMiddleClickClipboard(tab: TerminalTab, alreadyHandled: boolean) {
   if (alreadyHandled) return
   const terminal = tab.terminal
   if (!terminal) return
-  if (!text) {
-    terminal.focus()
-    return
+  try {
+    const text = await clipboardProvider.readText(SYSTEM_CLIPBOARD_SELECTION)
+    if (text) {
+      terminal.paste(text)
+    }
+  } catch {
+    // Clipboard read may fail (e.g. permission denied); fall back to no-op.
   }
-  terminal.paste(text)
   terminal.focus()
 }
 
@@ -1100,53 +1306,6 @@ function fitTabTerminal(tab: TerminalTab) {
   } catch {
     // Fit can fail while the tab is mounting or temporarily hidden.
   }
-}
-
-function setTerminalFontSize(value: number | undefined) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return
-  terminalFontSize.value = clampTerminalFontSize(value)
-}
-
-function readStoredTerminalFontSize() {
-  if (typeof window === 'undefined') return DEFAULT_TERMINAL_FONT_SIZE
-  try {
-    const stored = window.localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)
-    if (stored === null) return DEFAULT_TERMINAL_FONT_SIZE
-    return clampTerminalFontSize(Number(stored))
-  } catch {
-    return DEFAULT_TERMINAL_FONT_SIZE
-  }
-}
-
-function storeTerminalFontSize(value: number) {
-  try {
-    window.localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(value))
-  } catch {
-    // Font size persistence is a convenience; the live terminal still updates.
-  }
-}
-
-function readStoredVimCompatibilityMode() {
-  if (typeof window === 'undefined') return true
-  try {
-    const stored = window.localStorage.getItem(TERMINAL_VIM_COMPATIBILITY_STORAGE_KEY)
-    return stored === null ? true : stored !== 'false'
-  } catch {
-    return true
-  }
-}
-
-function storeVimCompatibilityMode(value: boolean) {
-  try {
-    window.localStorage.setItem(TERMINAL_VIM_COMPATIBILITY_STORAGE_KEY, String(value))
-  } catch {
-    // Terminal settings persistence is optional; new sessions still use the live value.
-  }
-}
-
-function clampTerminalFontSize(value: number) {
-  if (!Number.isFinite(value)) return DEFAULT_TERMINAL_FONT_SIZE
-  return Math.min(TERMINAL_FONT_SIZE_MAX, Math.max(TERMINAL_FONT_SIZE_MIN, Math.round(value)))
 }
 
 function tabTitle(tab: TerminalTab) {

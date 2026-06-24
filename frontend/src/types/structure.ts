@@ -30,6 +30,9 @@ export interface AsePreviewResponse {
   size_limit_overridden?: boolean
   frame: AseFrame
   source?: StructureSource
+  file_incomplete?: boolean
+  scan_completed?: boolean
+  warnings?: string[]
 }
 
 export interface BinaryArraySpec {

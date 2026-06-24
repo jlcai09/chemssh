@@ -117,6 +117,10 @@ terminal:
   max_sessions: 10  # per browser client_id
   allow_sync_cwd: true
 
+security:
+  enable_token: false
+  token: change-me
+
 plugins:
   enabled: true
   directories: []
@@ -129,7 +133,7 @@ client_cache:
 
 `CHEMSSH_WORKSPACE` or `chemssh --workspace-root ...` can override `workspace.root`.
 
-`security.enable_token` and `security.token` currently exist in the settings model, but request authentication is not wired through the API dependencies or middleware. Do not treat them as active access control.
+Set `security.enable_token: true` to require every `/api` HTTP request and `/api` WebSocket connection to carry the configured token. HTTP clients should send `Authorization: Bearer <token>`; browser downloads, plugin iframes, and terminal WebSocket URLs may use a `token=<token>` query parameter. Replace `change-me` with a long random token before exposing the service beyond a trusted localhost tunnel.
 
 <details>
 <summary>Maintainer release packaging</summary>
@@ -148,7 +152,7 @@ chmod +x create-release-archive.sh
 
 On Windows, use Git Bash to run the `.sh` script. It is the supported release packaging entry point and generates both `.tar.gz` and `.zip` formats.
 
-This will build the frontend and create `release/chemssh-{VERSION}.tar.gz` and `.zip` with checksums. The release package includes pre-built `frontend/dist/` (no Node.js required for users).
+This will build the frontend and create `release/chemssh-{VERSION}/`, `.tar.gz`, and `.zip` with checksums. The release package includes pre-built `frontend/dist/` (no Node.js required for users).
 
 See [docs/RELEASE.md](docs/RELEASE.md) for detailed release procedures.
 

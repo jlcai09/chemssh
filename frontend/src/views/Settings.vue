@@ -78,19 +78,17 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { clearClientCache } from '../api/clientCache'
 import { clearLocalClientPreferences } from '../api/clientPreferences'
 import { getClientId, getClientIdSource } from '../api/clientSession'
-import type { SystemInfo } from '../api/system'
+import { storeToRefs } from 'pinia'
 import type { ThemePreferences } from '../types/canvasBoard'
 import { scopedLocalStorageKey, getCurrentWorkspaceScopeKey } from '../api/workspaceScope'
 import { t } from '../i18n'
+import { useSystemStore } from '../stores/system'
+import { usePreferencesStore } from '../stores/preferences'
 
-const props = defineProps<{
-  systemInfo?: SystemInfo | null
-  themePreferences: ThemePreferences
-}>()
-
-const emit = defineEmits<{
-  'update:theme-preferences': [preferences: ThemePreferences]
-}>()
+const systemStore = useSystemStore()
+const preferencesStore = usePreferencesStore()
+const { systemInfo } = storeToRefs(systemStore)
+const { themePreferences } = storeToRefs(preferencesStore)
 
 const clientId = getClientId()
 const clientIdSource = getClientIdSource()
@@ -105,10 +103,7 @@ const clientIdSourceLabel = computed(() => {
 const clearing = ref(false)
 
 function setThemePreference(key: keyof ThemePreferences, value: string | number | boolean) {
-  emit('update:theme-preferences', {
-    ...props.themePreferences,
-    [key]: value === true
-  })
+  preferencesStore.setThemePreference(key, value === true)
 }
 
 function setAnimatedBackdrop(value: string | number | boolean) {

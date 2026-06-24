@@ -9,6 +9,8 @@ def test_detect_structure_types() -> None:
     assert detect_preview(Path("movie.traj")) == ("structure", "traj")
     assert detect_preview(Path("movie.extxyz")) == ("structure", "extxyz")
     assert detect_preview(Path("model.xsd")) == ("structure", "xsd")
+    assert detect_preview(Path("model.xtd")) == ("structure", "xtd")
+    assert detect_preview(Path("movie.arc")) == ("structure", "dmol-arc")
     assert detect_preview(Path("structures.db")) == ("structure", "db")
 
 

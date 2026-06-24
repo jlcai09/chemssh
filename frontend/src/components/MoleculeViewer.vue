@@ -45,16 +45,46 @@
         <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :icon="Refresh" circle size="small" @click="refreshStructure" />
         </el-tooltip>
-        <el-tooltip :content="t('viewer.exportScreenshot')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
-          <el-button :icon="Download" circle size="small" @click="exportPng" />
-        </el-tooltip>
+        <el-dropdown trigger="click" @command="handleExportCommand">
+          <el-button :icon="Download" circle size="small" />
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="original">{{ t('viewer.exportOriginal') }}</el-dropdown-item>
+              <el-dropdown-item command="xyz">{{ t('viewer.exportXYZ') }}</el-dropdown-item>
+              <el-dropdown-item command="arc">{{ t('viewer.exportArc') }}</el-dropdown-item>
+              <el-dropdown-item command="screenshot">{{ t('viewer.exportScreenshot') }}</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </div>
     <div class="viewer-stage">
       <div ref="container" class="viewer-canvas" />
       <div v-if="asePreview" class="atom-index-base-status" aria-live="polite">
         {{ atomIndexBaseStatus }}
+        <span v-if="asePreview?.file_incomplete" class="file-incomplete-hint">{{ t('viewer.fileIncomplete') }}</span>
       </div>
+      <div v-if="showExpandedStructureWarning" class="structure-warning-banner" role="status">
+        <el-icon><WarningFilled /></el-icon>
+        <span>{{ structureWarningText }}</span>
+        <el-tooltip :content="t('panel.close')" placement="top" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
+          <button class="structure-warning-close" type="button" :aria-label="t('panel.close')" @click="dismissStructureWarning">
+            <el-icon><Close /></el-icon>
+          </button>
+        </el-tooltip>
+      </div>
+      <el-tooltip
+        v-else-if="showCollapsedStructureWarning"
+        :content="structureWarningText"
+        placement="top"
+        popper-class="chemssh-passive-tooltip"
+        :enterable="false"
+        :show-after="150"
+      >
+        <button class="structure-warning-indicator" type="button" :aria-label="structureWarningText">
+          <el-icon><WarningFilled /></el-icon>
+        </button>
+      </el-tooltip>
       <div v-if="asePreview" class="viewer-floating-tools">
         <el-popover trigger="click" placement="right-start" :width="260" :teleported="false">
           <template #reference>
@@ -242,8 +272,11 @@
           <span v-if="cacheStatus">{{ cacheStatus }}</span>
         </div>
       </div>
-      <div v-if="frameLoading" class="viewer-loading">
-        <el-skeleton :rows="2" animated />
+      <div v-if="frameLoading" class="viewer-loading" aria-live="polite">
+        <div class="viewer-loading-card">
+          <span class="viewer-loading-title">{{ t('viewer.frameLoading') }}</span>
+          <span class="viewer-loading-frame">{{ frameNumberModeLabel }} {{ frameIndexToDisplayValue(requestedFrameIndex) }}</span>
+        </div>
       </div>
     </div>
   </div>
@@ -251,11 +284,13 @@
 
 <script setup lang="ts">
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
-import { CaretBottom, CaretTop, Connection, Crop, Download, Grid, Refresh, View, WarningFilled } from '@element-plus/icons-vue'
+import { CaretBottom, CaretTop, Close, Connection, Crop, Download, Grid, Refresh, View, WarningFilled } from '@element-plus/icons-vue'
 import { readStructureFrame, readStructureFrameChunk, readStructureFrameJsonChunk } from '../api/structures'
+import { downloadUrl } from '../api/http'
 import { t } from '../i18n'
 import type { AseFrame, AseFrameChunk, AsePreviewResponse } from '../types/structure'
 import type { AtomIndexBase, StructureFrame, TrajectoryStore, ViewerStyleMode } from '../viewer'
+import { exportToXYZ, exportTrajectoryToXYZ, exportTrajectoryToArc, downloadTextFile, getBaseFilename } from '../utils/structureExport'
 
 type StyleMode = ViewerStyleMode
 type ViewerModule = typeof import('../viewer')
@@ -345,17 +380,19 @@ const supercellY = ref(1)
 const supercellZ = ref(1)
 const wrapAtoms = ref(false)
 const frameNumberMode = ref<FrameNumberMode>('index')
-const frameInput = ref(0)
+const requestedFrameIndex = ref(0)
 const frameLoading = ref(false)
 const cachedFrameCount = ref(0)
 const currentFrame = ref<AseFrame>(props.asePreview?.frame ?? emptyFrame())
 const overlayCollapsed = ref(false)
+const structureWarningDismissed = ref(false)
 
 let chemsshViewer: ChemSSHViewerInstance | null = null
 let resizeObserver: ResizeObserver | null = null
 let renderVersion = 0
 let scheduledFrame: number | null = null
 let frameRequestHandle = 0
+let frameLoadVersion = 0
 let preloadVersion = 0
 let trajectoryStore: TrajectoryStore | null = null
 let viewerModulePromise: Promise<ViewerModule> | null = null
@@ -397,12 +434,27 @@ const frameDisplayMax = computed(() => {
   return effectiveFrameNumberMode.value === 'frame' ? Math.max(1, frames) : Math.max(0, frames - 1)
 })
 const frameDisplayInput = computed({
-  get: () => frameIndexToDisplayValue(frameInput.value),
+  get: () => frameIndexToDisplayValue(requestedFrameIndex.value),
   set: value => {
-    frameInput.value = displayValueToFrameIndex(value)
+    requestedFrameIndex.value = displayValueToFrameIndex(value)
   }
 })
 const currentFrameDisplayValue = computed(() => frameIndexToDisplayValue(currentFrame.value.frame_index))
+const structureWarningMessages = computed(() => {
+  const warnings = props.asePreview?.warnings ?? []
+  const messages: string[] = []
+  if (warnings.includes('vasp_outcar_md_may_lack_structure')) {
+    messages.push(t('viewer.vaspOutcarMdWarning'))
+  }
+  if (warnings.includes('vasp_outcar_constraints_missing') || warnings.includes('vasp_outcar_constraints_unreadable')) {
+    messages.push(t('viewer.vaspOutcarConstraintWarning'))
+  }
+  return messages
+})
+const structureWarningText = computed(() => structureWarningMessages.value.join(' '))
+const showStructureWarning = computed(() => structureWarningMessages.value.length > 0)
+const showExpandedStructureWarning = computed(() => showStructureWarning.value && !structureWarningDismissed.value)
+const showCollapsedStructureWarning = computed(() => showStructureWarning.value && structureWarningDismissed.value)
 
 // Optimize: Cache chart computation to avoid rebuilding on every tick
 const trajectoryMetricsChart = computed(() => {
@@ -416,7 +468,8 @@ const trajectoryMetricsChart = computed(() => {
 
   const energy = buildMetricCurve('energy', 'Energy', '#176b87', 'rgba(23, 107, 135, 0.12)')
   const fmax = buildMetricCurve('fmax', 'Fmax', '#9a5b13', 'rgba(154, 91, 19, 0.12)')
-  if (!energy || !fmax) return null
+  const curves = [energy, fmax].filter((curve): curve is TrajectoryMetricCurve => curve !== null)
+  if (curves.length === 0) return null
 
   return {
     width: metricChartWidth,
@@ -424,8 +477,8 @@ const trajectoryMetricsChart = computed(() => {
     padding: metricChartPadding,
     axisY: metricChartHeight - metricChartPadding.bottom,
     xAxisLabel: frameNumberModeLabel.value,
-    sampled: energy.sampled || fmax.sampled,
-    curves: [energy, fmax]
+    sampled: curves.some(curve => curve.sampled),
+    curves
   }
 })
 
@@ -560,6 +613,124 @@ function resetView() {
 
 function refreshStructure() {
   emit('refresh')
+}
+
+function dismissStructureWarning() {
+  structureWarningDismissed.value = true
+}
+
+function handleExportCommand(command: string) {
+  switch (command) {
+    case 'original':
+      exportOriginal()
+      break
+    case 'xyz':
+      exportXYZ()
+      break
+    case 'arc':
+      exportArc()
+      break
+    case 'screenshot':
+      exportPng()
+      break
+  }
+}
+
+function exportOriginal() {
+  if (!props.asePreview) return
+  const path = props.asePreview.path
+  const url = downloadUrl(path)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = props.asePreview.name
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+}
+
+async function exportXYZ() {
+  if (!props.asePreview) return
+  try {
+    const basename = getBaseFilename(props.asePreview.path)
+    const filename = `${basename}.xyz`
+
+    // For trajectories, export all frames
+    if (props.asePreview.is_trajectory) {
+      const frames = await loadAllFrames()
+      if (frames.length === 0) return
+      const content = exportTrajectoryToXYZ(frames, basename)
+      downloadTextFile(content, filename, 'chemical/x-xyz')
+    } else {
+      // For single structure, export current frame
+      const frame = getCurrentFrame()
+      if (!frame) return
+      const content = exportToXYZ(frame, basename)
+      downloadTextFile(content, filename, 'chemical/x-xyz')
+    }
+  } catch (error) {
+    console.error('Failed to export XYZ:', error)
+  }
+}
+
+async function exportArc() {
+  if (!props.asePreview) return
+  try {
+    const basename = getBaseFilename(props.asePreview.path)
+    const filename = `${basename}.arc`
+
+    // For trajectories, export all frames
+    if (props.asePreview.is_trajectory) {
+      const frames = await loadAllFrames()
+      if (frames.length === 0) return
+      const content = exportTrajectoryToArc(frames, basename)
+      downloadTextFile(content, filename, 'chemical/x-arc')
+    } else {
+      // For single structure, export current frame as a single-frame trajectory
+      const frame = getCurrentFrame()
+      if (!frame) return
+      const content = exportTrajectoryToArc([frame], basename)
+      downloadTextFile(content, filename, 'chemical/x-arc')
+    }
+  } catch (error) {
+    console.error('Failed to export Arc:', error)
+  }
+}
+
+async function loadAllFrames(): Promise<AseFrame[]> {
+  if (!props.asePreview) return []
+
+  const frames: AseFrame[] = []
+  const nFrames = props.asePreview.n_frames
+
+  // Try to load from trajectory store first
+  if (trajectoryStore && trajectoryStore.nFrames === nFrames) {
+    for (let i = 0; i < nFrames; i++) {
+      if (isStoreFrameAvailable(trajectoryStore, i)) {
+        const frame = frameFromStore(i)
+        if (frame) frames.push(frame)
+      }
+    }
+    // If we got all frames from store, return them
+    if (frames.length === nFrames) return frames
+  }
+
+  // Otherwise, load all frames from server
+  frames.length = 0
+  for (let i = 0; i < nFrames; i++) {
+    try {
+      const frame = await loadFrame(i)
+      frames.push(frame)
+    } catch (error) {
+      console.error(`Failed to load frame ${i}:`, error)
+    }
+  }
+
+  return frames
+}
+
+function getCurrentFrame(): AseFrame | null {
+  // Use the current frame ref directly
+  return currentFrame.value || props.asePreview?.frame || null
 }
 
 function exportPng() {
@@ -706,7 +877,7 @@ function clampNumber(value: number, min: number, max: number) {
 
 function scheduleFrameChange() {
   if (!props.asePreview) return
-  scheduledFrame = clampFrameIndex(Number(frameInput.value))
+  scheduledFrame = clampFrameIndex(Number(requestedFrameIndex.value))
   if (frameRequestHandle) return
   frameRequestHandle = window.requestAnimationFrame(() => {
     frameRequestHandle = 0
@@ -784,10 +955,15 @@ async function setFrame(index: number) {
   const preview = props.asePreview
   if (!preview) return
   const target = clampFrameIndex(index)
-  if (target === currentFrame.value.frame_index) return
+  requestedFrameIndex.value = target
+  const requestVersion = ++frameLoadVersion
+  if (target === currentFrame.value.frame_index) {
+    frameLoading.value = false
+    return
+  }
 
   if (trajectoryStore && isStoreFrameAvailable(trajectoryStore, target)) {
-    applyTrajectoryFrame(target)
+    applyTrajectoryFrame(target, requestVersion)
     return
   }
 
@@ -795,12 +971,13 @@ async function setFrame(index: number) {
     frameLoading.value = true
     try {
       await ensureChunk(target)
+      if (requestVersion !== frameLoadVersion || requestedFrameIndex.value !== target) return
       if (trajectoryStore && isStoreFrameAvailable(trajectoryStore, target)) {
-        applyTrajectoryFrame(target)
+        applyTrajectoryFrame(target, requestVersion)
         return
       }
     } finally {
-      frameLoading.value = false
+      if (requestVersion === frameLoadVersion) frameLoading.value = false
     }
   }
 
@@ -811,14 +988,16 @@ async function setFrame(index: number) {
     } catch {
       // Fall back to the single-frame endpoint below.
     } finally {
-      frameLoading.value = false
+      if (requestVersion === frameLoadVersion) frameLoading.value = false
     }
+    if (requestVersion !== frameLoadVersion || requestedFrameIndex.value !== target) return
   }
 
   const cached = jsonFrameCache.get(target)
   if (cached) {
+    if (requestVersion !== frameLoadVersion || requestedFrameIndex.value !== target) return
     currentFrame.value = cached
-    frameInput.value = target
+    requestedFrameIndex.value = target
     await renderStructure(true)
     warmJsonFramesAround(target)
     return
@@ -827,17 +1006,19 @@ async function setFrame(index: number) {
   frameLoading.value = true
   try {
     const frame = await loadFrame(target)
+    if (requestVersion !== frameLoadVersion || requestedFrameIndex.value !== target) return
     currentFrame.value = frame
     cacheJsonFrame(frame)
-    frameInput.value = target
+    requestedFrameIndex.value = target
     await renderStructure(true)
     warmJsonFramesAround(target)
   } finally {
-    frameLoading.value = false
+    if (requestVersion === frameLoadVersion) frameLoading.value = false
   }
 }
 
-function applyTrajectoryFrame(index: number) {
+function applyTrajectoryFrame(index: number, requestVersion = frameLoadVersion) {
+  if (requestVersion !== frameLoadVersion || requestedFrameIndex.value !== index) return
   if (!trajectoryStore) return
   const energy = trajectoryStore.energy?.[index]
   const fmax = trajectoryStore.fmax?.[index]
@@ -847,7 +1028,8 @@ function applyTrajectoryFrame(index: number) {
     energy: energy === undefined || Number.isNaN(energy) ? null : energy,
     fmax: fmax === undefined || Number.isNaN(fmax) ? null : fmax
   }
-  frameInput.value = index
+  requestedFrameIndex.value = index
+  frameLoading.value = false
   chemsshViewer?.setFrame(index)
 }
 
@@ -965,7 +1147,7 @@ async function ensureChunk(index: number) {
 async function ensureChunkStart(chunkStart: number, preview: AsePreviewResponse, version?: number) {
   if (trajectoryStore && isChunkAvailable(trajectoryStore, chunkStart, preview)) return
   const pending = pendingChunks.get(chunkStart)
-  if (pending && pending.version === version) {
+  if (pending) {
     await pending.promise
     return
   }
@@ -997,7 +1179,7 @@ async function ensureJsonChunk(index: number, preview: AsePreviewResponse) {
 async function ensureJsonChunkStart(chunkStart: number, preview: AsePreviewResponse, version?: number) {
   if (isJsonChunkAvailable(chunkStart, preview)) return
   const pending = pendingJsonChunks.get(chunkStart)
-  if (pending && pending.version === version) {
+  if (pending) {
     await pending.promise
     return
   }
@@ -1238,7 +1420,7 @@ function resetAseState() {
   pendingJsonChunks.clear()
   const frame = props.asePreview?.frame ?? emptyFrame()
   currentFrame.value = frame
-  frameInput.value = frame.frame_index
+  requestedFrameIndex.value = frame.frame_index
   cacheJsonFrame(frame)
   trajectoryStore = props.asePreview ? createTrajectoryStore(props.asePreview) : null
   updateCachedFrameCount()
@@ -1293,9 +1475,17 @@ onBeforeUnmount(() => {
 watch(
   () => props.asePreview,
   () => {
+    structureWarningDismissed.value = false
     resetStructureSwitchState()
     resetAseState()
     void renderStructure()
+  }
+)
+
+watch(
+  showStructureWarning,
+  visible => {
+    if (!visible) structureWarningDismissed.value = false
   }
 )
 

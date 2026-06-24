@@ -2,7 +2,8 @@
   <div
     ref="treeRef"
     class="file-tree"
-    :class="{ 'is-column-resizing': Boolean(activeColumnResize) }"
+    :class="{ 'is-column-resizing': Boolean(activeColumnResize), 'is-loading': loading }"
+    :aria-busy="loading"
     :style="columnStyle"
     role="grid"
     aria-multiselectable="true"
@@ -88,12 +89,14 @@
         tabindex="0"
         draggable="false"
         aria-selected="false"
+        data-file-role="parent"
+        :data-file-path="parentItem.path"
         @mousedown.left.stop
         @dragenter="handleMoveDragOverItem(parentItem, $event)"
         @dragover="handleMoveDragOverItem(parentItem, $event)"
         @dragleave="handleMoveDragLeaveItem(parentItem, $event)"
         @drop="handleMoveDropItem(parentItem, $event)"
-        @dblclick="emit('open', parentItem)"
+        @click="handleParentRowClick($event)"
         @keydown.enter.prevent="emit('open', parentItem)"
       >
         <span class="file-cell file-icon-cell" role="gridcell">
@@ -134,6 +137,8 @@
         tabindex="0"
         draggable="true"
         :aria-selected="selectedPathSet.has(item.path)"
+        data-file-role="item"
+        :data-file-path="item.path"
         @focus="focusedIndex = index"
         @mousedown.left="beginSelect(index, $event)"
         @contextmenu.prevent="openContextMenu(index, $event)"
@@ -144,7 +149,7 @@
         @dragleave="handleMoveDragLeave(index, $event)"
         @drop="handleMoveDrop(index, $event)"
         @dragend="finishFileDrag"
-        @dblclick="handleOpen(index)"
+        @click="handleRowClick(index, $event)"
         @keydown="handleKeydown(index, $event)"
       >
         <span class="file-cell file-icon-cell" role="gridcell">
@@ -169,6 +174,14 @@
         <span class="file-cell file-time-cell" role="gridcell">{{ formatDate(item.mtime) }}</span>
       </div>
       <div class="file-list-virtual-spacer" :style="{ height: `${bottomSpacerHeight}px` }" aria-hidden="true" />
+    </div>
+    <div class="file-tree-status" role="status">
+      {{ fileTreeStatusText }}
+    </div>
+    <div v-if="loading" class="file-tree-loading-indicator" aria-hidden="true">
+      <el-icon class="is-loading">
+        <Loading />
+      </el-icon>
     </div>
     <div
       v-if="scrollState.showVertical"
@@ -198,8 +211,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CaretBottom, CaretTop, Document, Folder, View } from '@element-plus/icons-vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
+import { CaretBottom, CaretTop, Document, Folder, Loading, View } from '@element-plus/icons-vue'
 import {
   clearActiveChemSSHFileDragPayload,
   getActiveChemSSHFileDragPayload,
@@ -212,12 +225,16 @@ import { hasActivePreviewProvider, type FilePreviewProvider } from '../api/fileP
 import type { FileItem } from '../api/files'
 import { launcherBridgeIconFailureKey } from '../api/launcherBridge'
 import { locale, t } from '../i18n'
+import { useFileTreeColumns } from '../composables/useFileTreeColumns'
+import { useFileTreeScrollbars } from '../composables/useFileTreeScrollbars'
+import { useFileTreeSort } from '../composables/useFileTreeSort'
 
 const props = withDefaults(
   defineProps<{
     items: FileItem[]
     parentPath?: string | null
     selectedItems?: FileItem[]
+    loading?: boolean
     previewProviders?: FilePreviewProvider[]
     systemIconProvider?: {
       enabled: boolean
@@ -226,6 +243,7 @@ const props = withDefaults(
   }>(),
   {
     selectedItems: () => [],
+    loading: false,
     previewProviders: () => [],
     systemIconProvider: undefined
   }
@@ -238,100 +256,50 @@ const emit = defineEmits<{
   open: [item: FileItem]
 }>()
 
-type SortKey = 'name' | 'size' | 'mtime'
-type SortDirection = 'asc' | 'desc'
-type ColumnResizeTarget = 'name-size' | 'size-time'
-
-const sortKey = ref<SortKey>('name')
-const sortDirection = ref<SortDirection>('asc')
-const selectedPathSet = computed(() => new Set(props.selectedItems.map(item => item.path)))
-const failedSystemIconKeys = ref(new Set<string>())
-const treeRef = ref<HTMLElement | null>(null)
-const bodyRef = ref<HTMLElement | null>(null)
-const rowRefs = ref<(HTMLElement | null)[]>([])
-const focusedIndex = ref<number | null>(null)
-const anchorIndex = ref<number | null>(null)
-const dragActive = ref(false)
-const dragAnchor = ref<number | null>(null)
-const dragOverIndex = ref<number | null>(null)
-const blankDragActive = ref(false)
-const blankDragPathSet = ref(new Set<string>())
-const exportDragPathSet = ref(new Set<string>())
-const exportDragArmed = ref(false)
-const exportDragActive = ref(false)
-const moveDropTargetPath = ref<string | null>(null)
-const bodyScrollTop = ref(0)
-const bodyViewportHeight = ref(0)
-const scrollState = ref({
-  showVertical: false,
-  showHorizontal: false,
-  verticalThumbSize: 28,
-  verticalThumbOffset: 0,
-  horizontalThumbSize: 28,
-  horizontalThumbOffset: 0
-})
-let blankDragStartX = 0
-let blankDragStartY = 0
-let blankDragCurrentX = 0
-let blankDragCurrentY = 0
-let longPressTimer: number | null = null
-let pressIndex: number | null = null
-let pressStartX = 0
-let pressStartY = 0
-let columnResizeStartX = 0
-let columnResizeStartSize = 0
-let columnResizeStartTime = 0
-let previousBodyCursor = ''
-let previousBodyUserSelect = ''
-let scrollResizeObserver: ResizeObserver | null = null
-let activeScrollbarDrag: {
-  axis: 'vertical' | 'horizontal'
-  pointerId: number
-  startClient: number
-  startScroll: number
-  maxScroll: number
-  maxThumbOffset: number
-} | null = null
-
 const LONG_PRESS_MS = 430
 const SELECT_DRAG_THRESHOLD = 4
-const DEFAULT_SIZE_COLUMN_WIDTH = 88
-const DEFAULT_TIME_COLUMN_WIDTH = 152
-const MIN_NAME_COLUMN_WIDTH = 160
-const MIN_SIZE_COLUMN_WIDTH = 64
-const MAX_SIZE_COLUMN_WIDTH = 168
-const MIN_TIME_COLUMN_WIDTH = 112
-const MAX_TIME_COLUMN_WIDTH = 260
-const FILE_ICON_COLUMN_WIDTH = 34
-const FILE_COLUMN_RESIZER_WIDTH = 10
-const FLOATING_SCROLLBAR_MIN_THUMB = 28
+const DOUBLE_CLICK_MS = 350
+const DOUBLE_CLICK_DISTANCE = 6
 const FILE_ROW_SLOT_HEIGHT = 40
 const FILE_BODY_VERTICAL_PADDING = 4
 const VIRTUAL_ROW_OVERSCAN = 8
+const DEFERRED_OPEN_MAX_AGE = 800
 
-const activeColumnResize = ref<ColumnResizeTarget | null>(null)
-const sizeColumnWidth = ref(DEFAULT_SIZE_COLUMN_WIDTH)
-const timeColumnWidth = ref(DEFAULT_TIME_COLUMN_WIDTH)
+const { sortKey, sortDirection, sortedItems, toggleSort, sortAria, sortTitle } = useFileTreeSort(
+  toRef(props, 'items')
+)
 
-const columnStyle = computed<Record<string, string>>(() => ({
-  '--file-size-col': `${sizeColumnWidth.value}px`,
-  '--file-time-col': `${timeColumnWidth.value}px`
-}))
+const treeRef = ref<HTMLElement | null>(null)
+const { activeColumnResize, columnStyle, startColumnResize, resetColumnWidths } = useFileTreeColumns(treeRef)
 
-const nameCollator = computed(() => new Intl.Collator(locale.value === 'zh' ? 'zh-CN' : 'en-US', {
-  numeric: true,
-  sensitivity: 'base'
-}))
+const bodyRef = ref<HTMLElement | null>(null)
+const rowRefs = ref<(HTMLElement | null)[]>([])
+const bodyScrollTop = ref(0)
+const bodyViewportHeight = ref(0)
 
-const sortedItems = computed(() => {
-  return [...props.items].sort((a, b) => {
-    const typeCompare = typeRank(a) - typeRank(b)
-    if (typeCompare !== 0) return typeCompare
+function updateVirtualMetrics() {
+  const body = bodyRef.value
+  if (!body) return
+  bodyScrollTop.value = body.scrollTop
+  bodyViewportHeight.value = body.clientHeight
+  updateScrollbars()
+}
 
-    const result = compareItems(a, b)
-    return sortDirection.value === 'asc' ? result : -result
-  })
-})
+const {
+  scrollState,
+  updateScrollbars,
+  startScrollbarThumbDrag,
+  stopScrollbarThumbDrag,
+  handleScrollbarTrackPointerDown,
+  isScrollbarEvent
+} = useFileTreeScrollbars(bodyRef, updateVirtualMetrics)
+
+function handleBodyScroll() {
+  updateVirtualMetrics()
+}
+
+const selectedPathSet = computed(() => new Set(props.selectedItems.map(item => item.path)))
+const failedSystemIconKeys = ref(new Set<string>())
 
 const parentItem = computed<FileItem | null>(() => {
   if (!props.parentPath) return null
@@ -347,7 +315,7 @@ const parentItem = computed<FileItem | null>(() => {
   }
 })
 
-const parentSlotHeight = computed(() => parentItem.value ? FILE_ROW_SLOT_HEIGHT : 0)
+const parentSlotHeight = computed(() => (parentItem.value ? FILE_ROW_SLOT_HEIGHT : 0))
 
 const virtualRange = computed(() => {
   const count = sortedItems.value.length
@@ -374,252 +342,42 @@ const virtualRows = computed(() => {
 })
 
 const topSpacerHeight = computed(() => virtualRange.value.start * FILE_ROW_SLOT_HEIGHT)
-const bottomSpacerHeight = computed(() => Math.max(0, (sortedItems.value.length - virtualRange.value.end) * FILE_ROW_SLOT_HEIGHT))
+const bottomSpacerHeight = computed(() =>
+  Math.max(0, (sortedItems.value.length - virtualRange.value.end) * FILE_ROW_SLOT_HEIGHT)
+)
 
-function typeRank(item: FileItem) {
-  return item.type === 'directory' ? 0 : 1
-}
+const statusItems = computed(() => (props.selectedItems.length > 0 ? props.selectedItems : props.items))
+const statusFileBytes = computed(() =>
+  statusItems.value.reduce((total, item) => (item.type === 'file' ? total + (item.size ?? 0) : total), 0)
+)
+const fileTreeStatusText = computed(() => {
+  const key = props.selectedItems.length > 0 ? 'file.statusSelected' : 'file.statusDirectory'
+  return t(key, {
+    count: statusItems.value.length,
+    size: formatSize(statusFileBytes.value)
+  })
+})
 
-function isPreviewableItem(item: FileItem) {
-  return item.preview_type === 'structure' || hasActivePreviewProvider(item, props.previewProviders)
-}
-
-function systemIconUrl(item: FileItem | null) {
-  if (!item || !props.systemIconProvider?.enabled) return null
-  if (failedSystemIconKeys.value.has(launcherBridgeIconFailureKey(item))) return null
-  return props.systemIconProvider.iconUrl(item)
-}
-
-function handleSystemIconError(item: FileItem) {
-  const next = new Set(failedSystemIconKeys.value)
-  next.add(launcherBridgeIconFailureKey(item))
-  failedSystemIconKeys.value = next
-}
-
-function nameCompare(a: FileItem, b: FileItem) {
-  return nameCollator.value.compare(a.name, b.name)
-}
-
-function timestamp(value: string) {
-  const time = new Date(value).getTime()
-  return Number.isNaN(time) ? 0 : time
-}
-
-function compareItems(a: FileItem, b: FileItem) {
-  let result = 0
-  if (sortKey.value === 'name') {
-    result = nameCompare(a, b)
-  } else if (sortKey.value === 'size') {
-    result = (a.size ?? -1) - (b.size ?? -1)
-  } else {
-    result = timestamp(a.mtime) - timestamp(b.mtime)
-  }
-
-  return result === 0 ? nameCompare(a, b) : result
-}
-
-function sortFieldLabel(key: SortKey) {
-  if (key === 'name') return t('file.name')
-  if (key === 'size') return t('file.size')
-  return t('file.modified')
-}
-
-function sortAria(key: SortKey) {
-  if (sortKey.value !== key) return 'none'
-  return sortDirection.value === 'asc' ? 'ascending' : 'descending'
-}
-
-function sortTitle(key: SortKey) {
-  const direction = sortDirection.value === 'asc' ? t('file.sortAscending') : t('file.sortDescending')
-  return sortKey.value === key ? `${t('file.sortBy', { field: sortFieldLabel(key) })}: ${direction}` : t('file.sortBy', { field: sortFieldLabel(key) })
-}
-
-function toggleSort(key: SortKey) {
-  if (sortKey.value === key) {
-    sortDirection.value = sortDirection.value === 'asc' ? 'desc' : 'asc'
-  } else {
-    sortKey.value = key
-    sortDirection.value = 'asc'
-  }
-}
+const focusedIndex = ref<number | null>(null)
+const anchorIndex = ref<number | null>(null)
+const dragActive = ref(false)
+const dragAnchor = ref<number | null>(null)
+const dragOverIndex = ref<number | null>(null)
+const blankDragActive = ref(false)
+const blankDragPathSet = ref(new Set<string>())
 
 function clamp(value: number, min: number, max: number) {
   if (max < min) return min
   return Math.min(Math.max(value, min), max)
 }
 
-function maxSizeColumnWidth() {
-  const width = treeRef.value?.getBoundingClientRect().width ?? 0
-  if (width <= 0) return MAX_SIZE_COLUMN_WIDTH
-  const reserved = FILE_ICON_COLUMN_WIDTH + FILE_COLUMN_RESIZER_WIDTH * 2 + MIN_NAME_COLUMN_WIDTH + timeColumnWidth.value
-  return Math.min(MAX_SIZE_COLUMN_WIDTH, Math.max(MIN_SIZE_COLUMN_WIDTH, width - reserved))
-}
-
-function startColumnResize(target: ColumnResizeTarget, event: PointerEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-  activeColumnResize.value = target
-  columnResizeStartX = event.clientX
-  columnResizeStartSize = sizeColumnWidth.value
-  columnResizeStartTime = timeColumnWidth.value
-  previousBodyCursor = document.body.style.cursor
-  previousBodyUserSelect = document.body.style.userSelect
-  document.body.style.cursor = 'col-resize'
-  document.body.style.userSelect = 'none'
-  window.addEventListener('pointermove', handleColumnResizeMove)
-  window.addEventListener('pointerup', stopColumnResize, { once: true })
-  window.addEventListener('pointercancel', stopColumnResize, { once: true })
-}
-
-function handleColumnResizeMove(event: PointerEvent) {
-  if (!activeColumnResize.value) return
-  const delta = event.clientX - columnResizeStartX
-
-  if (activeColumnResize.value === 'name-size') {
-    const maxSize = maxSizeColumnWidth()
-    sizeColumnWidth.value = clamp(columnResizeStartSize - delta, MIN_SIZE_COLUMN_WIDTH, maxSize)
-    return
-  }
-
-  const combinedWidth = columnResizeStartSize + columnResizeStartTime
-  const minSize = Math.max(MIN_SIZE_COLUMN_WIDTH, combinedWidth - MAX_TIME_COLUMN_WIDTH)
-  const maxSize = Math.min(MAX_SIZE_COLUMN_WIDTH, combinedWidth - MIN_TIME_COLUMN_WIDTH, maxSizeColumnWidth())
-  const nextSize = clamp(columnResizeStartSize + delta, minSize, maxSize)
-  sizeColumnWidth.value = nextSize
-  timeColumnWidth.value = clamp(combinedWidth - nextSize, MIN_TIME_COLUMN_WIDTH, MAX_TIME_COLUMN_WIDTH)
-}
-
-function stopColumnResize() {
-  if (!activeColumnResize.value) return
-  activeColumnResize.value = null
-  document.body.style.cursor = previousBodyCursor
-  document.body.style.userSelect = previousBodyUserSelect
-  window.removeEventListener('pointermove', handleColumnResizeMove)
-  window.removeEventListener('pointerup', stopColumnResize)
-  window.removeEventListener('pointercancel', stopColumnResize)
-}
-
-function resetColumnWidths() {
-  sizeColumnWidth.value = DEFAULT_SIZE_COLUMN_WIDTH
-  timeColumnWidth.value = DEFAULT_TIME_COLUMN_WIDTH
+function clampIndex(index: number) {
+  if (sortedItems.value.length === 0) return -1
+  return Math.min(Math.max(index, 0), sortedItems.value.length - 1)
 }
 
 function setRowRef(el: unknown, index: number) {
   rowRefs.value[index] = el instanceof HTMLElement ? el : null
-}
-
-function updateVirtualMetrics() {
-  const body = bodyRef.value
-  if (!body) return
-  bodyScrollTop.value = body.scrollTop
-  bodyViewportHeight.value = body.clientHeight
-  updateScrollbars()
-}
-
-function handleBodyScroll() {
-  updateVirtualMetrics()
-}
-
-function updateScrollbars() {
-  const body = bodyRef.value
-  if (!body) return
-
-  const showVertical = body.scrollHeight > body.clientHeight + 1
-  const showHorizontal = body.scrollWidth > body.clientWidth + 1
-  const verticalTrack = Math.max(0, body.clientHeight - (showHorizontal ? 12 : 0))
-  const horizontalTrack = Math.max(0, body.clientWidth - (showVertical ? 12 : 0))
-  const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight)
-  const maxScrollLeft = Math.max(0, body.scrollWidth - body.clientWidth)
-  const verticalThumbSize = showVertical
-    ? clamp((body.clientHeight / body.scrollHeight) * verticalTrack, FLOATING_SCROLLBAR_MIN_THUMB, verticalTrack)
-    : FLOATING_SCROLLBAR_MIN_THUMB
-  const horizontalThumbSize = showHorizontal
-    ? clamp((body.clientWidth / body.scrollWidth) * horizontalTrack, FLOATING_SCROLLBAR_MIN_THUMB, horizontalTrack)
-    : FLOATING_SCROLLBAR_MIN_THUMB
-  const verticalMaxOffset = Math.max(0, verticalTrack - verticalThumbSize)
-  const horizontalMaxOffset = Math.max(0, horizontalTrack - horizontalThumbSize)
-
-  scrollState.value = {
-    showVertical,
-    showHorizontal,
-    verticalThumbSize,
-    verticalThumbOffset: maxScrollTop <= 0 ? 0 : (body.scrollTop / maxScrollTop) * verticalMaxOffset,
-    horizontalThumbSize,
-    horizontalThumbOffset: maxScrollLeft <= 0 ? 0 : (body.scrollLeft / maxScrollLeft) * horizontalMaxOffset
-  }
-}
-
-function startScrollbarThumbDrag(axis: 'vertical' | 'horizontal', event: PointerEvent) {
-  const body = bodyRef.value
-  if (!body) return
-  event.preventDefault()
-  const trackLength = axis === 'vertical'
-    ? Math.max(0, body.clientHeight - (scrollState.value.showHorizontal ? 12 : 0))
-    : Math.max(0, body.clientWidth - (scrollState.value.showVertical ? 12 : 0))
-  const thumbSize = axis === 'vertical' ? scrollState.value.verticalThumbSize : scrollState.value.horizontalThumbSize
-  activeScrollbarDrag = {
-    axis,
-    pointerId: event.pointerId,
-    startClient: axis === 'vertical' ? event.clientY : event.clientX,
-    startScroll: axis === 'vertical' ? body.scrollTop : body.scrollLeft,
-    maxScroll: axis === 'vertical' ? Math.max(0, body.scrollHeight - body.clientHeight) : Math.max(0, body.scrollWidth - body.clientWidth),
-    maxThumbOffset: Math.max(0, trackLength - thumbSize)
-  }
-  const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
-  target?.setPointerCapture(event.pointerId)
-  window.addEventListener('pointermove', handleScrollbarThumbMove)
-  window.addEventListener('pointerup', stopScrollbarThumbDrag, { once: true })
-  window.addEventListener('pointercancel', stopScrollbarThumbDrag, { once: true })
-}
-
-function handleScrollbarThumbMove(event: PointerEvent) {
-  const drag = activeScrollbarDrag
-  const body = bodyRef.value
-  if (!drag || !body || event.pointerId !== drag.pointerId) return
-  event.preventDefault()
-  const client = drag.axis === 'vertical' ? event.clientY : event.clientX
-  const delta = client - drag.startClient
-  const scrollDelta = drag.maxThumbOffset <= 0 ? 0 : (delta / drag.maxThumbOffset) * drag.maxScroll
-  if (drag.axis === 'vertical') body.scrollTop = drag.startScroll + scrollDelta
-  else body.scrollLeft = drag.startScroll + scrollDelta
-  updateVirtualMetrics()
-}
-
-function stopScrollbarThumbDrag() {
-  activeScrollbarDrag = null
-  window.removeEventListener('pointermove', handleScrollbarThumbMove)
-  window.removeEventListener('pointerup', stopScrollbarThumbDrag)
-  window.removeEventListener('pointercancel', stopScrollbarThumbDrag)
-}
-
-function handleScrollbarTrackPointerDown(axis: 'vertical' | 'horizontal', event: PointerEvent) {
-  const body = bodyRef.value
-  if (!body || !(event.target instanceof HTMLElement) || event.target.classList.contains('file-floating-scrollbar-thumb')) return
-  event.preventDefault()
-  const rect = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : null
-  if (!rect) return
-  if (axis === 'vertical') {
-    const targetRatio = clamp((event.clientY - rect.top) / rect.height, 0, 1)
-    body.scrollTop = targetRatio * Math.max(0, body.scrollHeight - body.clientHeight)
-  } else {
-    const targetRatio = clamp((event.clientX - rect.left) / rect.width, 0, 1)
-    body.scrollLeft = targetRatio * Math.max(0, body.scrollWidth - body.clientWidth)
-  }
-  updateVirtualMetrics()
-}
-
-function isScrollbarEvent(element: HTMLElement, event: MouseEvent) {
-  const rect = element.getBoundingClientRect()
-  const verticalScrollbar = element.offsetWidth - element.clientWidth
-  const horizontalScrollbar = element.offsetHeight - element.clientHeight
-  const onVerticalScrollbar = verticalScrollbar > 0 && event.clientX >= rect.right - verticalScrollbar
-  const onHorizontalScrollbar = horizontalScrollbar > 0 && event.clientY >= rect.bottom - horizontalScrollbar
-  return onVerticalScrollbar || onHorizontalScrollbar
-}
-
-function clampIndex(index: number) {
-  if (sortedItems.value.length === 0) return -1
-  return Math.min(Math.max(index, 0), sortedItems.value.length - 1)
 }
 
 async function focusRow(index: number) {
@@ -698,7 +456,27 @@ function selectAll() {
 function clearSelection() {
   anchorIndex.value = null
   emitSelection(new Set(), null)
+  finishSelection()
 }
+
+const exportDragPathSet = ref(new Set<string>())
+const exportDragArmed = ref(false)
+const exportDragActive = ref(false)
+const moveDropTargetPath = ref<string | null>(null)
+const deferredOpenGesture = ref<{ x: number; y: number; time: number } | null>(null)
+
+let blankDragStartX = 0
+let blankDragStartY = 0
+let blankDragCurrentX = 0
+let blankDragCurrentY = 0
+let longPressTimer: number | null = null
+let lastRowClickGesture: { x: number; y: number; time: number } | null = null
+let lastRowClickTimer: number | null = null
+let pressIndex: number | null = null
+let pressStartX = 0
+let pressStartY = 0
+let scrollResizeObserver: ResizeObserver | null = null
+let isMounted = false
 
 function beginSelect(index: number, event: MouseEvent) {
   event.stopPropagation()
@@ -756,7 +534,11 @@ function resetPressState() {
 
 function handlePressMove(event: MouseEvent) {
   if (pressIndex === null || exportDragArmed.value) return
-  if (Math.abs(event.clientX - pressStartX) < SELECT_DRAG_THRESHOLD && Math.abs(event.clientY - pressStartY) < SELECT_DRAG_THRESHOLD) return
+  if (
+    Math.abs(event.clientX - pressStartX) < SELECT_DRAG_THRESHOLD &&
+    Math.abs(event.clientY - pressStartY) < SELECT_DRAG_THRESHOLD
+  )
+    return
   cancelLongPress()
   dragActive.value = true
   dragAnchor.value = pressIndex
@@ -824,8 +606,16 @@ function updateBlankDragSelection() {
     const intersectsHorizontally = right >= bodyRect.left && left <= bodyRect.right
 
     if (intersectsHorizontally && bottom >= contentTop && top <= contentBottom) {
-      const firstIndex = clamp(Math.floor((top - contentTop) / FILE_ROW_SLOT_HEIGHT), 0, sortedItems.value.length - 1)
-      const lastIndex = clamp(Math.floor((bottom - contentTop) / FILE_ROW_SLOT_HEIGHT), 0, sortedItems.value.length - 1)
+      const firstIndex = clamp(
+        Math.floor((top - contentTop) / FILE_ROW_SLOT_HEIGHT),
+        0,
+        sortedItems.value.length - 1
+      )
+      const lastIndex = clamp(
+        Math.floor((bottom - contentTop) / FILE_ROW_SLOT_HEIGHT),
+        0,
+        sortedItems.value.length - 1
+      )
 
       for (let index = firstIndex; index <= lastIndex; index += 1) {
         const item = sortedItems.value[index]
@@ -837,14 +627,15 @@ function updateBlankDragSelection() {
   }
 
   blankDragPathSet.value = next
-  const primaryIndex = selectedIndices.length === 0
-    ? null
-    : blankDragCurrentY >= blankDragStartY
-      ? selectedIndices[selectedIndices.length - 1]
-      : selectedIndices[0]
+  const primaryIndex =
+    selectedIndices.length === 0
+      ? null
+      : blankDragCurrentY >= blankDragStartY
+        ? selectedIndices[selectedIndices.length - 1]
+        : selectedIndices[0]
   anchorIndex.value = selectedIndices[0] ?? null
   focusedIndex.value = primaryIndex
-  emitSelection(next, primaryIndex === null ? null : (sortedItems.value[primaryIndex] ?? null))
+  emitSelection(next, primaryIndex === null ? null : sortedItems.value[primaryIndex] ?? null)
 }
 
 function extendSelection(index: number) {
@@ -1049,6 +840,103 @@ function handleOpen(index: number) {
   if (item) emit('open', item)
 }
 
+function handleRowClick(index: number, event: MouseEvent) {
+  if (event.button !== 0) return
+  if (isDoubleClickGesture(event)) {
+    if (props.loading) {
+      queueDeferredOpenGesture(event)
+      return
+    }
+    clearClickGesture()
+    handleOpen(index)
+  }
+}
+
+function handleParentRowClick(event: MouseEvent) {
+  if (event.button !== 0) return
+  if (isDoubleClickGesture(event)) {
+    if (props.loading) {
+      queueDeferredOpenGesture(event)
+      return
+    }
+    clearClickGesture()
+    emit('open', parentItem.value!)
+  }
+}
+
+function isDoubleClickGesture(event: MouseEvent) {
+  const now = performance.now()
+  const previous = lastRowClickGesture
+  lastRowClickGesture = { x: event.clientX, y: event.clientY, time: now }
+
+  if (!previous) {
+    scheduleClickGestureClear()
+    return false
+  }
+
+  const withinTime = now - previous.time <= DOUBLE_CLICK_MS
+  const withinDistance =
+    Math.abs(event.clientX - previous.x) <= DOUBLE_CLICK_DISTANCE &&
+    Math.abs(event.clientY - previous.y) <= DOUBLE_CLICK_DISTANCE
+  scheduleClickGestureClear()
+  return withinTime && withinDistance
+}
+
+function scheduleClickGestureClear() {
+  if (lastRowClickTimer !== null) {
+    window.clearTimeout(lastRowClickTimer)
+  }
+  lastRowClickTimer = window.setTimeout(() => {
+    clearClickGesture()
+  }, DOUBLE_CLICK_MS)
+}
+
+function clearClickGesture() {
+  if (lastRowClickTimer !== null) {
+    window.clearTimeout(lastRowClickTimer)
+    lastRowClickTimer = null
+  }
+  lastRowClickGesture = null
+}
+
+function queueDeferredOpenGesture(event: MouseEvent) {
+  deferredOpenGesture.value = {
+    x: event.clientX,
+    y: event.clientY,
+    time: performance.now()
+  }
+}
+
+function resolveDeferredOpenGesture() {
+  const gesture = deferredOpenGesture.value
+  if (!gesture) return
+  deferredOpenGesture.value = null
+  clearClickGesture()
+  if (performance.now() - gesture.time > DEFERRED_OPEN_MAX_AGE) return
+
+  const row = resolveRowAtPoint(gesture.x, gesture.y)
+  if (!row) return
+  if (row.role === 'parent') {
+    if (parentItem.value) emit('open', parentItem.value)
+    return
+  }
+
+  const item = sortedItems.value.find(candidate => candidate.path === row.path)
+  if (item) emit('open', item)
+}
+
+function resolveRowAtPoint(x: number, y: number) {
+  const element = document.elementFromPoint(x, y)
+  const row = element instanceof Element ? element.closest<HTMLElement>('.file-row') : null
+  if (!row) return null
+  const path = row.dataset.filePath
+  if (!path) return null
+  return {
+    role: (row.dataset.fileRole === 'parent' ? 'parent' : 'item') as 'parent' | 'item',
+    path
+  }
+}
+
 function openContextMenu(index: number, event: MouseEvent) {
   const item = sortedItems.value[index]
   if (!item) return
@@ -1058,6 +946,22 @@ function openContextMenu(index: number, event: MouseEvent) {
     selectSingle(index)
   }
   emit('context-menu', item, event)
+}
+
+function isPreviewableItem(item: FileItem) {
+  return item.preview_type === 'structure' || hasActivePreviewProvider(item, props.previewProviders)
+}
+
+function systemIconUrl(item: FileItem | null) {
+  if (!item || !props.systemIconProvider?.enabled) return null
+  if (failedSystemIconKeys.value.has(launcherBridgeIconFailureKey(item))) return null
+  return props.systemIconProvider.iconUrl(item)
+}
+
+function handleSystemIconError(item: FileItem) {
+  const next = new Set(failedSystemIconKeys.value)
+  next.add(launcherBridgeIconFailureKey(item))
+  failedSystemIconKeys.value = next
 }
 
 function formatSize(value: number | null) {
@@ -1102,9 +1006,20 @@ watch(
   }
 )
 
+watch(
+  () => props.loading,
+  (loading, previousLoading) => {
+    if (previousLoading && !loading) {
+      void nextTick(resolveDeferredOpenGesture)
+    }
+  }
+)
+
 onMounted(() => {
+  isMounted = true
   window.addEventListener('mouseup', finishSelection)
   void nextTick(() => {
+    if (!isMounted) return
     updateVirtualMetrics()
     scrollResizeObserver = new ResizeObserver(updateVirtualMetrics)
     if (bodyRef.value) scrollResizeObserver.observe(bodyRef.value)
@@ -1113,10 +1028,12 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  stopColumnResize()
+  isMounted = false
   stopScrollbarThumbDrag()
   scrollResizeObserver?.disconnect()
   scrollResizeObserver = null
+  clearClickGesture()
+  deferredOpenGesture.value = null
   window.removeEventListener('mouseup', finishSelection)
   window.removeEventListener('mousemove', handleBlankDragMove)
   window.removeEventListener('mousemove', handlePressMove)

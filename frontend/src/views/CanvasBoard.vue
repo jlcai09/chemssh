@@ -206,6 +206,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Aim, Delete, EditPen, Link, Minus, Plus } from '@element-plus/icons-vue'
 import { heartbeatClientCache, loadClientCache, saveCanvasBoards } from '../api/clientCache'
@@ -231,7 +232,6 @@ import CanvasPluginWindow from '../components/canvas/CanvasPluginWindow.vue'
 import CanvasPreviewWindow from '../components/canvas/CanvasPreviewWindow.vue'
 import CanvasWindow from '../components/canvas/CanvasWindow.vue'
 import { t } from '../i18n'
-import type { SystemInfo } from '../api/system'
 import {
   createWorkspaceScope,
   sanitizeCanvasBoardStateForWorkspace,
@@ -252,21 +252,21 @@ import {
   type ClientPreferences
 } from '../types/canvasBoard'
 import type { FileItem, PreviewType } from '../api/files'
-
-const props = defineProps<{
-  systemInfo?: SystemInfo | null
-  syncEvents?: LauncherBridgeSyncEvent[]
-}>()
+import { useCanvasViewport } from '../composables/useCanvasViewport'
+import { useSystemStore } from '../stores/system'
 
 defineEmits<{
   'open-workdir': [path: string]
 }>()
 
+const systemStore = useSystemStore()
+const { systemInfo: systemStoreInfo, syncEvents: systemStoreSyncEvents } = storeToRefs(systemStore)
+const systemInfo = computed(() => systemStoreInfo.value)
+const syncEvents = computed(() => systemStoreSyncEvents.value)
+
 type SaveStatus = 'saved' | 'dirty' | 'saving' | 'error'
 
 const LOCAL_BOARDS_KEY = 'chemssh.canvas.boards.v1'
-const MIN_ZOOM = 0.25
-const MAX_ZOOM = 2.5
 const BINDING_ANCHOR_MAX_HEIGHT = 220
 const BINDING_COLORS = ['#176b87', '#168a45', '#b54708', '#7a4fb4', '#c11574', '#0e7490']
 
@@ -286,6 +286,14 @@ let mounted = false
 const activeBoard = computed(() => {
   return boardState.value.boards.find(board => board.id === boardState.value.activeBoardId) ?? boardState.value.boards[0] ?? null
 })
+
+const { resetView, zoomBy, handleWheel, startPan } = useCanvasViewport(
+  surfaceRef,
+  activeBoard,
+  () => {
+    terminalLayoutVersion.value += 1
+  }
+)
 
 const stageStyle = computed(() => {
   const viewport = activeBoard.value?.viewport ?? DEFAULT_CANVAS_VIEWPORT
@@ -380,8 +388,8 @@ const bindingLayerStyle = computed(() => {
 })
 
 async function initializeCanvasBoard() {
-  if (!mounted || hydrated || !props.systemInfo) return
-  configureClientPreferencesScope(createWorkspaceScope(props.systemInfo))
+  if (!mounted || hydrated || !systemInfo.value) return
+  configureClientPreferencesScope(createWorkspaceScope(systemInfo.value))
   await hydrate()
   void loadLauncherBridge()
   void heartbeatClientCache().catch(() => undefined)
@@ -396,7 +404,7 @@ onMounted(() => {
 })
 
 watch(
-  () => props.systemInfo?.workspace_root,
+  () => systemInfo.value?.workspace_root,
   () => {
     void initializeCanvasBoard()
   }
@@ -421,8 +429,7 @@ watch(
   () => {
     if (!hydrated) return
     void saveClientPreferencesPatch(preferences.value).catch(() => undefined)
-  },
-  { deep: true }
+  }
 )
 
 async function hydrate() {
@@ -464,7 +471,7 @@ function createBoard() {
 
 function activateBoard(boardId: string) {
   boardState.value.activeBoardId = boardId
-  preferences.value.canvas = { ...(preferences.value.canvas ?? {}), lastBoardId: boardId }
+  preferences.value = { ...(preferences.value ?? {}), canvas: { ...(preferences.value.canvas ?? {}), lastBoardId: boardId } }
   activeWindowId.value = null
   terminalLayoutVersion.value += 1
 }
@@ -609,7 +616,7 @@ async function loadLauncherBridge() {
 
 // Watch for sync events from App.vue (centralized handling)
 watch(
-  () => props.syncEvents,
+  () => syncEvents.value,
   (events) => {
     if (!events || events.length === 0) return
     handleLauncherSyncEvents(events)
@@ -678,8 +685,8 @@ function pluginPayloadString(windowState: CanvasWindowState, key: string) {
 
 function fileManagerPath(windowState: CanvasWindowState) {
   const path = windowState.payload?.path
-  if (typeof path === 'string') return workspacePathOrRoot(path, props.systemInfo?.workspace_root)
-  return props.systemInfo?.workspace_root ?? ''
+  if (typeof path === 'string') return workspacePathOrRoot(path, systemInfo.value?.workspace_root)
+  return systemInfo.value?.workspace_root ?? ''
 }
 
 function fileManagerDirectoryName(path: string) {
@@ -777,7 +784,7 @@ function updateTailLines(windowId: string, lines: number) {
   updateWindow(windowId, windowState => {
     windowState.payload = { ...(windowState.payload ?? {}), lines }
   })
-  preferences.value.logs = { ...(preferences.value.logs ?? {}), tailLines: lines }
+  preferences.value = { ...(preferences.value ?? {}), logs: { ...(preferences.value.logs ?? {}), tailLines: lines } }
 }
 
 function boundFileManagerId(windowState: CanvasWindowState) {
@@ -961,69 +968,6 @@ function tailLines(windowState: CanvasWindowState) {
   return preferences.value.logs?.tailLines ?? 20
 }
 
-function resetView() {
-  const board = activeBoard.value
-  if (!board) return
-  board.viewport = { ...DEFAULT_CANVAS_VIEWPORT }
-  terminalLayoutVersion.value += 1
-}
-
-function zoomBy(multiplier: number) {
-  const board = activeBoard.value
-  const surface = surfaceRef.value
-  if (!board || !surface) return
-  const rect = surface.getBoundingClientRect()
-  zoomAt(rect.width / 2, rect.height / 2, multiplier)
-}
-
-function handleWheel(event: WheelEvent) {
-  if (!event.ctrlKey) return
-  event.preventDefault()
-  const rect = surfaceRef.value?.getBoundingClientRect()
-  if (!rect) return
-  const multiplier = event.deltaY > 0 ? 0.92 : 1.08
-  zoomAt(event.clientX - rect.left, event.clientY - rect.top, multiplier)
-}
-
-function zoomAt(screenX: number, screenY: number, multiplier: number) {
-  const board = activeBoard.value
-  if (!board) return
-  const oldZoom = board.viewport.zoom
-  const nextZoom = clamp(oldZoom * multiplier, MIN_ZOOM, MAX_ZOOM)
-  const worldX = (screenX - board.viewport.x) / oldZoom
-  const worldY = (screenY - board.viewport.y) / oldZoom
-  board.viewport.zoom = nextZoom
-  board.viewport.x = screenX - worldX * nextZoom
-  board.viewport.y = screenY - worldY * nextZoom
-  terminalLayoutVersion.value += 1
-}
-
-function startPan(event: PointerEvent) {
-  if (event.button !== 0) return
-  const board = activeBoard.value
-  if (!board) return
-  const target = event.currentTarget as HTMLElement
-  const startX = event.clientX
-  const startY = event.clientY
-  const originX = board.viewport.x
-  const originY = board.viewport.y
-  target.setPointerCapture(event.pointerId)
-
-  const move = (moveEvent: PointerEvent) => {
-    board.viewport.x = originX + moveEvent.clientX - startX
-    board.viewport.y = originY + moveEvent.clientY - startY
-  }
-  const done = () => {
-    target.removeEventListener('pointermove', move)
-    target.removeEventListener('pointerup', done)
-    target.removeEventListener('pointercancel', done)
-  }
-
-  target.addEventListener('pointermove', move)
-  target.addEventListener('pointerup', done)
-  target.addEventListener('pointercancel', done)
-}
-
 function updateWindow(windowId: string, updater: (windowState: CanvasWindowState) => void) {
   const board = activeBoard.value
   const windowState = board?.windows.find(item => item.id === windowId)
@@ -1081,7 +1025,7 @@ function normalizeBoardState(value: CanvasBoardState | null | undefined): Canvas
     viewport: {
       x: Number.isFinite(board.viewport?.x) ? board.viewport.x : DEFAULT_CANVAS_VIEWPORT.x,
       y: Number.isFinite(board.viewport?.y) ? board.viewport.y : DEFAULT_CANVAS_VIEWPORT.y,
-      zoom: clamp(board.viewport?.zoom ?? 1, MIN_ZOOM, MAX_ZOOM)
+      zoom: clamp(board.viewport?.zoom ?? 1, 0.25, 2.5)
     },
     windows: Array.isArray(board.windows) ? board.windows.map(normalizeWindowState) : []
   }))
@@ -1090,7 +1034,7 @@ function normalizeBoardState(value: CanvasBoardState | null | undefined): Canvas
     activeBoardId: boards.some(board => board.id === value.activeBoardId) ? value.activeBoardId : boards[0].id,
     boards
   }
-  return sanitizeCanvasBoardStateForWorkspace(normalized, props.systemInfo?.workspace_root ?? '')
+  return sanitizeCanvasBoardStateForWorkspace(normalized, systemInfo.value?.workspace_root ?? '')
 }
 
 function normalizeWindowState(windowState: CanvasWindowState): CanvasWindowState {
@@ -1119,7 +1063,7 @@ function defaultPayload(type: CanvasWindowType, board?: CanvasBoard) {
   if (type === 'file-manager') {
     const number = board ? nextFileManagerNumber(board) : 1
     return {
-      path: props.systemInfo?.workspace_root ?? '',
+      path: systemInfo.value?.workspace_root ?? '',
       bindingNumber: number,
       bindingColor: BINDING_COLORS[(number - 1) % BINDING_COLORS.length]
     }

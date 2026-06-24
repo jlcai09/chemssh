@@ -1,4 +1,4 @@
-import { API_BASE, request } from './http'
+import { API_BASE, applyAuthQuery, request } from './http'
 import { clientIdHeaders, getClientId } from './clientSession'
 
 export interface CreateTerminalSessionPayload {
@@ -54,11 +54,13 @@ export function terminalWebSocketUrl(sessionId: string) {
     const url = new URL(path, API_BASE)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
     url.searchParams.set('client_id', clientId)
+    applyAuthQuery(url.searchParams)
     return url.toString()
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const url = new URL(`${API_BASE}${path}`, `${protocol}://${window.location.host}`)
   url.searchParams.set('client_id', clientId)
+  applyAuthQuery(url.searchParams)
   return url.toString()
 }

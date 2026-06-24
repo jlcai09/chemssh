@@ -33,7 +33,7 @@
         :can-go-back="canGoBack"
         :history-entries="directoryHistoryEntries"
         :show-hidden-files="showHiddenFiles"
-        @refresh="loadDirectory(currentPath)"
+        @refresh="loadDirectory(currentPath, { refresh: true })"
         @go-back="goBack"
         @history-select="openHistoryPath"
         @create-file="promptCreateFile"
@@ -45,11 +45,12 @@
         @update:show-hidden-files="setShowHiddenFiles"
       />
 
-      <div class="file-table-shell" v-loading="loadingFiles">
+      <div class="file-table-shell">
         <FileTree
           :items="visibleItems"
           :parent-path="listing?.parent"
           :selected-items="selectedItems"
+          :loading="loadingFiles"
           :preview-providers="previewProviders"
           :system-icon-provider="launcherSystemIconProvider"
           @selection-change="handleSelectionChange"
@@ -73,7 +74,7 @@
       <TerminalPanel
         class="workspace-terminal"
         :initial-cwd="terminalInitialPath"
-        :workspace-root="props.systemInfo?.workspace_root"
+        :workspace-root="systemInfo?.workspace_root"
         :current-file-manager-path="currentPath"
         :layout-version="terminalLayoutVersion"
         :transfer-upload-handler="handleTerminalTransferUpload"
@@ -124,7 +125,7 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="builtin:preview">{{ t('preview.type.preview') }}</el-dropdown-item>
-                <el-dropdown-item command="builtin:queue">{{ props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title') }}</el-dropdown-item>
+                <el-dropdown-item command="builtin:queue">{{ systemInfo?.scheduler?.toUpperCase() ?? t('queue.title') }}</el-dropdown-item>
                 <el-dropdown-item
                   v-for="item in pluginPanelCommands"
                   :key="item.command"
@@ -156,7 +157,7 @@
             v-if="activeWorkPanel?.kind === 'queue'"
             class="side-queue"
             :initial-interval="5"
-            :workspace-root="props.systemInfo?.workspace_root"
+            :workspace-root="systemInfo?.workspace_root"
             @open-workdir="openQueueWorkdir"
           />
           <iframe
@@ -262,7 +263,9 @@
           role="menuitem"
           @click="openContextWithLocalApp"
         >
-          <el-icon><Open /></el-icon>
+          <el-icon>
+            <component :is="contextMenu.item?.type === 'directory' ? FolderOpened : Document" />
+          </el-icon>
           <span>{{ t('context.openLocal') }}</span>
           <span />
         </button>
@@ -302,8 +305,9 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Close, CopyDocument, EditPen, Open, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowRight, Close, CopyDocument, Document, EditPen, FolderOpened, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
   deletePath,
   downloadArchive,
@@ -312,14 +316,12 @@ import {
   movePaths,
   readFile,
   renamePath,
-  uploadFile,
   writeFile,
   type DirectoryListing,
   type FileItem,
-  type FileReadResponse,
-  type UploadProgress
+  type FileReadResponse
 } from '../api/files'
-import { API_BASE, downloadUrl, request } from '../api/http'
+import { API_BASE, apiUrl, downloadUrl, getAuthToken, request } from '../api/http'
 import { apiErrorMessage, localizeBackendMessage } from '../api/apiMessages'
 import {
   configureClientPreferencesScope,
@@ -343,7 +345,6 @@ import {
   openWithLocalApp,
   openWithNotepad,
   parentDirectoryPath,
-  pollLauncherOpenSyncEvents,
   type LauncherBridgeCapabilities,
   type LauncherBridgeSyncEvent
 } from '../api/launcherBridge'
@@ -357,17 +358,12 @@ import {
 import { ASE_STRUCTURE_SOURCE, readStructurePreview } from '../api/structures'
 import {
   collectDropUploadEntries,
-  filesToUploadEntries,
   hasFileDrag,
   joinDisplayPath,
-  prepareUploadEntries,
   SAFE_UPLOAD_SEGMENT_RE,
   setUploadDropEffect,
-  type UploadConflictAction,
-  type UploadConflictResolution,
-  type UploadEntry
+  type UploadConflictResolution
 } from '../api/uploadEntries'
-import type { SystemInfo } from '../api/system'
 import {
   createWorkspaceScope,
   sanitizeTerminalTabs,
@@ -382,6 +378,9 @@ import LogViewer from '../components/LogViewer.vue'
 import QueueStatus from '../components/QueueStatus.vue'
 import TerminalPanel from '../components/terminal/TerminalPanel.vue'
 import { t } from '../i18n'
+import { useWorkspaceLayout } from '../composables/useWorkspaceLayout'
+import { useWorkspaceUpload } from '../composables/useWorkspaceUpload'
+import { useSystemStore } from '../stores/system'
 
 type OpenPathRequest = {
   path: string
@@ -389,10 +388,13 @@ type OpenPathRequest = {
 }
 
 const props = defineProps<{
-  systemInfo?: SystemInfo | null
   openPathRequest?: OpenPathRequest | null
-  syncEvents?: LauncherBridgeSyncEvent[]
 }>()
+
+const systemStore = useSystemStore()
+const { systemInfo: systemStoreInfo, syncEvents: systemStoreSyncEvents } = storeToRefs(systemStore)
+const systemInfo = computed(() => systemStoreInfo.value)
+const syncEvents = computed(() => systemStoreSyncEvents.value)
 
 const listing = shallowRef<DirectoryListing | null>(null)
 const currentPath = ref('')
@@ -413,15 +415,6 @@ const directoryHistory = ref<string[]>([])
 const forcedLargeTextPreviews = new Set<string>()
 const forcedLargeStructurePreviews = new Set<string>()
 
-type ResizeTarget = 'left' | 'right' | 'side'
-type ResizeState = {
-  target: ResizeTarget
-  startClientX: number
-  startClientY: number
-  startLeftWidth: number
-  startSideWidth: number
-  startQueueHeight: number
-}
 type WorkPanelKind = 'preview' | 'queue' | 'plugin'
 type PreviewMode = 'structure' | 'text'
 type WorkPanel = {
@@ -440,39 +433,11 @@ type ContextMenuState = {
   opensLeft: boolean
   item: FileItem | null
 }
-type UploadState = {
-  active: boolean
-  currentFile: string
-  done: number
-  totalFiles: number
-  loaded: number
-  total: number
-  speedBytesPerSecond: number
-}
-type UploadConflictDialogState = {
-  visible: boolean
-  mode: 'upload' | 'move'
-  name: string
-  applyAll: boolean
-  resolve: ((resolution: UploadConflictResolution) => void) | null
-}
-type UploadBatchResult = {
-  uploaded: number
-  failed: number
-  total: number
-  cancelled: boolean
-  message: string
-}
 
 const workspaceRef = ref<HTMLElement | null>(null)
 const leftPaneRef = ref<HTMLElement | null>(null)
 const mainPaneRef = ref<HTMLElement | null>(null)
 const sidePaneRef = ref<HTMLElement | null>(null)
-const activeResize = ref<ResizeState | null>(null)
-const leftPaneWidth = ref<number | null>(null)
-const sidePaneWidth = ref<number | null>(null)
-const sideQueueHeight = ref<number | null>(null)
-const terminalLayoutVersion = ref(0)
 const workPanels = ref<WorkPanel[]>([
   { id: 'builtin:preview', kind: 'preview', title: t('preview.type.preview') },
   { id: 'builtin:queue', kind: 'queue', title: t('queue.title') }
@@ -489,46 +454,15 @@ const contextMenu = ref<ContextMenuState>({
   opensLeft: false,
   item: null
 })
-const uploadState = ref<UploadState>({
-  active: false,
-  currentFile: '',
-  done: 0,
-  totalFiles: 0,
-  loaded: 0,
-  total: 0,
-  speedBytesPerSecond: 0
-})
-const uploadConflictDialog = ref<UploadConflictDialogState>({
-  visible: false,
-  mode: 'upload',
-  name: '',
-  applyAll: false,
-  resolve: null
-})
-const uploadProgressOpen = ref(false)
-let previousBodyCursor = ''
-let previousBodyUserSelect = ''
 let previewRequestSerial = 0
 let structurePreviewAbortController: AbortController | null = null
 let mounted = false
 let initialized = false
 const workspacePreferencesReady = ref(false)
 
-const WORKSPACE_SPLITTER_SIZE = 12
-const MIN_LEFT_WIDTH = 260
-const MIN_MAIN_WIDTH = 320
-const MIN_SIDE_WIDTH = 300
-const MIN_QUEUE_HEIGHT = 180
-const MIN_LOG_HEIGHT = 120
 const CONTEXT_MENU_WIDTH = 190
 const CONTEXT_MENU_HEIGHT = 156
 const DIRECTORY_HISTORY_LIMIT = 20
-
-const workspaceStyle = computed<Record<string, string | undefined>>(() => ({
-  '--workspace-left': leftPaneWidth.value === null ? undefined : `${leftPaneWidth.value}px`,
-  '--workspace-side': sidePaneWidth.value === null ? undefined : `${sidePaneWidth.value}px`,
-  '--workspace-splitter-size': `${WORKSPACE_SPLITTER_SIZE}px`
-}))
 
 const dragUploadActive = computed(() => dragUploadDepth.value > 0)
 const canGoBack = computed(() => directoryHistory.value.length > 0)
@@ -536,17 +470,8 @@ const directoryHistoryEntries = computed(() => directoryHistory.value.map(path =
   path,
   label: directoryHistoryLabel(path)
 })))
-const uploadPercent = computed(() => {
-  if (!uploadState.value.active || uploadState.value.total <= 0) return 0
-  return Math.min(100, Math.max(0, Math.round((uploadState.value.loaded / uploadState.value.total) * 100)))
-})
-const uploadSpeedLabel = computed(() => formatUploadSpeed(uploadState.value.speedBytesPerSecond))
 
-const sideStyle = computed<Record<string, string | undefined>>(() => ({
-  '--workspace-queue': sideQueueHeight.value === null ? undefined : `${sideQueueHeight.value}px`
-}))
-
-const terminalInitialPath = computed(() => workspacePathOrRoot(currentPath.value, props.systemInfo?.workspace_root))
+const terminalInitialPath = computed(() => workspacePathOrRoot(currentPath.value, systemInfo.value?.workspace_root))
 
 const launcherSystemIconProvider = computed(() => ({
   enabled: Boolean(
@@ -557,10 +482,40 @@ const launcherSystemIconProvider = computed(() => ({
   iconUrl: (item: FileItem) => launcherFileIconUrl(item, 16)
 }))
 
+const {
+  activeResize,
+  leftPaneWidth,
+  sidePaneWidth,
+  sideQueueHeight,
+  terminalLayoutVersion,
+  workspaceStyle,
+  sideStyle,
+  startColumnResize,
+  startSideResize,
+  resetColumnLayout,
+  resetSideLayout,
+  notifyTerminalLayoutChanged,
+  stopResize
+} = useWorkspaceLayout(workspaceRef, leftPaneRef, sidePaneRef, saveWorkspacePreferences, closeContextMenu)
+
+const {
+  uploadState,
+  uploadConflictDialog,
+  uploadProgressOpen,
+  uploadPercent,
+  uploadSpeedLabel,
+  handleUpload,
+  handleUploadEntries,
+  handleTerminalTransferUpload,
+  promptUploadConflict,
+  promptMoveConflict,
+  chooseUploadConflict
+} = useWorkspaceUpload(currentPath, () => loadDirectory(currentPath.value, { refresh: true }))
+
 const workspaceTerminalBindings = computed<CanvasTerminalTabBinding[]>(() => {
   const tabs = getClientPreferences().terminal?.tabs
   if (!Array.isArray(tabs)) return []
-  const workspaceRoot = props.systemInfo?.workspace_root ?? ''
+  const workspaceRoot = systemInfo.value?.workspace_root ?? ''
   const normalized: CanvasTerminalTabBinding[] = tabs.flatMap(item => {
     if (!item || typeof item !== 'object') return []
     const binding = item as Partial<CanvasTerminalTabBinding>
@@ -578,7 +533,7 @@ const workspaceTerminalBindings = computed<CanvasTerminalTabBinding[]>(() => {
 })
 
 function saveWorkspaceTerminalBindings(summary: CanvasTerminalTabBinding[]) {
-  const tabs = sanitizeTerminalTabs(summary, props.systemInfo?.workspace_root ?? '') ?? []
+  const tabs = sanitizeTerminalTabs(summary, systemInfo.value?.workspace_root ?? '') ?? []
   void saveClientPreferencesPatch({
     version: 1,
     terminal: { tabs }
@@ -640,157 +595,6 @@ const pluginPanelCommands = computed(() =>
   )
 )
 
-function clamp(value: number, min: number, max: number) {
-  if (max < min) return min
-  return Math.min(Math.max(value, min), max)
-}
-
-function isSideVisible() {
-  if (!sidePaneRef.value) return false
-  return window.getComputedStyle(sidePaneRef.value).display !== 'none'
-}
-
-function measuredWidth(element: HTMLElement | null, fallback: number) {
-  const width = element?.getBoundingClientRect().width
-  return width && width > 0 ? width : fallback
-}
-
-function measuredHeight(element: HTMLElement | null, fallback: number) {
-  const height = element?.getBoundingClientRect().height
-  return height && height > 0 ? height : fallback
-}
-
-function currentLeftWidth() {
-  return leftPaneWidth.value ?? measuredWidth(leftPaneRef.value, 360)
-}
-
-function currentSideWidth() {
-  return sidePaneWidth.value ?? measuredWidth(sidePaneRef.value, 360)
-}
-
-function currentQueueHeight() {
-  const panel = sidePaneRef.value?.querySelector('.side-work-panel') as HTMLElement | null
-  return sideQueueHeight.value ?? measuredHeight(panel, 260)
-}
-
-function beginResize(cursor: string) {
-  previousBodyCursor = document.body.style.cursor
-  previousBodyUserSelect = document.body.style.userSelect
-  document.body.style.cursor = cursor
-  document.body.style.userSelect = 'none'
-  window.addEventListener('pointermove', handlePointerMove)
-  window.addEventListener('pointerup', stopResize, { once: true })
-  window.addEventListener('pointercancel', stopResize, { once: true })
-}
-
-function startColumnResize(target: 'left' | 'right', event: PointerEvent) {
-  if (!workspaceRef.value) return
-  event.preventDefault()
-  closeContextMenu()
-  const startLeftWidth = currentLeftWidth()
-  const startSideWidth = isSideVisible() ? currentSideWidth() : 0
-  activeResize.value = {
-    target,
-    startClientX: event.clientX,
-    startClientY: event.clientY,
-    startLeftWidth,
-    startSideWidth,
-    startQueueHeight: currentQueueHeight()
-  }
-  leftPaneWidth.value = startLeftWidth
-  if (isSideVisible()) sidePaneWidth.value = startSideWidth
-  beginResize('col-resize')
-}
-
-function startSideResize(event: PointerEvent) {
-  if (!sidePaneRef.value) return
-  event.preventDefault()
-  closeContextMenu()
-  const startQueueHeight = currentQueueHeight()
-  activeResize.value = {
-    target: 'side',
-    startClientX: event.clientX,
-    startClientY: event.clientY,
-    startLeftWidth: currentLeftWidth(),
-    startSideWidth: currentSideWidth(),
-    startQueueHeight
-  }
-  sideQueueHeight.value = startQueueHeight
-  beginResize('row-resize')
-}
-
-function handlePointerMove(event: PointerEvent) {
-  const resizeState = activeResize.value
-  if (!resizeState) return
-  if (resizeState.target === 'side') {
-    resizeSide(resizeState, event.clientY)
-    return
-  }
-  resizeColumns(resizeState, event.clientX)
-}
-
-function resizeColumns(resizeState: ResizeState, clientX: number) {
-  if (!workspaceRef.value) return
-  const rect = workspaceRef.value.getBoundingClientRect()
-  const totalWidth = rect.width
-  const sideVisible = isSideVisible()
-  const splitterTotal = sideVisible ? WORKSPACE_SPLITTER_SIZE * 2 : WORKSPACE_SPLITTER_SIZE
-  const deltaX = clientX - resizeState.startClientX
-
-  if (resizeState.target === 'left') {
-    const reservedSide = sideVisible ? resizeState.startSideWidth : 0
-    const maxLeft = totalWidth - reservedSide - MIN_MAIN_WIDTH - splitterTotal
-    leftPaneWidth.value = clamp(resizeState.startLeftWidth + deltaX, MIN_LEFT_WIDTH, maxLeft)
-    notifyTerminalLayoutChanged()
-    return
-  }
-
-  if (!sideVisible) return
-  const reservedLeft = resizeState.startLeftWidth
-  const maxSide = totalWidth - reservedLeft - MIN_MAIN_WIDTH - splitterTotal
-  sidePaneWidth.value = clamp(resizeState.startSideWidth - deltaX, MIN_SIDE_WIDTH, maxSide)
-  notifyTerminalLayoutChanged()
-}
-
-function resizeSide(resizeState: ResizeState, clientY: number) {
-  if (!sidePaneRef.value) return
-  const rect = sidePaneRef.value.getBoundingClientRect()
-  const maxQueue = rect.height - MIN_LOG_HEIGHT - WORKSPACE_SPLITTER_SIZE
-  const deltaY = clientY - resizeState.startClientY
-  sideQueueHeight.value = clamp(resizeState.startQueueHeight + deltaY, MIN_QUEUE_HEIGHT, maxQueue)
-}
-
-function stopResize() {
-  const resizeState = activeResize.value
-  if (!resizeState) return
-  const target = resizeState.target
-  activeResize.value = null
-  document.body.style.cursor = previousBodyCursor
-  document.body.style.userSelect = previousBodyUserSelect
-  window.removeEventListener('pointermove', handlePointerMove)
-  window.removeEventListener('pointerup', stopResize)
-  window.removeEventListener('pointercancel', stopResize)
-  if (target === 'left' || target === 'right') notifyTerminalLayoutChanged()
-  saveWorkspacePreferences()
-}
-
-function resetColumnLayout() {
-  leftPaneWidth.value = null
-  sidePaneWidth.value = null
-  saveWorkspacePreferences()
-  notifyTerminalLayoutChanged()
-}
-
-function resetSideLayout() {
-  sideQueueHeight.value = null
-  saveWorkspacePreferences()
-}
-
-function notifyTerminalLayoutChanged() {
-  terminalLayoutVersion.value += 1
-  window.requestAnimationFrame(() => window.dispatchEvent(new Event('chemssh:terminal-fit')))
-}
-
 function setSelection(items: FileItem[], primary: FileItem | null) {
   selectedItems.value = items
   selectedItem.value = primary ?? items[items.length - 1] ?? null
@@ -806,14 +610,14 @@ function isStructureCandidate(item: FileItem) {
 
 function panelTitle(panel: WorkPanel) {
   if (panel.kind === 'preview') return t('preview.type.preview')
-  if (panel.kind === 'queue') return props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title')
+  if (panel.kind === 'queue') return systemInfo.value?.scheduler?.toUpperCase() ?? t('queue.title')
   return panel.title
 }
 
 function syncBuiltinPanelTitles() {
   workPanels.value = workPanels.value.map(panel => {
     if (panel.kind === 'preview') return { ...panel, title: t('preview.type.preview') }
-    if (panel.kind === 'queue') return { ...panel, title: props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title') }
+    if (panel.kind === 'queue') return { ...panel, title: systemInfo.value?.scheduler?.toUpperCase() ?? t('queue.title') }
     return panel
   })
 }
@@ -824,7 +628,7 @@ function openBuiltinPanel(kind: 'preview' | 'queue') {
     workPanels.value.push({
       id,
       kind,
-      title: kind === 'preview' ? t('preview.type.preview') : (props.systemInfo?.scheduler?.toUpperCase() ?? t('queue.title'))
+      title: kind === 'preview' ? t('preview.type.preview') : (systemInfo.value?.scheduler?.toUpperCase() ?? t('queue.title'))
     })
   }
   activeWorkPanelId.value = id
@@ -919,7 +723,7 @@ async function openPluginPanel(pluginId: string, panelId: string) {
       title: panel.title || manifest.name || pluginId,
       pluginId,
       panelId,
-      assetUrl: `${API_BASE}${runtime.asset_url}`,
+      assetUrl: apiUrl(runtime.asset_url),
       apiBase: runtime.api_base
     })
     activeWorkPanelId.value = id
@@ -941,6 +745,7 @@ function handlePluginFrameLoad(event: Event, panel: WorkPanel | null) {
     theme: 'light',
     apiBase: panel.apiBase,
     assetBase: panel.assetUrl,
+    authToken: getAuthToken(),
     initialFile: previewCandidate.value
       ? { path: previewCandidate.value.path, name: previewCandidate.value.name }
       : null
@@ -1022,11 +827,11 @@ function handleSelectionChange(items: FileItem[], primary: FileItem | null) {
   setSelection(items, primary)
 }
 
-async function loadDirectory(path?: string | null, options: { recordHistory?: boolean } = {}) {
+async function loadDirectory(path?: string | null, options: { recordHistory?: boolean; refresh?: boolean } = {}) {
   const previousPath = currentPath.value
   loadingFiles.value = true
   try {
-    listing.value = await listFiles(path ?? undefined)
+    listing.value = await listFiles(path ?? undefined, { refresh: options.refresh })
     currentPath.value = listing.value.path
     pathInput.value = listing.value.path
     if (options.recordHistory) recordDirectoryHistory(previousPath, currentPath.value)
@@ -1338,8 +1143,8 @@ async function savePreview(content: string) {
 function openFileContextMenu(item: FileItem, event: MouseEvent) {
   contextMenu.value = {
     visible: true,
-    x: clamp(event.clientX, 8, window.innerWidth - CONTEXT_MENU_WIDTH - 8),
-    y: clamp(event.clientY, 8, window.innerHeight - CONTEXT_MENU_HEIGHT - 8),
+    x: Math.min(Math.max(event.clientX, 8), window.innerWidth - CONTEXT_MENU_WIDTH - 8),
+    y: Math.min(Math.max(event.clientY, 8), window.innerHeight - CONTEXT_MENU_HEIGHT - 8),
     opensLeft: event.clientX > window.innerWidth - 360,
     item
   }
@@ -1357,7 +1162,7 @@ function canLauncherOpenItem(item: FileItem, mode: 'default' | 'text') {
 }
 
 function launcherWorkspaceRoot() {
-  return props.systemInfo?.workspace_root || launcherBridgeCapabilities.value?.workspace_root || ''
+  return systemInfo.value?.workspace_root || launcherBridgeCapabilities.value?.workspace_root || ''
 }
 
 async function openContextWithLocalApp() {
@@ -1390,7 +1195,7 @@ async function loadLauncherBridge() {
 
 // Watch for sync events from App.vue (centralized handling)
 watch(
-  () => props.syncEvents,
+  () => syncEvents.value,
   async (events) => {
     if (!events || events.length === 0) return
     await handleLauncherSyncEvents(events)
@@ -1413,7 +1218,7 @@ async function handleLauncherSyncEvents(events: LauncherBridgeSyncEvent[]) {
     }
   }
 
-  if (shouldRefreshDirectory) await loadDirectory(currentPath.value)
+  if (shouldRefreshDirectory) await loadDirectory(currentPath.value, { refresh: true })
   if (shouldRefreshPreview) await refreshPreview()
   // Note: success/error messages are handled by App.vue
 }
@@ -1508,7 +1313,7 @@ async function promptCreateFile() {
   }
   try {
     await writeFile(joinDisplayPath(currentPath.value, name), '')
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.fileCreated'))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.createFailed'))
@@ -1516,171 +1321,24 @@ async function promptCreateFile() {
 }
 
 async function promptMkdir() {
-  const result = await ElMessageBox.prompt(t('prompt.folderName'), t('prompt.newFolder'), {
-    inputPattern: SAFE_UPLOAD_SEGMENT_RE,
-    inputErrorMessage: t('message.namePattern'),
-    confirmButtonText: t('common.confirm'),
-    cancelButtonText: t('common.cancel')
-  })
+  let result: { value: string }
+  try {
+    result = await ElMessageBox.prompt(t('prompt.folderName'), t('prompt.newFolder'), {
+      inputPattern: SAFE_UPLOAD_SEGMENT_RE,
+      inputErrorMessage: t('message.namePattern'),
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel')
+    })
+  } catch {
+    return
+  }
   try {
     await makeDirectory(currentPath.value, result.value)
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.folderCreated'))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.createFailed'))
   }
-}
-
-async function handleUpload(files: File[]) {
-  const entries = filesToUploadEntries(files)
-  await handleUploadEntries(entries, currentPath.value)
-}
-
-async function handleTerminalTransferUpload(path: string, files: File[]) {
-  const entries = filesToUploadEntries(files)
-  const result = await handleUploadEntries(entries, path)
-  if (result.cancelled) throw new Error(t('terminal.transferCancelled'))
-  if (result.failed > 0) {
-    throw new Error(t('message.uploadPartial', {
-      message: result.message || t('message.uploadFailed'),
-      uploaded: result.uploaded,
-      failed: result.failed
-    }))
-  }
-  if (entries.length > 0 && result.uploaded === 0) throw new Error(t('message.uploadFailed'))
-}
-
-async function handleUploadEntries(entries: UploadEntry[], targetPath = currentPath.value): Promise<UploadBatchResult> {
-  const emptyResult: UploadBatchResult = {
-    uploaded: 0,
-    failed: 0,
-    total: entries.length,
-    cancelled: false,
-    message: ''
-  }
-  if (entries.length === 0) return emptyResult
-
-  const preparedResult = await prepareUploadEntries(entries, {
-    targetPath,
-    promptConflict: promptUploadConflict
-  })
-  if (preparedResult.invalidCount > 0) ElMessage.error(t('message.uploadInvalidPath', { count: preparedResult.invalidCount }))
-  if (preparedResult.renamedCount > 0) ElMessage.info(t('message.uploadPathRenamed', { count: preparedResult.renamedCount }))
-  const prepared = preparedResult.entries
-  if (prepared.length === 0) {
-    return {
-      uploaded: 0,
-      failed: preparedResult.invalidCount,
-      total: entries.length,
-      cancelled: preparedResult.cancelled,
-      message: preparedResult.invalidCount > 0 ? t('message.uploadInvalidPath', { count: preparedResult.invalidCount }) : ''
-    }
-  }
-
-  let uploaded = 0
-  let firstError: unknown = null
-  const totalBytes = prepared.reduce((sum, entry) => sum + entry.file.size, 0)
-  let completedBytes = 0
-  uploadState.value = {
-    active: true,
-    currentFile: prepared[0]?.displayPath ?? '',
-    done: 0,
-    totalFiles: prepared.length,
-    loaded: 0,
-    total: totalBytes,
-    speedBytesPerSecond: 0
-  }
-  uploadProgressOpen.value = false
-
-  for (const entry of prepared) {
-    const file = entry.file
-    try {
-      uploadState.value.currentFile = entry.displayPath
-      let lastProgressLoaded = 0
-      let lastProgressAt = performance.now()
-      await uploadFile(targetPath, file, {
-        relativePath: entry.relativePath,
-        onProgress: (progress: UploadProgress) => {
-        const fileLoaded = Math.min(progress.loaded, progress.total || file.size)
-        const now = performance.now()
-        const elapsedSeconds = Math.max((now - lastProgressAt) / 1000, 0.001)
-        const deltaBytes = Math.max(0, fileLoaded - lastProgressLoaded)
-        const instantSpeed = deltaBytes / elapsedSeconds
-        uploadState.value.speedBytesPerSecond = uploadState.value.speedBytesPerSecond === 0
-          ? instantSpeed
-          : uploadState.value.speedBytesPerSecond * 0.72 + instantSpeed * 0.28
-        lastProgressLoaded = fileLoaded
-        lastProgressAt = now
-        uploadState.value.loaded = Math.min(totalBytes, completedBytes + fileLoaded)
-        }
-      })
-      uploaded += 1
-      completedBytes += file.size
-      uploadState.value.done = uploaded
-      uploadState.value.loaded = Math.min(totalBytes, completedBytes)
-    } catch (error) {
-      firstError ??= error
-      completedBytes += file.size
-      uploadState.value.loaded = Math.min(totalBytes, completedBytes)
-    }
-  }
-
-  await loadDirectory(currentPath.value)
-  uploadState.value.active = false
-  uploadProgressOpen.value = false
-
-  const failed = prepared.length - uploaded + preparedResult.invalidCount
-  const message = firstError instanceof Error
-    ? firstError.message
-    : preparedResult.invalidCount > 0
-      ? t('message.uploadInvalidPath', { count: preparedResult.invalidCount })
-      : t('message.uploadFailed')
-
-  if (failed === 0) {
-    ElMessage.success(
-      prepared.length === 1 ? t('message.uploadComplete') : t('message.uploadCompleteMany', { count: prepared.length })
-    )
-  } else {
-    ElMessage.error(t('message.uploadPartial', { message, uploaded, failed }))
-  }
-
-  return {
-    uploaded,
-    failed,
-    total: entries.length,
-    cancelled: false,
-    message
-  }
-}
-
-async function promptUploadConflict(name: string) {
-  return new Promise<UploadConflictResolution>(resolve => {
-    uploadConflictDialog.value = {
-      visible: true,
-      mode: 'upload',
-      name,
-      applyAll: false,
-      resolve
-    }
-  })
-}
-
-function chooseUploadConflict(action: UploadConflictAction) {
-  const dialog = uploadConflictDialog.value
-  if (!dialog.resolve) return
-  dialog.resolve({ action, applyAll: dialog.applyAll })
-  uploadConflictDialog.value = {
-    visible: false,
-    mode: 'upload',
-    name: '',
-    applyAll: false,
-    resolve: null
-  }
-}
-
-function formatUploadSpeed(bytesPerSecond: number) {
-  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0.0 MB/s'
-  return `${(bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s`
 }
 
 function handleWorkspaceDragEnter(event: DragEvent) {
@@ -1764,18 +1422,6 @@ async function downloadSelected() {
   }
 }
 
-async function promptMoveConflict(name: string) {
-  return new Promise<UploadConflictResolution>(resolve => {
-    uploadConflictDialog.value = {
-      visible: true,
-      mode: 'move',
-      name,
-      applyAll: false,
-      resolve
-    }
-  })
-}
-
 async function handleMoveItems(items: FileItem[], targetDirectory: FileItem) {
   if (items.length === 0) return
   try {
@@ -1789,7 +1435,7 @@ async function handleMoveItems(items: FileItem[], targetDirectory: FileItem) {
       return
     }
     await movePaths(prepared.entries.map(entry => entry.path), targetDirectory.path, prepared.entries)
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.moved'))
   } catch (error) {
     ElMessage.error(moveApiErrorMessage(error))
@@ -1799,18 +1445,23 @@ async function handleMoveItems(items: FileItem[], targetDirectory: FileItem) {
 async function promptRename() {
   if (selectedItems.value.length !== 1 || !selectedItem.value) return
   const oldPath = selectedItem.value.path
-  const result = await ElMessageBox.prompt(t('prompt.newName'), t('prompt.rename'), {
-    inputValue: selectedItem.value.name,
-    inputPattern: SAFE_UPLOAD_SEGMENT_RE,
-    inputErrorMessage: t('message.namePattern'),
-    confirmButtonText: t('common.confirm'),
-    cancelButtonText: t('common.cancel')
-  })
+  let result: { value: string }
+  try {
+    result = await ElMessageBox.prompt(t('prompt.newName'), t('prompt.rename'), {
+      inputValue: selectedItem.value.name,
+      inputPattern: SAFE_UPLOAD_SEGMENT_RE,
+      inputErrorMessage: t('message.namePattern'),
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel')
+    })
+  } catch {
+    return
+  }
   const separator = oldPath.includes('\\') ? '\\' : '/'
   const parent = oldPath.split(/[\\/]/).slice(0, -1).join(separator)
   try {
     await renamePath(oldPath, `${parent}${separator}${result.value}`)
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.renamed'))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.renameFailed'))
@@ -1820,11 +1471,15 @@ async function promptRename() {
 async function confirmDelete() {
   const targets = selectedItems.value.length > 0 ? selectedItems.value : selectedItem.value ? [selectedItem.value] : []
   if (!targets.length) return
-  await ElMessageBox.confirm(t('prompt.deleteItems', { count: targets.length }), t('prompt.confirmDelete'), {
-    type: 'warning',
-    confirmButtonText: t('common.confirm'),
-    cancelButtonText: t('common.cancel')
-  })
+  try {
+    await ElMessageBox.confirm(t('prompt.deleteItems', { count: targets.length }), t('prompt.confirmDelete'), {
+      type: 'warning',
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel')
+    })
+  } catch {
+    return
+  }
   try {
     for (const item of targets) {
       await deletePath(item.path)
@@ -1835,7 +1490,7 @@ async function confirmDelete() {
     previewCandidate.value = null
     previewError.value = null
     currentStructureSource.value = ASE_STRUCTURE_SOURCE
-    await loadDirectory(currentPath.value)
+    await loadDirectory(currentPath.value, { refresh: true })
     ElMessage.success(t('message.deleted'))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.deleteFailed'))
@@ -1843,13 +1498,13 @@ async function confirmDelete() {
 }
 
 async function initializeWorkspace() {
-  if (!mounted || initialized || !props.systemInfo) return
+  if (!mounted || initialized || !systemInfo.value) return
   initialized = true
-  configureClientPreferencesScope(createWorkspaceScope(props.systemInfo))
+  configureClientPreferencesScope(createWorkspaceScope(systemInfo.value))
   applyWorkspacePreferences()
   await loadClientPreferencesState()
   applyWorkspacePreferences()
-  const initialPath = workspacePathOrRoot(getClientPreferences().workspace?.currentPath, props.systemInfo?.workspace_root)
+  const initialPath = workspacePathOrRoot(getClientPreferences().workspace?.currentPath, systemInfo.value?.workspace_root)
   await loadDirectory(initialPath)
   workspacePreferencesReady.value = true
   void loadLauncherBridge()
@@ -1867,7 +1522,7 @@ onMounted(() => {
 })
 
 watch(
-  () => props.systemInfo?.workspace_root,
+  () => systemInfo.value?.workspace_root,
   () => {
     void initializeWorkspace()
   }
@@ -1882,7 +1537,7 @@ watch(
 )
 
 watch(
-  () => props.systemInfo?.scheduler,
+  () => systemInfo.value?.scheduler,
   () => {
     syncBuiltinPanelTitles()
   },

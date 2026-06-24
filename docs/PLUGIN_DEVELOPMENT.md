@@ -261,6 +261,7 @@ def create_plugin(context):
   "theme": "light",
   "apiBase": "/api/plugins/cclib/api",
   "assetBase": "/api/plugins/cclib/assets",
+  "authToken": "当前会话 token，未配置时为 null",
   "initialFile": {
     "path": "/workspace/case/opt.log",
     "name": "opt.log"
@@ -293,7 +294,9 @@ def create_plugin(context):
 插件 UI 调用后端时应使用 `apiBase`，例如：
 
 ```ts
-await fetch(`${context.apiBase}/structures/preview?path=${encodeURIComponent(path)}`)
+await fetch(`${context.apiBase}/structures/preview?path=${encodeURIComponent(path)}`, {
+  headers: context.authToken ? { Authorization: `Bearer ${context.authToken}` } : undefined
+})
 ```
 
 ## 文件管理器 API 与双击预览

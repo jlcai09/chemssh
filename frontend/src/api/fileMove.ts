@@ -17,7 +17,7 @@ export async function prepareMoveEntries(
   items: Pick<FileItem, 'name' | 'path' | 'type'>[],
   options: PrepareMoveEntriesOptions
 ): Promise<PreparedMoveEntries> {
-  const targetItems = new Map((await listFiles(options.targetPath)).items.map(item => [item.name, item] as const))
+  const targetItems = new Map((await listFiles(options.targetPath, { refresh: true })).items.map(item => [item.name, item] as const))
   const entries: MovePathEntry[] = []
   let skippedCount = 0
   let applyAllAction: UploadConflictAction | null = null

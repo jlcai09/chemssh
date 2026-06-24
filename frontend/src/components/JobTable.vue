@@ -1,6 +1,6 @@
 <template>
   <div class="job-table" role="grid" aria-multiselectable="true" v-loading="loading" @dragstart.prevent>
-    <div ref="scrollRef" class="job-table-scroll" @mousedown.left="beginBlankSelect">
+    <div ref="scrollRef" class="job-table-scroll" @scroll="handleScroll" @mousedown.left="beginBlankSelect">
       <div class="job-list-header" role="row">
         <span role="columnheader">{{ t('job.id') }}</span>
         <span role="columnheader">{{ t('job.name') }}</span>
@@ -15,52 +15,60 @@
       <div v-if="jobs.length === 0 && !loading" class="job-empty-state">{{ t('queue.empty') }}</div>
 
       <div
-        v-for="(job, index) in jobs"
-        :key="job.job_id"
-        :ref="el => setRowRef(el, index)"
-        class="job-row"
-        :class="{
-          'is-selected': selectedJobIdSet.has(job.job_id),
-          'is-drag-range': isInDragRange(index),
-          'is-focused': focusedIndex === index,
-          'is-anchor': anchorIndex === index
-        }"
-        role="row"
-        tabindex="0"
-        :aria-selected="selectedJobIdSet.has(job.job_id)"
-        @focus="focusedIndex = index"
-        @mousedown.left="beginSelect(index, $event)"
-        @contextmenu.prevent="openContextMenu(index, $event)"
-        @mouseenter="extendSelection(index)"
-        @dblclick="handleOpenWorkdir(index)"
-        @keydown="handleKeydown(index, $event)"
+        v-else
+        class="job-virtual-list"
+        :class="{ 'is-virtual': shouldVirtualize }"
+        :style="virtualListStyle"
       >
-        <span class="job-cell job-id-cell" role="gridcell" :title="job.job_id">{{ job.job_id }}</span>
-        <span class="job-cell" role="gridcell" :title="job.name">{{ job.name }}</span>
-        <span class="job-cell" role="gridcell">
-          <el-tag :type="tagType(job.state)" effect="plain">{{ job.state || 'UNKNOWN' }}</el-tag>
-        </span>
-        <span class="job-cell" role="gridcell" :title="job.partition">{{ job.partition }}</span>
-        <span class="job-cell" role="gridcell">{{ job.time_used }}</span>
-        <span class="job-cell job-cell-right" role="gridcell">{{ job.nodes ?? '' }}</span>
-        <span class="job-cell" role="gridcell" :title="job.reason || job.workdir || ''">
-          {{ job.reason || job.workdir || '' }}
-        </span>
-        <span class="job-cell job-action-cell" role="gridcell">
-          <el-tooltip :content="t('job.detail')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
-            <el-button :icon="InfoFilled" circle size="small" @mousedown.stop @click.stop="$emit('detail', job)" />
-          </el-tooltip>
-          <el-tooltip :content="t('job.cancel')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
-            <el-button
-              :icon="Close"
-              circle
-              size="small"
-              type="danger"
-              @mousedown.stop
-              @click.stop="$emit('cancel', job)"
-            />
-          </el-tooltip>
-        </span>
+        <div
+          v-for="{ job, index } in renderedJobs"
+          :key="job.job_id"
+          :ref="el => setRowRef(el, index)"
+          class="job-row"
+          :class="{
+            'is-selected': selectedJobIdSet.has(job.job_id),
+            'is-drag-range': isInDragRange(index),
+            'is-focused': focusedIndex === index,
+            'is-anchor': anchorIndex === index
+          }"
+          :style="rowStyle(index)"
+          role="row"
+          tabindex="0"
+          :aria-selected="selectedJobIdSet.has(job.job_id)"
+          @focus="focusedIndex = index"
+          @mousedown.left="beginSelect(index, $event)"
+          @contextmenu.prevent="openContextMenu(index, $event)"
+          @mouseenter="extendSelection(index)"
+          @dblclick="handleOpenWorkdir(index)"
+          @keydown="handleKeydown(index, $event)"
+        >
+          <span class="job-cell job-id-cell" role="gridcell" :title="job.job_id">{{ job.job_id }}</span>
+          <span class="job-cell" role="gridcell" :title="job.name">{{ job.name }}</span>
+          <span class="job-cell" role="gridcell">
+            <el-tag :type="tagType(job.state)" effect="plain">{{ job.state || 'UNKNOWN' }}</el-tag>
+          </span>
+          <span class="job-cell" role="gridcell" :title="job.partition">{{ job.partition }}</span>
+          <span class="job-cell" role="gridcell">{{ job.time_used }}</span>
+          <span class="job-cell job-cell-right" role="gridcell">{{ job.nodes ?? '' }}</span>
+          <span class="job-cell" role="gridcell" :title="job.reason || job.workdir || ''">
+            {{ job.reason || job.workdir || '' }}
+          </span>
+          <span class="job-cell job-action-cell" role="gridcell">
+            <el-tooltip :content="t('job.detail')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
+              <el-button :icon="InfoFilled" circle size="small" @mousedown.stop @click.stop="$emit('detail', job)" />
+            </el-tooltip>
+            <el-tooltip :content="t('job.cancel')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
+              <el-button
+                :icon="Close"
+                circle
+                size="small"
+                type="danger"
+                @mousedown.stop
+                @click.stop="$emit('cancel', job)"
+              />
+            </el-tooltip>
+          </span>
+        </div>
       </div>
     </div>
   </div>
@@ -91,9 +99,16 @@ const emit = defineEmits<{
   'open-workdir': [job: QueueItem]
 }>()
 
+const ROW_HEIGHT = 40
+const HEADER_HEIGHT = 36
+const VIRTUALIZE_THRESHOLD = 120
+const VIRTUAL_OVERSCAN = 8
+
 const selectedJobIdSet = computed(() => new Set(props.selectedJobs.map(job => job.job_id)))
 const scrollRef = ref<HTMLElement | null>(null)
 const rowRefs = ref<(HTMLElement | null)[]>([])
+const viewportHeight = ref(0)
+const scrollTop = ref(0)
 const focusedIndex = ref<number | null>(null)
 const anchorIndex = ref<number | null>(null)
 const dragActive = ref(false)
@@ -105,9 +120,57 @@ let blankDragStartX = 0
 let blankDragStartY = 0
 let blankDragCurrentX = 0
 let blankDragCurrentY = 0
+let resizeObserver: ResizeObserver | null = null
+
+const shouldVirtualize = computed(() => props.jobs.length > VIRTUALIZE_THRESHOLD)
+const visibleStart = computed(() => {
+  if (!shouldVirtualize.value) return 0
+  return Math.max(0, Math.floor(scrollTop.value / ROW_HEIGHT) - VIRTUAL_OVERSCAN)
+})
+const visibleEnd = computed(() => {
+  if (!shouldVirtualize.value) return props.jobs.length
+  const visibleCount = Math.ceil(viewportHeight.value / ROW_HEIGHT) + VIRTUAL_OVERSCAN * 2
+  return Math.min(props.jobs.length, visibleStart.value + visibleCount)
+})
+const renderedJobs = computed(() => props.jobs.slice(visibleStart.value, visibleEnd.value).map((job, offset) => ({
+  job,
+  index: visibleStart.value + offset
+})))
+const virtualListStyle = computed(() => shouldVirtualize.value ? { height: `${props.jobs.length * ROW_HEIGHT}px` } : undefined)
 
 function setRowRef(el: unknown, index: number) {
   rowRefs.value[index] = el instanceof HTMLElement ? el : null
+}
+
+function rowStyle(index: number) {
+  return shouldVirtualize.value ? { transform: `translateY(${index * ROW_HEIGHT}px)` } : undefined
+}
+
+function updateVirtualViewport() {
+  const scroller = scrollRef.value
+  if (!scroller) return
+  viewportHeight.value = Math.max(0, scroller.clientHeight - HEADER_HEIGHT)
+  scrollTop.value = Math.max(0, scroller.scrollTop - HEADER_HEIGHT)
+}
+
+function handleScroll() {
+  updateVirtualViewport()
+}
+
+function scrollIndexIntoView(index: number) {
+  const scroller = scrollRef.value
+  if (!scroller) return
+  const rowTop = HEADER_HEIGHT + index * ROW_HEIGHT
+  const rowBottom = rowTop + ROW_HEIGHT
+  const visibleTop = scroller.scrollTop + HEADER_HEIGHT
+  const visibleBottom = scroller.scrollTop + scroller.clientHeight
+
+  if (rowTop < visibleTop) {
+    scroller.scrollTop = Math.max(0, rowTop - HEADER_HEIGHT)
+  } else if (rowBottom > visibleBottom) {
+    scroller.scrollTop = rowBottom - scroller.clientHeight
+  }
+  updateVirtualViewport()
 }
 
 function isScrollbarEvent(element: HTMLElement, event: MouseEvent) {
@@ -128,10 +191,15 @@ async function focusRow(index: number) {
   const next = clampIndex(index)
   if (next < 0) return
   focusedIndex.value = next
+  if (shouldVirtualize.value) {
+    scrollIndexIntoView(next)
+  }
   await nextTick()
   const row = rowRefs.value[next]
   row?.focus()
-  row?.scrollIntoView({ block: 'nearest' })
+  if (!shouldVirtualize.value) {
+    row?.scrollIntoView({ block: 'nearest' })
+  }
 }
 
 function emitSelection(ids: Set<string>, primary: QueueItem | null) {
@@ -240,15 +308,39 @@ function updateBlankDragSelection() {
   const next = new Set<string>()
   const selectedIndices: number[] = []
 
-  rowRefs.value.forEach((row, index) => {
-    const job = props.jobs[index]
-    if (!row || !job) return
-    const rect = row.getBoundingClientRect()
-    const intersects = rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom
-    if (!intersects) return
-    next.add(job.job_id)
-    selectedIndices.push(index)
-  })
+  if (shouldVirtualize.value) {
+    const scroller = scrollRef.value
+    if (scroller) {
+      const rect = scroller.getBoundingClientRect()
+      const intersectsX = rect.right >= left && rect.left <= right
+      const rowAreaTop = rect.top + HEADER_HEIGHT
+      const intersectsY = rect.bottom >= top && rowAreaTop <= bottom
+      if (intersectsX && intersectsY) {
+        const contentTop = Math.max(0, scroller.scrollTop + Math.max(top, rowAreaTop) - rect.top - HEADER_HEIGHT)
+        const contentBottom = Math.max(0, scroller.scrollTop + Math.min(bottom, rect.bottom) - rect.top - HEADER_HEIGHT)
+        const from = clampIndex(Math.floor(contentTop / ROW_HEIGHT))
+        const to = clampIndex(Math.floor(contentBottom / ROW_HEIGHT))
+        if (from >= 0 && to >= 0) {
+          for (let index = Math.min(from, to); index <= Math.max(from, to); index += 1) {
+            const job = props.jobs[index]
+            if (!job) continue
+            next.add(job.job_id)
+            selectedIndices.push(index)
+          }
+        }
+      }
+    }
+  } else {
+    rowRefs.value.forEach((row, index) => {
+      const job = props.jobs[index]
+      if (!row || !job) return
+      const rect = row.getBoundingClientRect()
+      const intersects = rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom
+      if (!intersects) return
+      next.add(job.job_id)
+      selectedIndices.push(index)
+    })
+  }
 
   blankDragJobIdSet.value = next
   const primaryIndex = selectedIndices.length === 0
@@ -387,16 +479,27 @@ watch(
   () => props.jobs.map(job => job.job_id).join('\u0000'),
   () => {
     rowRefs.value = []
+    nextTick(updateVirtualViewport)
     syncFocusedSelection()
   }
 )
 
+watch([visibleStart, visibleEnd], () => {
+  rowRefs.value = []
+})
+
 onMounted(() => {
   window.addEventListener('mouseup', finishSelection)
+  nextTick(updateVirtualViewport)
+  if (scrollRef.value && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(updateVirtualViewport)
+    resizeObserver.observe(scrollRef.value)
+  }
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('mouseup', finishSelection)
   window.removeEventListener('mousemove', handleBlankDragMove)
+  resizeObserver?.disconnect()
 })
 </script>

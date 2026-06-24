@@ -3,11 +3,18 @@ server:
   port: 8888
   idle_shutdown_seconds: 3600 # 0 means never
 
+  # CORS origins - configure this for production deployment
+  # Development default: ["http://127.0.0.1:5173", "http://localhost:5173"]
+  # Production example:
+  # cors_origins:
+  #   - "https://chemssh.example.com"
+  #   - "https://app.example.com"
+
 workspace:
   root: .
   allow_delete: true
-  max_upload_size_mb: 500
-  max_read_size_mb: 5
+  max_upload_size_mb: 1000
+  max_read_size_mb: 50
 
 scheduler:
   type: slurm
@@ -15,24 +22,27 @@ scheduler:
 
 viewer:
   default_style: stick
-  max_file_size_mb: 50
+  max_file_size_mb: 200
   ase:
     enabled: true
     prefer_binary: true
     json_round_digits: 6
     max_atoms: 200000
-    max_frames: 5000
+    max_frames: 500000
     max_points_json: 200000
     binary_chunk_frames: 64
     cache_ttl_minutes: 30
 
 security:
+  # Enable token authentication
   enable_token: false
+  # Authentication token (required when enable_token is true)
+  # IMPORTANT: Must not be empty when enable_token is true
   token: change-me
 
 logs:
   default_tail_lines: 20
-  max_tail_lines: 100
+  max_tail_lines: 500
   max_tail_bytes_mb: 5
 
 terminal:
@@ -49,3 +59,12 @@ compression:
   brotli:
     enabled: on
     level: 1
+
+plugins:
+  enabled: true
+  directories: []
+
+client_cache:
+  enabled: true
+  cleanup_offline_days: 14
+  max_file_size_kb: 512

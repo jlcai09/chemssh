@@ -68,9 +68,17 @@ echo ""
 echo "Step 2: Staging release files..."
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR_ABS=$(cd "$OUTPUT_DIR" && pwd)
-STAGING_ROOT=$(mktemp -d)
-PACKAGE_DIR="${STAGING_ROOT}/${RELEASE_NAME}"
-trap 'rm -rf "$STAGING_ROOT"' EXIT
+PACKAGE_DIR="${OUTPUT_DIR_ABS}/${RELEASE_NAME}"
+
+case "$PACKAGE_DIR" in
+    "$OUTPUT_DIR_ABS"/chemssh-*)
+        rm -rf "$PACKAGE_DIR"
+        ;;
+    *)
+        echo "Error: Refusing to clean unexpected package directory: $PACKAGE_DIR"
+        exit 1
+        ;;
+esac
 
 mkdir -p "$PACKAGE_DIR"
 
@@ -106,10 +114,10 @@ rm -f "${OUTPUT_DIR_ABS}/${RELEASE_NAME}.tar.gz" \
     "${OUTPUT_DIR_ABS}/${RELEASE_NAME}.tar.gz.sha256" \
     "${OUTPUT_DIR_ABS}/${RELEASE_NAME}.zip" \
     "${OUTPUT_DIR_ABS}/${RELEASE_NAME}.zip.sha256"
-tar -czf "${OUTPUT_DIR_ABS}/${RELEASE_NAME}.tar.gz" -C "$STAGING_ROOT" "$RELEASE_NAME"
+tar -czf "${OUTPUT_DIR_ABS}/${RELEASE_NAME}.tar.gz" -C "$OUTPUT_DIR_ABS" "$RELEASE_NAME"
 (
-    cd "$STAGING_ROOT"
-    zip -r -q "${OUTPUT_DIR_ABS}/${RELEASE_NAME}.zip" "$RELEASE_NAME"
+    cd "$OUTPUT_DIR_ABS"
+    zip -r -q "${RELEASE_NAME}.zip" "$RELEASE_NAME"
 )
 
 echo ""
@@ -124,6 +132,7 @@ echo ""
 echo "=== Release Archive Created! ==="
 echo ""
 echo "Files:"
+echo "  ${OUTPUT_DIR}/${RELEASE_NAME}/"
 echo "  ${OUTPUT_DIR}/${RELEASE_NAME}.tar.gz"
 echo "  ${OUTPUT_DIR}/${RELEASE_NAME}.zip"
 echo ""

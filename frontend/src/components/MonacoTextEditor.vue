@@ -5,16 +5,32 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
-import 'monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js'
-import 'monaco-editor/esm/vs/basic-languages/python/python.contribution.js'
-import 'monaco-editor/esm/vs/basic-languages/shell/shell.contribution.js'
-import 'monaco-editor/esm/vs/basic-languages/xml/xml.contribution.js'
-import 'monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution.js'
-import 'monaco-editor/esm/vs/language/css/monaco.contribution.js'
-import 'monaco-editor/esm/vs/language/html/monaco.contribution.js'
-import 'monaco-editor/esm/vs/language/json/monaco.contribution.js'
-import 'monaco-editor/esm/vs/language/typescript/monaco.contribution.js'
 import 'monaco-editor/min/vs/editor/editor.main.css'
+
+// 语言贡献按需懒加载：避免首屏打包全部语言（markdown/python/shell/xml/yaml/css/html/json/typescript），
+// 仅在编辑器实际需要某种语言时动态 import 对应 contribution，显著缩小主包体积。
+const loadedLanguages = new Set<string>()
+const languageLoaders: Record<string, () => Promise<unknown>> = {
+  markdown: () => import('monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js'),
+  python: () => import('monaco-editor/esm/vs/basic-languages/python/python.contribution.js'),
+  shell: () => import('monaco-editor/esm/vs/basic-languages/shell/shell.contribution.js'),
+  xml: () => import('monaco-editor/esm/vs/basic-languages/xml/xml.contribution.js'),
+  yaml: () => import('monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution.js'),
+  css: () => import('monaco-editor/esm/vs/language/css/monaco.contribution.js'),
+  html: () => import('monaco-editor/esm/vs/language/html/monaco.contribution.js'),
+  json: () => import('monaco-editor/esm/vs/language/json/monaco.contribution.js'),
+  // typescript 与 javascript 共用 typescript 语言贡献
+  typescript: () => import('monaco-editor/esm/vs/language/typescript/monaco.contribution.js'),
+  javascript: () => import('monaco-editor/esm/vs/language/typescript/monaco.contribution.js')
+}
+
+async function ensureLanguageLoaded(language: string) {
+  if (loadedLanguages.has(language)) return
+  const loader = languageLoaders[language]
+  if (!loader) return
+  await loader()
+  loadedLanguages.add(language)
+}
 
 // Worker cache for lazy loading
 const workerCache = new Map<string, Worker>()
@@ -115,9 +131,12 @@ onMounted(async () => {
   await nextTick()
   if (!containerRef.value) return
 
+  const initialLanguage = languageForPath(props.path)
+  await ensureLanguageLoaded(initialLanguage)
+
   editor = monaco.editor.create(containerRef.value, {
     value: props.modelValue,
-    language: languageForPath(props.path),
+    language: initialLanguage,
     theme: 'vs',
     readOnly: props.readonly,
     automaticLayout: false, // Disable automatic layout for better performance
@@ -155,9 +174,11 @@ watch(
 
 watch(
   () => props.path,
-  path => {
+  async path => {
+    const language = languageForPath(path)
+    await ensureLanguageLoaded(language)
     const model = editor?.getModel()
-    if (model) monaco.editor.setModelLanguage(model, languageForPath(path))
+    if (model) monaco.editor.setModelLanguage(model, language)
   }
 )
 

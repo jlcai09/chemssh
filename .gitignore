@@ -2,7 +2,7 @@
 idea/
 logs/
 cache/
-plugins/*/.chemweb-plugin-state.json
+plugins/*/.chemssh-plugin-state.json
 plugins/*/.venv/
 .claude/
 release/

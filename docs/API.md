@@ -16,6 +16,44 @@
 
 前端请求封装在 `frontend/src/api/` 下。新增模块优先复用这些封装，不要在组件里手写重复的 `fetch` 错误处理。
 
+## Token 鉴权
+
+当配置启用：
+
+```yaml
+security:
+  enable_token: true
+  token: "一串随机长 token"
+```
+
+后端会要求所有 `/api` HTTP 接口和 `/api` WebSocket 连接携带 token。未携带或 token 不匹配时，HTTP 返回 `401`：
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "AUTH_REQUIRED",
+    "message": "Invalid or missing ChemSSH token"
+  }
+}
+```
+
+支持的携带方式：
+
+- HTTP API 首选请求头：`Authorization: Bearer <token>`。
+- 兼容请求头：`X-ChemSSH-Token: <token>`。
+- 浏览器无法设置请求头的下载链接、iframe 和 WebSocket 可使用查询参数：`token=<token>` 或 `access_token=<token>`。
+- 后端在通过 header/query 校验成功的 HTTP 响应中写入 `HttpOnly`、`SameSite=Strict`、`Path=/api` 的 `chemssh_token` cookie；同源的插件 iframe 后续请求可通过该 cookie 继续通过鉴权。
+
+前端封装：
+
+- `frontend/src/api/http.ts` 会从 `?token=...`、`?chemssh_token=...`、URL hash、`window.__CHEMSSH_TOKEN__`、`sessionStorage["chemssh.token.v1"]` 或构建变量 `VITE_CHEMSSH_TOKEN` 读取 token，并自动给 `request()`、`cachedGet()`、`requestBlob()` 加 `Authorization`。
+- 当 HTTP 请求收到 `401 AUTH_REQUIRED` 时，`frontend/src/api/http.ts` 会弹出 ChemSSH token 输入框；确认后通过 `setAuthToken(token)` 写入 `sessionStorage["chemssh.token.v1"]` 并自动重试当前请求。同一时间多个 401 会共享一个输入框，避免初始化阶段重复弹窗。带进度的上传、Launcher bridge 请求和结构二进制帧读取也应复用这套 token challenge 流程。
+- `downloadUrl()`、`downloadSelectionUrl()`、插件 asset URL 和终端 WebSocket URL 会把 token 放入查询参数，因为这些浏览器加载方式无法可靠设置自定义 header。
+- `setAuthToken(token)` 可供 Launcher 在打开前端后写入本次会话 token；建议只使用内存或 `sessionStorage`，不要长期保存到 `localStorage`。
+
+`/api/system/identity` 也受 token 保护。`chemssh` CLI 使用同一份配置探测已有服务时，会在 `security.enable_token=true` 时自动带上配置中的 token。
+
 ## 系统信息
 
 ### `GET /api/system/info`
@@ -70,6 +108,8 @@ CLI 参数：
 ### `GET /api/files/list?path=/workspace/project`
 
 列出目录内容。省略 `path` 时列出工作区根目录。
+
+前端封装：`listFiles(path, { refresh })` 位于 `frontend/src/api/files.ts`，会通过 `cachedGet()` 对相同目录做 1 秒 GET 缓存和并发去重；手动刷新、外部同步或冲突预检应传 `refresh: true` 绕过该目录缓存。`writeFile()`、`deletePath()`、`renamePath()`、`movePaths()`、`copyPaths()`、`makeDirectory()` 和 `uploadFile()` 成功后会清理请求缓存，避免文件变更后目录列表继续使用旧数据。
 
 响应：
 
@@ -157,7 +197,7 @@ CLI 参数：
 
 ### `DELETE /api/files/delete?path=/workspace/project/old.log`
 
-删除文件或目录。仅当 `workspace.allow_delete=true` 可用。
+删除文件或目录。仅当 `workspace.allow_delete=true` 可用；后端会通过 `WorkspaceSecurity` 校验路径必须位于工作区内。
 
 ### `POST /api/files/rename`
 
@@ -340,6 +380,11 @@ GET /api/chemssh-bridge/open-sync-events?after=<lastSeq>
 
 读取结构摘要和初始帧。大文件会返回 `STRUCTURE_FILE_TOO_LARGE`，用户确认后前端可用 `force=true` 重试。
 
+响应包含 `warnings: string[]`，用于提示可预览但可能不完整或不适合作为结构源的情况。当前已定义：
+
+- `vasp_outcar_md_may_lack_structure`：检测到 `OUTCAR` 属于 VASP MD 任务（`IBRION = 0`）。VASP MD 轨迹通常应优先读取 `XDATCAR`；当前 `OUTCAR` 可能不包含结构轨迹信息，导致 ASE/快速解析器解析失败或只拿到有限结构块。结构预览器应在画布下方或解析失败提示附近显示红色警告，并建议用户改看 `XDATCAR`。
+- `vasp_outcar_constraints_missing` / `vasp_outcar_constraints_unreadable`：`OUTCAR` 自身不包含固定原子约束。解析器会与 ASE 一致，按同目录 `CONTCAR`、`POSCAR` 的顺序读取固定原子信息，用于 `fixed_indices` 和排除固定原子后的 `fmax`；如果没有这些文件或读取失败，结构预览器应提示当前 `Fmax` 为全部原子的 `Fmax`。
+
 ### `GET /api/structures/ase/frame?path=/workspace/project/mol.xyz&index=0&force=false`
 
 按索引读取单帧结构。
@@ -348,7 +393,7 @@ GET /api/chemssh-bridge/open-sync-events?after=<lastSeq>
 
 读取轨迹二进制帧块。
 
-支持格式由 `backend/app/services/file_types.py` 与 ASE 能力共同决定。当前常见格式包括 `xyz`、`extxyz`、`traj`、`pdb`、`mol`、`sdf`、`cif`、`xsd`、`db`，并强制识别 `POSCAR`、`CONTCAR`、`XDATCAR`、`OUTCAR` 等 VASP 文件名。
+支持格式由 `backend/app/services/file_types.py` 与 ASE 能力共同决定。当前常见格式包括 `xyz`、`extxyz`、`traj`、`pdb`、`mol`、`sdf`、`cif`、`xsd`、`xtd`、`arc`、`db`，并强制识别 `POSCAR`、`CONTCAR`、`XDATCAR`、`OUTCAR` 等 VASP 文件名。
 
 前端封装：`frontend/src/api/structures.ts`。
 
@@ -550,10 +595,10 @@ GET /api/chemssh-bridge/open-sync-events?after=<lastSeq>
 X-ChemSSH-Client-Id: client_xxx
 ```
 
-WebSocket 连接使用 query 参数：
+WebSocket 连接使用 query 参数。启用 token 鉴权时还必须带 `token` 或先有有效 `chemssh_token` cookie：
 
 ```text
-/api/terminal/ws/{session_id}?client_id=client_xxx
+/api/terminal/ws/{session_id}?client_id=client_xxx&token=...
 ```
 
 后端只会列出、关闭、连接当前 client id 拥有的终端会话。`terminal.max_sessions` 是每个 client id 的上限，不是全局上限。client id 只用于会话隔离，不代表用户身份或安全认证。
@@ -629,6 +674,8 @@ WebSocket 连接使用 query 参数：
 
 - 创建终端会带上当前文件管理器目录作为 `cwd`。
 - 创建终端可传 `vim_compatibility` 布尔值，默认 `true`。前端终端设置中的“Vim 兼容模式”会保存到 `localStorage` 并随新建会话发送；关闭后只影响之后新建的终端会话。
+- 前端终端设置提供“自动复制选中文字”开关，默认关闭，保存到 `localStorage`。开启后，xterm 选区变化会把非空选中文本写入系统剪贴板；终端同时加载官方 `@xterm/addon-clipboard` 以支持 OSC 52 剪贴板访问。
+- 终端工具按钮位于“新建终端”和“终端设置”之间。当前工具菜单只包含“搜索”；搜索浮窗输入内容后会扫描当前 xterm buffer，并在可见行上叠加高亮元素标记全部匹配项和当前匹配。点击“查找下一个”或“上一个”会切换当前匹配并滚动到可见区域；终端输出、滚动或点击后会重新渲染可见区域高亮。
 - 文件管理器与终端支持目录同步：`follow` 表示终端跟随文件管理器，`bidirectional` 表示终端 cwd 变化也会反向打开文件管理器目录。
 - 终端接收文件拖放时，会向当前活跃 tab 写入输入数据。当前约定是路径串前置一个空格，多个绝对路径用空格连接，例如 ` /abs/a /abs/b`。
 - 终端支持“中键粘贴当前终端选区文本”。该行为依赖宿主环境放行中键事件；常规浏览器通常会拦截为自动滚屏，自定义 WebView2 启动器可通过关闭默认中键滚轮后启用。
@@ -932,7 +979,7 @@ X-ChemSSH-Client-Id: client_xxx
 - `zIndex`：窗口层级。
 - `payload`：窗口类型自己的轻量状态，例如 tail 的 `{ path, lines }`。
 
-`file-manager` 窗口的 `payload.path` 保存当前目录。画板文件管理器复用工作台的完整工具栏能力：刷新、上级目录、新建文件、新建文件夹、显示隐藏文件、上传文件/文件夹、下载、重命名和删除。外部文件拖拽上传只在具体文件管理器窗口内响应，目标目录就是该窗口当前目录，便于多个文件管理器并存时选择上传位置。双击目录进入目录；双击文件统一打开 `preview` 窗口。Tail 窗口不由双击文件触发，而是和工作台一样由当前文件选择驱动：绑定文件管理器后，单击/选中文件会更新对应 Tail 路径。
+`file-manager` 窗口的 `payload.path` 保存当前目录。画板文件管理器复用工作台的完整工具栏能力：刷新、上级目录、新建文件、新建文件夹、显示隐藏文件、上传文件/文件夹、下载、重命名和删除。外部文件拖拽上传只在具体文件管理器窗口内响应，目标目录就是该窗口当前目录，便于多个文件管理器并存时选择上传位置。双击目录进入目录；双击文件统一打开 `preview` 窗口。文件树加载中使用不拦截鼠标的轻量指示；目录刷新期间的快速双击会在加载完成后按最后点击位置打开当前条目。Tail 窗口不由双击文件触发，而是和工作台一样由当前文件选择驱动：绑定文件管理器后，单击/选中文件会更新对应 Tail 路径。
 
 `preview` 窗口的 `payload.path` 保存当前文件。从文件管理器打开或从内部文件拖拽打开时还会保存 `payload.previewType` 与 `payload.format`，预览窗口优先使用后端文件类型判定结果，再按文件名和扩展名兜底判断结构文件；大文件沿用现有确认流程。预览大窗口与 Terminal 大窗口一致，使用 `Teleport to="body"` 加 `position: fixed; inset: 0` 覆盖整个页面，不使用 Element Plus fullscreen dialog。
 
@@ -949,9 +996,12 @@ X-ChemSSH-Client-Id: client_xxx
   "theme": "light",
   "apiBase": "/api/plugins/plugin_id/api",
   "assetBase": "/api/plugins/plugin_id/assets",
+  "authToken": "当前会话 token，未配置时为 null",
   "initialFile": null
 }
 ```
+
+插件 iframe 如果自己调用 `apiBase` 下的接口，应在启用 token 鉴权时发送 `Authorization: Bearer <authToken>`。宿主也会在带 token 加载插件 asset 时写入 `chemssh_token` HttpOnly cookie，便于同源 iframe 的后续请求通过鉴权；插件仍应优先显式使用 `authToken`，避免依赖第三方 cookie 策略。
 
 画板 UI 要保持工具化和低干扰：浅色点阵背景、贴边工具栏、图标按钮加 tooltip、窗口薄边框和不超过 8px 的圆角。多窗口、窄屏和不同缩放比例下不得出现文字溢出或控件重叠。
 

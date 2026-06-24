@@ -5,7 +5,7 @@
 ## 前提条件
 
 - Git
-- Python 3.7+
+- Python 3.10+
 - Node.js（仅打包者需要，用于构建前端）
 - Windows 用户推荐使用 Git Bash（随 Git for Windows 安装）
 

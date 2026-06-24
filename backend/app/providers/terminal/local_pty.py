@@ -46,7 +46,7 @@ class LocalPtyTerminalProvider(TerminalProvider):
         from ptyprocess import PtyProcessUnicode
 
         self._pty = PtyProcessUnicode.spawn(
-            [self._shell],
+            [self._shell, '-l'],
             cwd=cwd,
             dimensions=(rows, cols),
             env=self._terminal_env(),
