@@ -34,6 +34,17 @@ Run a narrower test file when the change is focused. Use the full test suite for
 .\.venv\Scripts\python -m pytest
 ```
 
+## Terminal Environment
+
+- Terminals are created by `backend/app/services/terminal_service.py` through `LocalPtyTerminalProvider`. The provider inherits `os.environ`, drops the ChemSSH service virtualenv/conda state, then applies proxy variables.
+- Proxy variables reach a terminal only through the launcher bridge file `$HOME/.chemssh-launcher/terminal-proxy-<port>.json`, parsed by `backend/app/providers/terminal/launcher_proxy.py`. Inherited proxy variables are dropped first, so a stopped launcher session cannot leak a dead reverse channel into a new tab.
+- The bridge path uses the **effective** `settings.server.port`; `backend/app/cli.py` writes `--host/--port` back into settings for exactly that reason. Do not resolve the port from the config file when reading the bridge. `uvicorn --reload` serves the app from a child process that never runs `cli.main`, so that development mode loses the write-back.
+- Bridge validation fails open to "no proxy": wrong version, a URL that is not a bare `http://<loopback>:<port>` (credentials, any path including a trailing `/`, query, or fragment all fail), a port outside `1-65535`, an oversized, unreadable, or unreachable endpoint, unknown env keys, or NUL bytes all mean the terminal starts without the proxy and no error is raised. Each rejection logs a reason at info level without echoing the payload.
+- Read the bridge outside the terminal manager lock; the file read and TCP probe must not block other terminal operations.
+- Never log bridge contents or proxy credentials.
+- bash receives the exports appended to the generated `--rcfile` after login profiles; other shells rely on the process environment.
+
+
 ## Frontend
 
 - Framework: Vue 3 with `<script setup lang="ts">`.

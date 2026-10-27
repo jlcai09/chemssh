@@ -43,6 +43,7 @@ release/
 │   ├── README.md
 │   ├── README.zh-CN.md
 │   ├── config.yaml
+│   ├── constraints-oldlinux.txt
 │   └── pyproject.toml
 ├── chemssh-<version>.tar.gz
 ├── chemssh-<version>.tar.gz.sha256
@@ -56,6 +57,7 @@ release/
 - 不包含 `frontend/src/`
 - 不包含 `frontend/node_modules/`
 - 使用发行包的用户不需要安装 Node.js
+- 随包提供 `constraints-oldlinux.txt`，供旧版 Linux 用户规避 glibc 兼容问题（见下文）
 
 ## 打包前检查
 
@@ -84,3 +86,19 @@ Windows PowerShell 激活虚拟环境时使用：
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
+
+### 旧版 Linux 系统（glibc 兼容）
+
+较新的 `numpy`、`scipy`、`matplotlib` wheel 针对更高版本的 glibc 构建。在 glibc 较旧的发行版（如 CentOS 7、RHEL 7、Ubuntu 18.04）上，普通安装可能成功，但在导入时报错：
+
+```text
+ImportError: /lib64/libc.so.6: version `GLIBC_2.28' not found
+```
+
+这类系统安装时必须用随包的约束文件固定兼容版本（需要 Python 3.10–3.12）：
+
+```bash
+pip install -c constraints-oldlinux.txt -e ".[dev]"
+```
+
+`constraints-oldlinux.txt` 针对的是**旧版 glibc**（Linux x86_64，glibc >= 2.17 / manylinux2014）：它把 `ase`、`numpy`、`scipy`、`matplotlib`、`contourpy`、`Pillow` 固定在仍发布该 glibc 兼容 wheel 的版本。验证发行包时如目标机器属于这一类，请用上面的命令代替 `pip install -e ".[dev]"`。

@@ -273,6 +273,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     settings = load_settings(args.config, workspace_root=args.workspace_root)
     host = args.host or settings.server.host
     port = args.port or settings.server.port
+    # Terminal code locates the launcher proxy bridge file by the effective port,
+    # which may come from --port rather than the config file. uvicorn --reload
+    # serves the app from a child process that never runs this, so that
+    # development mode keeps the port from the config file.
+    settings.server.host = host
+    settings.server.port = port
 
     if args.reload:
         uvicorn.run(

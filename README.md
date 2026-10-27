@@ -32,6 +32,16 @@ python -m pip install -e ".[dev]"
 
 The pre-built `frontend/dist/` directory contains all optimized static files.
 
+#### Old Linux systems
+
+Newer `numpy`/`scipy`/`matplotlib` wheels are built against a newer glibc. On older distributions the install can succeed but fail at import time with errors such as `GLIBC_2.28 not found`. Use the bundled constraints file instead (requires Python 3.10–3.12):
+
+```bash
+python -m pip install -c constraints-oldlinux.txt -e ".[dev]"
+```
+
+`constraints-oldlinux.txt` targets **old glibc**: it pins `ase`, `numpy`, `scipy`, `matplotlib`, `contourpy`, and `Pillow` to versions that still publish glibc 2.17 (manylinux2014) compatible wheels, for distributions such as CentOS 7, RHEL 7, and Ubuntu 18.04.
+
 <details>
 <summary>Development install from source</summary>
 
@@ -64,6 +74,8 @@ python -m pip install -e ".[dev]"
 npm --prefix frontend install
 npm --prefix frontend run build
 ```
+
+On old Linux distributions, add `-c constraints-oldlinux.txt` to the pip install step as described above.
 
 </details>
 
@@ -315,6 +327,22 @@ If the bridge reports enabled features and endpoint paths, ChemSSH can:
 When these endpoints are unavailable, fail, or report `enabled !== true`, ChemSSH falls back to normal browser-only behavior. The frontend does not persist Launcher local cache paths and does not pass profile IDs, SFTP session IDs, passwords, or host keys through its own client cache.
 
 Do not modify `chemssh-launcher` from this repository; the bridge contract is documented in `docs/API.md`.
+
+### Terminal proxy
+
+A launcher session can also publish a proxy that runs on the user's own computer, so terminals started from the web UI can reach the network through it. The launcher writes one file over SFTP with mode `0600`:
+
+```text
+$HOME/.chemssh-launcher/terminal-proxy-<port>.json
+```
+
+```json
+{"version": 1, "proxy_url": "http://127.0.0.1:<assigned port>", "no_proxy": "localhost,127.0.0.1,::1", "env": {"http_proxy": "...", "https_proxy": "...", "all_proxy": "...", "HTTP_PROXY": "...", "HTTPS_PROXY": "...", "ALL_PROXY": "...", "no_proxy": "...", "NO_PROXY": "..."}}
+```
+
+The `<port>` segment is the effective ChemSSH listening port, so `--port` matters more than the config file. Every terminal session reads the file when it is created and validates it: version `1`, a bare `http://<loopback>:<port>` URL (no credentials, no path — a trailing `/` also fails — no query, no fragment), a size under 64 KB, a reachable endpoint, and env keys limited to the proxy variables above. Any failure means "no proxy" — the terminal still starts and nothing is logged as an error.
+
+Terminal proxy state comes only from this file: proxy variables inherited from the ChemSSH service environment are dropped, because after a launcher session stops they would point to a closed reverse channel. For bash, the exports are also appended to the generated `--rcfile`, so they win over login profiles. Without the file the behavior is unchanged, which is the normal case for a standalone deployment.
 
 ## Plugins
 

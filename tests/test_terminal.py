@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import socket
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +17,13 @@ from backend.app.core.errors import AppError
 from backend.app.core.security import WorkspaceSecurity
 from backend.app.main import create_app
 from backend.app.providers.terminal.base import TerminalProvider
-from backend.app.providers.terminal.local_pty import LocalPtyTerminalProvider
+from backend.app.providers.terminal.launcher_proxy import (
+    MAX_BRIDGE_BYTES,
+    LauncherProxy,
+    bridge_path,
+    load_launcher_proxy,
+)
+from backend.app.providers.terminal.local_pty import _CHEMSSH_CWD_INIT_SH, LocalPtyTerminalProvider
 from backend.app.services.terminal_service import TerminalManager, TerminalSession, terminal_manager, utc_now
 
 
@@ -114,6 +123,262 @@ def test_terminal_env_drops_inherited_python_activation_state(tmp_path: Path) ->
     assert "CONDA_SHLVL" not in env
     assert "PYTHONHOME" not in env
     assert env["SHELL"] == "/bin/bash"
+
+
+def _write_launcher_bridge(
+    home: Path,
+    port: int,
+    proxy_url: str,
+    *,
+    env: dict[str, str] | None = None,
+    version: int = 1,
+) -> Path:
+    path = bridge_path(port, home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": version,
+        "proxy_url": proxy_url,
+        "no_proxy": "localhost,127.0.0.1,::1",
+        "env": env
+        if env is not None
+        else {
+            "http_proxy": proxy_url,
+            "https_proxy": proxy_url,
+            "all_proxy": proxy_url,
+            "no_proxy": "localhost,127.0.0.1,::1",
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _listening_proxy_url() -> tuple[socket.socket, str]:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    return listener, f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+
+def test_launcher_proxy_bridge_applies_to_terminal_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    monkeypatch.setattr("backend.app.providers.terminal.local_pty.tempfile.mkdtemp", lambda **_: str(shim_dir))
+
+    listener, proxy_url = _listening_proxy_url()
+    try:
+        _write_launcher_bridge(tmp_path, 8888, proxy_url)
+        proxy = load_launcher_proxy(8888, home=tmp_path)
+    finally:
+        listener.close()
+
+    assert proxy is not None
+    assert proxy.proxy_url == proxy_url
+    assert proxy.env["http_proxy"] == proxy_url
+    assert proxy.env["HTTPS_PROXY"] == proxy_url
+    assert proxy.env["no_proxy"] == "localhost,127.0.0.1,::1"
+
+    provider = LocalPtyTerminalProvider()
+    provider._shell = "/bin/bash"
+    provider.launcher_proxy_env = proxy.env
+    env = provider._terminal_env()
+
+    assert env["https_proxy"] == proxy_url
+
+    script = provider._cwd_init_script()
+    assert script.startswith(_CHEMSSH_CWD_INIT_SH)
+    assert script.index("source /etc/profile") < script.index(f"export http_proxy='{proxy_url}'")
+    assert "export NO_PROXY='localhost,127.0.0.1,::1'" in script
+
+
+def test_terminal_env_drops_proxy_inherited_from_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    monkeypatch.setattr("backend.app.providers.terminal.local_pty.tempfile.mkdtemp", lambda **_: str(shim_dir))
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9999")
+    monkeypatch.setenv("NO_PROXY", "example.internal")
+
+    provider = LocalPtyTerminalProvider()
+    provider._shell = "/bin/bash"
+
+    env = provider._terminal_env()
+    inherited_keys = {key.lower() for key in env}
+    assert "http_proxy" not in inherited_keys
+    assert "no_proxy" not in inherited_keys
+
+    provider.launcher_proxy_env = {"http_proxy": "http://127.0.0.1:41000"}
+    env = provider._terminal_env()
+    assert env["http_proxy"] == "http://127.0.0.1:41000"
+    assert "no_proxy" not in {key.lower() for key in env}
+
+
+def test_launcher_proxy_bridge_filters_env_and_fills_defaults(tmp_path: Path) -> None:
+    listener, proxy_url = _listening_proxy_url()
+    try:
+        _write_launcher_bridge(
+            tmp_path,
+            8888,
+            proxy_url,
+            env={
+                "http_proxy": "http://192.0.2.10:3128",
+                "https_proxy": proxy_url,
+                "AWS_SECRET_ACCESS_KEY": "token",
+                "no_proxy": "example.com",
+            },
+        )
+        proxy = load_launcher_proxy(8888, home=tmp_path)
+    finally:
+        listener.close()
+
+    assert proxy is not None
+    assert proxy.env["http_proxy"] == proxy_url
+    assert proxy.env["ALL_PROXY"] == proxy_url
+    assert proxy.env["no_proxy"] == "example.com"
+    assert "AWS_SECRET_ACCESS_KEY" not in proxy.env
+
+
+@pytest.mark.parametrize(
+    "proxy_url",
+    ["http://192.0.2.10:3128", "socks5://127.0.0.1:7890", "http://127.0.0.1:0"],
+)
+def test_launcher_proxy_bridge_rejects_unsafe_proxy_url(tmp_path: Path, proxy_url: str) -> None:
+    _write_launcher_bridge(tmp_path, 8888, proxy_url)
+
+    assert load_launcher_proxy(8888, home=tmp_path) is None
+
+
+@pytest.mark.parametrize("shape", ["userinfo", "path", "query"])
+def test_launcher_proxy_bridge_rejects_urls_that_are_not_bare(tmp_path: Path, shape: str) -> None:
+    listener, proxy_url = _listening_proxy_url()
+    try:
+        port = proxy_url.rsplit(":", 1)[1]
+        variants = {
+            "userinfo": f"http://user:REPLACE_ME@localhost:{port}",
+            "path": f"{proxy_url}/proxy",
+            "query": f"{proxy_url}?token=REPLACE_ME",
+        }
+        _write_launcher_bridge(tmp_path, 8888, variants[shape])
+
+        assert load_launcher_proxy(8888, home=tmp_path) is None
+    finally:
+        listener.close()
+
+
+def test_launcher_proxy_bridge_ignores_oversized_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    listener, proxy_url = _listening_proxy_url()
+    try:
+        # The payload stays valid and reachable, so only the size guard can
+        # reject it: a broken JSON payload would pass this test by accident.
+        path = bridge_path(8888, tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "proxy_url": proxy_url,
+            "no_proxy": "localhost,127.0.0.1,::1",
+            "env": {"http_proxy": proxy_url},
+            "pad": "x" * (MAX_BRIDGE_BYTES + 1),
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        size = path.stat().st_size
+        assert size > MAX_BRIDGE_BYTES
+
+        assert load_launcher_proxy(8888, home=tmp_path) is None
+
+        # Raising the limit must accept the very same file, which keeps both
+        # directions of this assertion tied to the guard.
+        monkeypatch.setattr("backend.app.providers.terminal.launcher_proxy.MAX_BRIDGE_BYTES", size)
+        proxy = load_launcher_proxy(8888, home=tmp_path)
+        assert proxy is not None
+        assert proxy.proxy_url == proxy_url
+    finally:
+        listener.close()
+
+
+def test_launcher_proxy_bridge_rejects_stale_endpoint(tmp_path: Path) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        closed_port = listener.getsockname()[1]
+
+    _write_launcher_bridge(tmp_path, 8888, f"http://127.0.0.1:{closed_port}")
+
+    assert load_launcher_proxy(8888, home=tmp_path, timeout=0.2) is None
+
+
+def test_launcher_proxy_bridge_ignores_invalid_files(tmp_path: Path) -> None:
+    path = bridge_path(8888, tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json", encoding="utf-8")
+    assert load_launcher_proxy(8888, home=tmp_path) is None
+
+    path.write_text(json.dumps({"version": 2, "proxy_url": "http://127.0.0.1:1234"}), encoding="utf-8")
+    assert load_launcher_proxy(8888, home=tmp_path) is None
+    assert load_launcher_proxy(9999, home=tmp_path) is None
+
+
+def test_terminal_manager_passes_launcher_proxy_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    proxy = LauncherProxy(proxy_url="http://127.0.0.1:41234", env={"http_proxy": "http://127.0.0.1:41234"})
+    seen: list[int] = []
+
+    def fake_load(port: int) -> LauncherProxy:
+        seen.append(port)
+        return proxy
+
+    monkeypatch.setattr("backend.app.services.terminal_service.LocalPtyTerminalProvider", FakeTerminalProvider)
+    monkeypatch.setattr("backend.app.services.terminal_service.load_launcher_proxy", fake_load)
+    settings = Settings(workspace=WorkspaceConfig(root=tmp_path))
+    manager = TerminalManager()
+
+    session = manager.create_session(settings, CLIENT_A, None, None, None, None)
+
+    assert seen == [settings.server.port]
+    assert getattr(session.provider, "launcher_proxy_env") == proxy.env
+
+    manager.close_session(session.session_id, CLIENT_A)
+
+
+def test_create_session_reads_launcher_bridge_outside_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = TerminalManager()
+    lock_free: list[bool] = []
+
+    def fake_load(port: int) -> None:
+        acquired: list[bool] = []
+
+        def probe() -> None:
+            got = manager._lock.acquire(blocking=False)
+            acquired.append(got)
+            if got:
+                manager._lock.release()
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join()
+        lock_free.append(acquired[0])
+        return None
+
+    monkeypatch.setattr("backend.app.services.terminal_service.LocalPtyTerminalProvider", FakeTerminalProvider)
+    monkeypatch.setattr("backend.app.services.terminal_service.load_launcher_proxy", fake_load)
+    settings = Settings(workspace=WorkspaceConfig(root=tmp_path))
+
+    session = manager.create_session(settings, CLIENT_A, None, None, None, None)
+
+    assert lock_free == [True], "the launcher bridge must be read outside the session lock"
+    assert session.provider.launcher_proxy_env == {}
+
+    manager.close_session(session.session_id, CLIENT_A)
 
 
 def test_terminal_shims_include_vim_terminal_probe_workaround(

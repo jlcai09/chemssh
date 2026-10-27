@@ -87,6 +87,7 @@ cp pyproject.toml "$PACKAGE_DIR/"
 cp config.yaml "$PACKAGE_DIR/"
 cp README.md "$PACKAGE_DIR/"
 cp README.zh-CN.md "$PACKAGE_DIR/"
+copy_if_exists constraints-oldlinux.txt "$PACKAGE_DIR/"
 copy_if_exists LICENSE "$PACKAGE_DIR/"
 
 if [ -d docs ]; then

@@ -14,6 +14,7 @@ from backend.app.core.errors import AppError
 from backend.app.core.security import WorkspaceSecurity
 from backend.app.models.terminal import TerminalSessionResponse
 from backend.app.providers.terminal.base import TerminalProvider
+from backend.app.providers.terminal.launcher_proxy import load_launcher_proxy
 from backend.app.providers.terminal.local_pty import LocalPtyTerminalProvider
 
 
@@ -376,6 +377,11 @@ class TerminalManager:
         if not settings.terminal.enabled:
             raise AppError("TERMINAL_DISABLED", "Terminal is disabled by configuration", 403)
 
+        # Reading the launcher bridge touches the filesystem and probes the reverse
+        # channel, so keep it out of the lock shared by every terminal operation.
+        launcher_proxy = load_launcher_proxy(settings.server.port)
+        launcher_proxy_env = launcher_proxy.env if launcher_proxy else {}
+
         with self._lock:
             self._prune_closed_sessions()
             if self._alive_count(client_id) >= settings.terminal.max_sessions:
@@ -388,6 +394,7 @@ class TerminalManager:
 
             provider = LocalPtyTerminalProvider()
             provider.vim_compatibility = vim_compatibility
+            provider.launcher_proxy_env = launcher_proxy_env
             session_id = f"term_{uuid.uuid4().hex[:12]}"
             started_at = utc_now()
             try:

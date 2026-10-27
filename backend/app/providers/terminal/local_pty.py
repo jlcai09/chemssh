@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.providers.terminal.base import TerminalProvider
+from backend.app.providers.terminal.launcher_proxy import PROXY_ENV_KEYS
 
 
 class LocalPtyTerminalProvider(TerminalProvider):
@@ -33,6 +34,7 @@ class LocalPtyTerminalProvider(TerminalProvider):
         self._pipe_encoding = locale.getpreferredencoding(False) or "utf-8"
         self._transfer_shim_dir: Path | None = None
         self.vim_compatibility = True
+        self.launcher_proxy_env: dict[str, str] = {}
 
     @property
     def shell(self) -> str:
@@ -68,8 +70,18 @@ class LocalPtyTerminalProvider(TerminalProvider):
         shim_dir = self._ensure_transfer_shims()
         init_path = shim_dir / "chemssh-cwd-init.sh"
         if not init_path.exists():
-            init_path.write_text(_CHEMSSH_CWD_INIT_SH, encoding="utf-8", newline="\n")
+            init_path.write_text(self._cwd_init_script(), encoding="utf-8", newline="\n")
         return init_path
+
+    def _cwd_init_script(self) -> str:
+        if not self.launcher_proxy_env:
+            return _CHEMSSH_CWD_INIT_SH
+        exports = "".join(
+            f"export {key}={_shell_quote(value)}\n"
+            for key, value in sorted(self.launcher_proxy_env.items())
+        )
+        # Login profiles run first in the script, so appending wins over them.
+        return _CHEMSSH_CWD_INIT_SH + "\n# Launcher local proxy\n" + exports
 
     def write(self, data: str) -> None:
         if self._pty is not None:
@@ -227,6 +239,13 @@ class LocalPtyTerminalProvider(TerminalProvider):
             cwd_marker = r'printf "\033]633;P;Cwd=%s\007" "$PWD"'
             existing = env.get("PROMPT_COMMAND", "")
             env["PROMPT_COMMAND"] = f"{cwd_marker}; {existing}" if existing else cwd_marker
+        # Terminal proxy state comes only from the launcher bridge file. The
+        # service may itself carry proxy variables (the launcher exports them for
+        # its start command), and after a session stops they point at a closed
+        # reverse channel, so drop them before applying the bridge values.
+        for key in PROXY_ENV_KEYS:
+            env.pop(key, None)
+        env.update(self.launcher_proxy_env)
         return env
 
     def _ensure_transfer_shims(self) -> Path:

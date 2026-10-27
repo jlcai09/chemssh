@@ -1,0 +1,17 @@
+# chemssh - Legacy Linux constraints
+# Target: old glibc (manylinux2014 / glibc >= 2.17) on Linux x86_64,
+# e.g. CentOS 7, RHEL 7, Ubuntu 18.04.
+# Not tied to a specific Python version: these pins ship prebuilt
+# Linux x86_64 wheels for CPython 3.10-3.12.
+
+# ASE
+ase==3.29.0
+
+# Scientific computing
+numpy==1.26.4
+scipy==1.14.1
+
+# Plotting dependencies
+matplotlib==3.9.4
+contourpy==1.2.1
+Pillow==12.1.1

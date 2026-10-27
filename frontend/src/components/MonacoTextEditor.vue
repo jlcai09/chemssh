@@ -19,9 +19,10 @@ const languageLoaders: Record<string, () => Promise<unknown>> = {
   css: () => import('monaco-editor/esm/vs/language/css/monaco.contribution.js'),
   html: () => import('monaco-editor/esm/vs/language/html/monaco.contribution.js'),
   json: () => import('monaco-editor/esm/vs/language/json/monaco.contribution.js'),
-  // typescript 与 javascript 共用 typescript 语言贡献
-  typescript: () => import('monaco-editor/esm/vs/language/typescript/monaco.contribution.js'),
-  javascript: () => import('monaco-editor/esm/vs/language/typescript/monaco.contribution.js')
+  // typescript/javascript 只引入 basic-languages 的语法高亮贡献，不引入 language/typescript 的
+  // 语言服务，避免打包 6MB+ 的 ts.worker；代价是 JS/TS 没有智能提示与类型检查。
+  typescript: () => import('monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js'),
+  javascript: () => import('monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js')
 }
 
 async function ensureLanguageLoaded(language: string) {
@@ -60,8 +61,6 @@ monacoEnvironment.MonacoEnvironment = {
       WorkerModule = await import('monaco-editor/esm/vs/language/css/css.worker?worker')
     } else if (label === 'html' || label === 'handlebars' || label === 'razor') {
       WorkerModule = await import('monaco-editor/esm/vs/language/html/html.worker?worker')
-    } else if (label === 'typescript' || label === 'javascript') {
-      WorkerModule = await import('monaco-editor/esm/vs/language/typescript/ts.worker?worker')
     } else {
       WorkerModule = await import('monaco-editor/esm/vs/editor/editor.worker?worker')
     }
@@ -98,8 +97,10 @@ function languageForPath(path?: string | null) {
 
   if (extension === 'py') return 'python'
   if (['sh', 'bash', 'zsh', 'csh', 'ksh', 'script'].includes(extension ?? '')) return 'shell'
-  if (['js', 'mjs', 'cjs'].includes(extension ?? '')) return 'javascript'
-  if (['ts', 'mts', 'cts'].includes(extension ?? '')) return 'typescript'
+  // basic-languages 的 TS/JS 词法没有 JSX 专门规则，jsx/tsx 只能按普通 JS/TS 上色，
+  // 比落到 plaintext 好，但 JSX 标签部分的高亮不精确。
+  if (['js', 'mjs', 'cjs', 'jsx'].includes(extension ?? '')) return 'javascript'
+  if (['ts', 'mts', 'cts', 'tsx'].includes(extension ?? '')) return 'typescript'
   if (extension === 'json') return 'json'
   if (['yaml', 'yml'].includes(extension ?? '')) return 'yaml'
   if (['html', 'htm'].includes(extension ?? '')) return 'html'

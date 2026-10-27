@@ -32,6 +32,16 @@ python -m pip install -e ".[dev]"
 
 预构建的 `frontend/dist/` 目录包含所有优化后的静态文件。
 
+#### 旧版 Linux 系统
+
+较新的 `numpy`/`scipy`/`matplotlib` wheel 针对更高版本的 glibc 构建。在较旧的发行版上，安装可能成功，但在导入时会报 `GLIBC_2.28 not found` 之类的错误。此时改用仓库自带的约束文件（需要 Python 3.10–3.12）：
+
+```bash
+python -m pip install -c constraints-oldlinux.txt -e ".[dev]"
+```
+
+`constraints-oldlinux.txt` 针对的是**旧版 glibc**：它把 `ase`、`numpy`、`scipy`、`matplotlib`、`contourpy`、`Pillow` 固定在仍发布 glibc 2.17（manylinux2014）兼容 wheel 的版本，适用于 CentOS 7、RHEL 7、Ubuntu 18.04 等旧发行版。
+
 <details>
 <summary>从源码开发安装</summary>
 
@@ -64,6 +74,8 @@ python -m pip install -e ".[dev]"
 npm --prefix frontend install
 npm --prefix frontend run build
 ```
+
+在旧版 Linux 上从源码安装时，同样需要在 pip 安装步骤追加 `-c constraints-oldlinux.txt`。
 
 </details>
 
@@ -315,6 +327,22 @@ GET /api/chemssh-bridge/capabilities
 如果这些端点不存在、请求失败，或返回 `enabled !== true`，ChemSSH 会回退为普通浏览器行为。前端不会把 Launcher 的本地缓存路径持久化，也不会把 profile id、SFTP session id、密码或 host key 写入自身 client cache。
 
 本仓库不修改 `chemssh-launcher`；bridge 契约记录在 `docs/API.md`。
+
+### 终端代理
+
+Launcher 会话还可以把用户本机运行的代理发布到远端，让网页里打开的终端也能借它联网。Launcher 会通过 SFTP 写一个权限 `0600` 的文件：
+
+```text
+$HOME/.chemssh-launcher/terminal-proxy-<端口>.json
+```
+
+```json
+{"version": 1, "proxy_url": "http://127.0.0.1:<服务器分配端口>", "no_proxy": "localhost,127.0.0.1,::1", "env": {"http_proxy": "...", "https_proxy": "...", "all_proxy": "...", "HTTP_PROXY": "...", "HTTPS_PROXY": "...", "ALL_PROXY": "...", "no_proxy": "...", "NO_PROXY": "..."}}
+```
+
+文件名里的端口是 ChemSSH **实际监听**的端口，因此 `--port` 优先于配置文件。每次创建终端 session 时都会读取并校验：版本为 `1`、`proxy_url` 是裸 `http://回环地址:端口` URL（不带凭据、不带路径——结尾的 `/` 也不行、不带 query、不带 fragment）、端口在 `1-65535`、文件不超过 64 KB、端点可建立 TCP 连接、env 键只允许上面这些变量。任何一项不通过都按"没有代理"处理——终端照常启动，也不记为错误。
+
+终端代理只来自这个文件：从 ChemSSH 服务进程环境继承来的代理变量会被剥离，因为 Launcher 会话停止后它们指向的是一条已关闭的反向通道。bash 下这些导出行还会追加到生成的 `--rcfile` 末尾，从而覆盖登录 profile。没有这个文件时行为不变，这也是独立部署时的常态。
 
 ## 插件
 
