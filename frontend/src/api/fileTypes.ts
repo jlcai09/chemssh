@@ -25,7 +25,7 @@ const STRUCTURE_FALLBACK_EXTENSIONS = new Set([
 ])
 
 const STRUCTURE_FALLBACK_NAMES = new Set(['vasp.xml', 'vasprun.xml'])
-const VASP_STRUCTURE_NAME_RE = /(^|[^A-Z0-9])(POSCAR|CONTCAR|XDATCAR|OUTCAR)(?:[0-9]+)?($|[^A-Z0-9])/
+const VASP_STRUCTURE_NAME_TOKENS = ['POSCAR', 'CONTCAR', 'XDATCAR', 'OUTCAR']
 
 export function pathBaseName(path: string) {
   return path.split(/[\\/]/).pop() ?? path
@@ -37,7 +37,8 @@ export function extensionFromName(name: string) {
 }
 
 export function isForcedStructureName(name: string) {
-  return VASP_STRUCTURE_NAME_RE.test(name.toUpperCase())
+  const upper = name.toUpperCase()
+  return VASP_STRUCTURE_NAME_TOKENS.some(token => upper.includes(token))
 }
 
 export function isStructurePreviewItem(item: Pick<FileItem, 'name' | 'preview_type'>) {

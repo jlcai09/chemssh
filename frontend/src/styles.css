@@ -542,6 +542,16 @@ p {
   overflow: hidden;
 }
 
+/* Tail 日志收起：日志只保留标题栏，工作面板占满剩余高度 */
+.workspace-side.is-log-collapsed {
+  grid-template-rows: minmax(0, 1fr) auto;
+  row-gap: 8px;
+}
+
+.workspace-side.is-log-collapsed .side-splitter {
+  display: none;
+}
+
 .workspace-side > * {
   min-height: 0;
   background: transparent;
@@ -1022,10 +1032,19 @@ p {
 }
 
 .file-list-body {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   overflow: auto;
   padding: 4px 8px;
   scrollbar-width: none;
+}
+
+/* Rows are virtualized with a fixed slot height; keep them from shrinking and
+   keep sibling margins from collapsing so one slot is exactly
+   36px row + 2px gap as assumed by FileTree.vue. */
+.file-list-body > * {
+  flex: none;
 }
 
 .file-list-body::-webkit-scrollbar {
@@ -1071,10 +1090,51 @@ p {
   font-size: 16px;
 }
 
+.file-tree-empty-notice {
+  position: absolute;
+  inset: 34px 0 24px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px 16px;
+  text-align: center;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.file-tree-empty-icon {
+  font-size: 26px;
+  color: #e6a23c;
+}
+
+.file-tree-empty-title {
+  margin: 0;
+  color: #92400e;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.file-tree-empty-description {
+  max-width: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
+  user-select: text;
+}
+
+.file-tree-empty-action {
+  margin-top: 2px;
+}
+
 .file-row {
   height: 36px;
   min-height: 36px;
-  margin: 2px 0;
+  margin: 1px 0;
   padding: 0;
   border: 0;
   border-radius: 8px;
@@ -1340,6 +1400,28 @@ p {
   flex: 0 0 16px;
 }
 
+.file-icon-stack {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.file-link-badge {
+  position: absolute;
+  right: -7px;
+  bottom: -5px;
+  font-size: 11px;
+  color: var(--accent);
+  filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff);
+  pointer-events: none;
+}
+
+.file-link-badge.is-broken {
+  color: #c2452d;
+}
+
 .muted {
   color: var(--text-muted);
   font-size: 12px;
@@ -1461,9 +1543,9 @@ p {
 }
 
 .preview-header {
-  gap: 8px;
-  min-height: 44px;
-  padding: 6px 10px;
+  gap: 6px;
+  min-height: 34px;
+  padding: 3px 8px;
   flex-wrap: wrap;
   align-content: center;
   overflow: visible;
@@ -1479,8 +1561,26 @@ p {
 .preview-title {
   flex: 1 1 auto;
   min-width: 0;
-  display: grid;
-  gap: 1px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.preview-title .eyebrow {
+  flex: 0 0 auto;
+}
+
+/* 已有“结构/文本”切换时，省略重复的类型标签，给文件名与按钮留出空间 */
+.preview-header.has-mode-switch .preview-title .eyebrow {
+  display: none;
+}
+
+.preview-title strong {
+  flex: 0 1 auto;
+  min-width: 40px;
+  font-size: 13px;
+  line-height: 1.3;
 }
 
 .preview-error {
@@ -1505,23 +1605,97 @@ p {
   margin-left: auto;
 }
 
+.preview-auto-open-panel {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+
+.preview-auto-open-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.preview-auto-open-title {
+  color: #26323f;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.preview-auto-open-hint {
+  margin: 0;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.preview-auto-open-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.preview-auto-open-field > span {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.preview-auto-open-field .el-select {
+  width: 100%;
+}
+
+.preview-auto-open-list {
+  display: grid;
+  gap: 6px;
+}
+
+.preview-auto-open-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.preview-auto-open-priority {
+  color: #98a2b3;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.preview-auto-open-row-actions {
+  display: flex;
+  align-items: center;
+}
+
+.preview-auto-open-row-actions .el-button {
+  margin-left: 0;
+  padding: 4px;
+}
+
+.preview-auto-open-add {
+  justify-self: start;
+}
+
 @container (max-width: 500px) {
+  .preview-header {
+    gap: 5px;
+  }
+
+  /* 窄容器下保持单行：结构/文本切换与标题、操作按钮同行紧排，文件名省略 */
   .preview-header .el-segmented {
-    order: 3;
-    flex: 1 1 100%;
-    max-width: none;
-    margin-top: 4px;
+    flex: 0 0 auto;
   }
 
   .preview-title {
-    order: 1;
-    flex: 1 1 0;
-    min-width: 0;
+    gap: 4px;
   }
 
   .preview-actions {
-    order: 2;
-    margin-left: auto;
+    gap: 4px;
   }
 }
 
@@ -1601,6 +1775,11 @@ p {
   white-space: nowrap;
   font-size: 14px;
   color: #182433;
+}
+
+.preview-title strong {
+  font-size: 13px;
+  line-height: 1.3;
 }
 
 .eyebrow {
@@ -1705,22 +1884,21 @@ p {
 
 .viewer-toolbar {
   min-width: 0;
-  min-height: 46px;
-  padding: 8px 10px;
+  min-height: 34px;
+  padding: 3px 8px;
+  gap: 6px;
   border-bottom: 1px solid var(--panel-border);
   background: var(--soft-bg);
   flex-wrap: wrap;
   align-content: center;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  overflow: visible;
 }
 
 .viewer-style-group,
 .trajectory-controls,
 .viewer-toolbar-actions {
   min-width: 0;
-  min-height: 34px;
+  min-height: 28px;
   display: flex;
   align-items: center;
 }
@@ -1747,9 +1925,12 @@ p {
 }
 
 .viewer-style-group .el-radio-button__inner {
+  padding: 4px 9px;
   border-color: transparent;
   border-radius: 0;
   box-shadow: none;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .viewer-style-group .el-radio-button:not(:first-child) .el-radio-button__inner {
@@ -1774,17 +1955,17 @@ p {
 .viewer-toolbar-actions {
   flex: 0 0 auto;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   margin-left: auto;
   padding-left: 2px;
 }
 
 .trajectory-controls {
   min-width: 0;
-  gap: 8px;
-  flex: 1 1 320px;
-  max-width: min(560px, 100%);
-  padding: 3px 8px;
+  gap: 6px;
+  flex: 1 1 240px;
+  max-width: min(520px, 100%);
+  padding: 2px 6px;
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.72);
@@ -1793,23 +1974,23 @@ p {
 .frame-total {
   flex: 0 0 auto;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 650;
   white-space: nowrap;
 }
 
 .frame-mode-button {
   flex: 0 0 auto;
-  min-width: 54px;
-  height: 24px;
-  padding: 0 10px;
+  min-width: 46px;
+  height: 22px;
+  padding: 0 8px;
   border: 1px solid rgba(23, 107, 135, 0.28);
   border-radius: 999px;
   color: var(--accent);
   background: rgba(255, 255, 255, 0.9);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 750;
-  line-height: 22px;
+  line-height: 20px;
   cursor: pointer;
 }
 
@@ -1822,10 +2003,10 @@ p {
 }
 
 .frame-slider {
-  min-width: 160px;
-  margin-left: 4px;
-  flex: 1 1 220px;
-  padding: 0 10px;
+  min-width: 0;
+  margin-left: 0;
+  flex: 1 1 120px;
+  padding: 0 6px;
 }
 
 .frame-slider.el-slider {
@@ -1851,7 +2032,7 @@ p {
 }
 
 .frame-number {
-  width: 86px;
+  width: 74px;
   flex: 0 0 auto;
 }
 
@@ -2110,7 +2291,16 @@ p {
 
 @container (max-width: 620px) {
   .viewer-toolbar {
-    align-items: stretch;
+    align-items: center;
+    row-gap: 4px;
+  }
+
+  .viewer-style-group {
+    order: 1;
+  }
+
+  .viewer-toolbar-actions {
+    order: 2;
   }
 
   .trajectory-controls {
@@ -2135,17 +2325,6 @@ p {
 
   .viewer-style-group .el-radio-button {
     flex: 0 0 auto;
-  }
-
-  .trajectory-controls {
-    flex-wrap: wrap;
-    border-radius: 12px;
-  }
-
-  .frame-slider {
-    flex: 1 0 100%;
-    margin-left: 0;
-    padding: 0 12px;
   }
 }
 
@@ -2531,14 +2710,53 @@ button.context-menu-item {
   white-space: nowrap;
 }
 
+.context-menu-item.is-danger {
+  color: var(--danger);
+}
+
+.context-menu-item.is-danger:hover,
+.context-menu-item.is-danger:focus-visible {
+  background: rgba(180, 35, 24, 0.1);
+  color: var(--danger);
+}
+
+.context-menu-item:disabled {
+  color: #98a2b3;
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(136, 151, 168, 0.28);
+}
+
 .submenu-arrow {
   color: #8b99a6;
+}
+
+/* The submenu overlaps its parent and the parent keeps an invisible bridge, so
+   sliding the pointer right never crosses dead space and drops the hover. */
+.context-menu-item.has-submenu::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  right: -8px;
+  bottom: -4px;
+  width: 10px;
+  pointer-events: none;
+}
+
+.file-context-menu.opens-left .context-menu-item.has-submenu::after {
+  right: auto;
+  left: -8px;
 }
 
 .context-submenu {
   position: absolute;
   top: -6px;
-  left: calc(100% + 8px);
+  left: calc(100% - 4px);
   min-width: 128px;
   padding: 6px;
   border: 1px solid rgba(136, 151, 168, 0.45);
@@ -2557,7 +2775,7 @@ button.context-menu-item {
 }
 
 .file-context-menu.opens-left .context-submenu {
-  right: calc(100% + 8px);
+  right: calc(100% - 4px);
   left: auto;
   transform: translateX(4px);
 }
@@ -2592,11 +2810,6 @@ button.context-menu-item {
   width: clamp(112px, 12vw, 150px);
 }
 
-.state-filter,
-.interval-select {
-  width: clamp(96px, 10vw, 116px);
-}
-
 .queue-icon-button.el-button {
   width: 32px;
   height: 32px;
@@ -2627,6 +2840,22 @@ button.context-menu-item {
 
 .queue-menu-panel .el-checkbox.is-checked .el-checkbox__label {
   color: #168a45;
+}
+
+.queue-state-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 8px;
+}
+
+.queue-mode-group {
+  width: 100%;
+}
+
+.queue-mode-hint {
+  color: #5b6878;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .queue-refresh-input-row {
@@ -2668,8 +2897,12 @@ button.context-menu-item {
 }
 
 .job-virtual-list {
-  min-width: 830px;
+  min-width: 610px;
   position: relative;
+}
+
+.job-virtual-list.is-vasp {
+  min-width: 736px;
 }
 
 .job-virtual-list.is-virtual .job-row {
@@ -2683,11 +2916,25 @@ button.context-menu-item {
 
 .job-list-header,
 .job-row {
-  min-width: 830px;
+  min-width: 610px;
   display: grid;
-  grid-template-columns: 108px minmax(132px, 1.3fr) 112px 96px 102px 70px minmax(120px, 1fr) 88px;
+  grid-template-columns: 78px minmax(76px, 1.2fr) 82px 62px 70px 42px minmax(84px, 1fr) 68px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.job-list-header.is-vasp,
+.job-row.is-vasp {
+  min-width: 736px;
+  grid-template-columns: 78px minmax(76px, 1.2fr) 46px 70px 82px 62px 70px 42px minmax(84px, 1fr) 68px;
+}
+
+.job-vasp-header {
+  white-space: nowrap;
+}
+
+.job-vasp-cell {
+  font-variant-numeric: tabular-nums;
 }
 
 .job-list-header {
@@ -2778,6 +3025,20 @@ button.context-menu-item {
   font-size: 12px;
 }
 
+.job-row .el-tag {
+  max-width: 100%;
+  padding: 0 6px;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.job-row .el-tag__content {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .job-cell-right {
   text-align: right;
 }
@@ -2790,7 +3051,7 @@ button.context-menu-item {
 }
 
 .job-empty-state {
-  min-width: 830px;
+  min-width: 610px;
   padding: 18px 12px;
   color: var(--text-muted);
   font-size: 12px;
@@ -2835,12 +3096,47 @@ button.context-menu-item {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-rows: 40px minmax(0, 1fr);
+  grid-template-rows: 34px minmax(0, 1fr);
   overflow: hidden;
 }
 
+.log-viewer.is-collapsed {
+  grid-template-rows: 34px;
+}
+
+.log-viewer.is-collapsed .panel-header {
+  border-bottom: 0;
+}
+
+.log-collapse-toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 999px;
+  color: #53616f;
+  background: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+}
+
+.log-collapse-toggle:hover,
+.log-collapse-toggle:focus-visible {
+  color: var(--accent);
+  border-color: rgba(23, 107, 135, 0.38);
+  background: #ffffff;
+  outline: 0;
+  box-shadow: var(--ring);
+}
+
+.log-collapse-toggle .el-icon {
+  font-size: 12px;
+}
+
 .log-viewer .panel-header {
-  padding: 6px 10px;
+  padding: 3px 8px;
 }
 
 .log-title {
@@ -5076,11 +5372,6 @@ button.context-menu-item {
     width: auto;
   }
 
-  .state-filter {
-    flex: 0 0 104px;
-    width: 104px;
-  }
-
   .file-list-header,
   .file-row {
     grid-template-columns: 30px minmax(150px, 1fr) 10px minmax(64px, var(--file-size-col, 76px));
@@ -5101,12 +5392,6 @@ button.context-menu-item {
   .viewer-style-group,
   .viewer-toolbar-actions {
     flex: 0 0 auto;
-  }
-
-  .trajectory-controls {
-    order: 3;
-    flex: 1 0 100%;
-    max-width: none;
   }
 }
 

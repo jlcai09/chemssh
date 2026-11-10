@@ -22,6 +22,9 @@ export interface FileItem {
   extension: string
   preview_type: PreviewType
   format?: string | null
+  is_symlink?: boolean
+  link_target?: string | null
+  link_broken?: boolean
 }
 
 export interface DirectoryListing {
@@ -223,4 +226,58 @@ export function downloadArchive(paths: string[]) {
     method: 'POST',
     body: JSON.stringify({ paths })
   })
+}
+
+export type ArchiveFormat = 'tar.zst' | 'tar.gz' | 'tar.xz' | 'tar'
+export type ArchiveToolName = 'tar' | 'zstd' | 'gzip' | 'xz'
+
+export interface ArchiveTools {
+  tar: boolean
+  zstd: boolean
+  gzip: boolean
+  xz: boolean
+  formats: ArchiveFormat[]
+}
+
+// Longest suffixes first, mirroring backend/app/services/archive_service.py.
+const EXTRACT_SUFFIXES: [suffix: string, tools: ArchiveToolName[]][] = [
+  ['.tar.zst', ['tar', 'zstd']],
+  ['.tzst', ['tar', 'zstd']],
+  ['.tar.gz', ['tar', 'gzip']],
+  ['.tgz', ['tar', 'gzip']],
+  ['.tar.xz', ['tar', 'xz']],
+  ['.txz', ['tar', 'xz']],
+  ['.tar', ['tar']],
+  ['.zst', ['zstd']],
+  ['.gz', ['gzip']],
+  ['.xz', ['xz']]
+]
+
+export function getArchiveTools() {
+  return request<ArchiveTools>('/api/files/archive-tools')
+}
+
+/** True when the name looks like an archive and the installed tools can open it. */
+export function canExtractName(name: string, tools: ArchiveTools | null) {
+  if (!tools) return false
+  const lower = name.toLowerCase()
+  for (const [suffix, needed] of EXTRACT_SUFFIXES) {
+    if (!lower.endsWith(suffix) || lower.length === suffix.length) continue
+    return needed.every(tool => tools[tool])
+  }
+  return false
+}
+
+export function compressPaths(paths: string[], targetDirectory: string, format: ArchiveFormat) {
+  return clearRequestCacheAfter(request<FileOperationResponse>('/api/files/compress', {
+    method: 'POST',
+    body: JSON.stringify({ paths, target_directory: targetDirectory, format })
+  }))
+}
+
+export function extractArchive(path: string, targetDirectory: string) {
+  return clearRequestCacheAfter(request<FileOperationResponse>('/api/files/extract', {
+    method: 'POST',
+    body: JSON.stringify({ path, target_directory: targetDirectory })
+  }))
 }

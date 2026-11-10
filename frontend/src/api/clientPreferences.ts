@@ -94,7 +94,8 @@ export function normalizeClientPreferences(value: Partial<ClientPreferences> | R
     },
     logs: {
       ...(typed.logs ?? {}),
-      tailLines: typed.logs?.tailLines ?? 20
+      tailLines: typed.logs?.tailLines ?? 20,
+      tailCollapsed: typed.logs?.tailCollapsed === true
     },
     theme: normalizeThemePreferences(typed.theme)
   }
@@ -110,7 +111,7 @@ export function normalizeThemePreferences(value?: Partial<ThemePreferences> | nu
 function defaultClientPreferences(): ClientPreferences {
   return {
     version: 1,
-    logs: { tailLines: 20 },
+    logs: { tailLines: 20, tailCollapsed: false },
     theme: normalizeThemePreferences(DEFAULT_THEME_PREFERENCES)
   }
 }

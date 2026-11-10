@@ -37,6 +37,29 @@ export interface QueueJobActionResponse {
   message: string
 }
 
+export type QueueVaspStatSource = 'outcar' | 'traj'
+
+export interface QueueVaspStat {
+  workdir: string
+  status: 'ok' | 'missing' | 'error'
+  steps: number | null
+  steps_source: QueueVaspStatSource | null
+  fmax: number | null
+  fmax_source: QueueVaspStatSource | null
+  message: string
+}
+
+export interface QueueVaspStatsResponse {
+  items: QueueVaspStat[]
+}
+
+export function listQueueVaspStats(workdirs: string[]) {
+  return request<QueueVaspStatsResponse>('/api/queue/vasp-stats', {
+    method: 'POST',
+    body: JSON.stringify({ workdirs })
+  })
+}
+
 export function listQueue(options: { currentUserOnly?: boolean } = {}) {
   const query = options.currentUserOnly ? '?current_user_only=true' : ''
   return request<QueueResponse>(`/api/queue/list${query}`)

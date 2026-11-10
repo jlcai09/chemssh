@@ -91,8 +91,10 @@ Copy and edit `config.yaml`. The key setting is the workspace root:
 
 ```yaml
 workspace:
-  root: /home/user/project
+  root: ~/
 ```
+
+The shipped default `~/` expands to the home directory of the user running the backend. Keep the trailing slash (`~/`); a bare `~` is parsed as YAML null. Point it at a specific project directory if you want a narrower workspace.
 
 All file reads, writes, uploads, downloads, deletes, moves, copies, previews, terminal cwd sync, and job submissions are checked against `workspace.root`.
 
@@ -102,10 +104,10 @@ Common options:
 server:
   host: 127.0.0.1              # Bind address; keep 127.0.0.1 for local/SSH-tunnel-only access. Use a trusted address and enable token before exposing publicly
   port: 8888                   # HTTP and WebSocket service port
-  idle_shutdown_seconds: 3600 # Auto-shutdown after this many seconds of inactivity; 0 disables auto-shutdown
+  idle_shutdown_seconds: 10800 # Auto-shutdown after 3 hours of inactivity; 0 disables auto-shutdown
 
 workspace:
-  root: .                      # Workspace root; all file reads/writes/uploads/downloads/previews/terminal/job submissions are confined here (override via CHEMSSH_WORKSPACE or --workspace-root)
+  root: ~/                     # Workspace root; ~ expands to the backend user's home. All file reads/writes/uploads/downloads/previews/terminal/job submissions are confined here (override via CHEMSSH_WORKSPACE or --workspace-root)
   allow_delete: true           # Whether the frontend may delete files/directories
   max_upload_size_mb: 500      # Maximum size for a single uploaded file (MB)
   max_read_size_mb: 5          # Maximum file size loaded for preview/read (MB); larger files require confirmation

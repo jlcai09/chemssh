@@ -7,6 +7,7 @@
     :style="columnStyle"
     role="grid"
     aria-multiselectable="true"
+    @contextmenu.prevent="handleRootContextMenu"
   >
     <div class="file-list-header" role="row">
       <span role="columnheader" />
@@ -142,7 +143,7 @@
         @focus="focusedIndex = index"
         @mousedown.left="beginSelect(index, $event)"
         @contextmenu.prevent="openContextMenu(index, $event)"
-        @mouseenter="extendSelection(index)"
+        @mouseenter="extendSelection(index, $event)"
         @dragstart="handleFileDragStart(index, $event)"
         @dragenter="handleMoveDragOver(index, $event)"
         @dragover="handleMoveDragOver(index, $event)"
@@ -153,27 +154,51 @@
         @keydown="handleKeydown(index, $event)"
       >
         <span class="file-cell file-icon-cell" role="gridcell">
-          <img
-            v-if="systemIconUrl(item)"
-            class="file-system-icon"
-            :src="systemIconUrl(item) ?? undefined"
-            alt=""
-            aria-hidden="true"
-            @error="handleSystemIconError(item)"
-          />
-          <el-icon v-else class="file-kind-icon">
-            <Folder v-if="item.type === 'directory'" />
-            <View v-else-if="isPreviewableItem(item)" />
-            <Document v-else />
-          </el-icon>
+          <span class="file-icon-stack">
+            <img
+              v-if="systemIconUrl(item)"
+              class="file-system-icon"
+              :src="systemIconUrl(item) ?? undefined"
+              alt=""
+              aria-hidden="true"
+              @error="handleSystemIconError(item)"
+            />
+            <el-icon v-else class="file-kind-icon">
+              <Folder v-if="item.type === 'directory'" />
+              <View v-else-if="isPreviewableItem(item)" />
+              <Document v-else />
+            </el-icon>
+            <el-icon
+              v-if="item.is_symlink"
+              class="file-link-badge"
+              :class="{ 'is-broken': item.link_broken }"
+            ><Link /></el-icon>
+          </span>
         </span>
-        <span class="file-cell file-name-cell" role="gridcell" :title="item.name">{{ item.name }}</span>
+        <span class="file-cell file-name-cell" role="gridcell" :title="itemTooltip(item)">{{ item.name }}</span>
         <span class="file-column-divider file-column-divider-name-size" aria-hidden="true" />
         <span class="file-cell file-size-cell" role="gridcell">{{ formatSize(item.size) }}</span>
         <span class="file-column-divider file-column-divider-size-time" aria-hidden="true" />
         <span class="file-cell file-time-cell" role="gridcell">{{ formatDate(item.mtime) }}</span>
       </div>
       <div class="file-list-virtual-spacer" :style="{ height: `${bottomSpacerHeight}px` }" aria-hidden="true" />
+    </div>
+    <div v-if="emptyNotice" class="file-tree-empty-notice" role="alert">
+      <el-icon class="file-tree-empty-icon" aria-hidden="true">
+        <WarningFilled />
+      </el-icon>
+      <p class="file-tree-empty-title">{{ emptyNotice.title }}</p>
+      <p v-if="emptyNotice.description" class="file-tree-empty-description">{{ emptyNotice.description }}</p>
+      <el-button
+        v-if="emptyNotice.actionLabel"
+        class="file-tree-empty-action"
+        size="small"
+        type="primary"
+        plain
+        @click="emit('empty-action')"
+      >
+        {{ emptyNotice.actionLabel }}
+      </el-button>
     </div>
     <div class="file-tree-status" role="status">
       {{ fileTreeStatusText }}
@@ -212,7 +237,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
-import { CaretBottom, CaretTop, Document, Folder, Loading, View } from '@element-plus/icons-vue'
+import { CaretBottom, CaretTop, Document, Folder, Link, Loading, View, WarningFilled } from '@element-plus/icons-vue'
 import {
   clearActiveChemSSHFileDragPayload,
   getActiveChemSSHFileDragPayload,
@@ -240,12 +265,19 @@ const props = withDefaults(
       enabled: boolean
       iconUrl: (item: FileItem) => string | null
     }
+    /** Warning shown instead of the (empty) list when the directory could not be loaded. */
+    emptyNotice?: {
+      title: string
+      description?: string
+      actionLabel?: string
+    } | null
   }>(),
   {
     selectedItems: () => [],
     loading: false,
     previewProviders: () => [],
-    systemIconProvider: undefined
+    systemIconProvider: undefined,
+    emptyNotice: null
   }
 )
 
@@ -254,14 +286,22 @@ const emit = defineEmits<{
   'context-menu': [item: FileItem, event: MouseEvent]
   'move-items': [items: FileItem[], targetDirectory: FileItem]
   open: [item: FileItem]
+  delete: []
+  'blank-context-menu': [event: MouseEvent]
+  'empty-action': []
 }>()
 
 const LONG_PRESS_MS = 430
 const SELECT_DRAG_THRESHOLD = 4
 const DOUBLE_CLICK_MS = 350
 const DOUBLE_CLICK_DISTANCE = 6
-const FILE_ROW_SLOT_HEIGHT = 40
+// Must match styles.css: 36px row + 1px vertical margins. The list body is a
+// flex column so the margins cannot collapse, otherwise every slot would be
+// 2px shorter and virtualization geometry would drift from the real layout.
+const FILE_ROW_SLOT_HEIGHT = 38
+const FILE_ROW_BLOCK_MARGIN = 1
 const FILE_BODY_VERTICAL_PADDING = 4
+const FILE_BODY_CONTENT_TOP = FILE_BODY_VERTICAL_PADDING + FILE_ROW_BLOCK_MARGIN
 const VIRTUAL_ROW_OVERSCAN = 8
 const DEFERRED_OPEN_MAX_AGE = 800
 
@@ -322,7 +362,7 @@ const virtualRange = computed(() => {
   if (count === 0) return { start: 0, end: 0 }
 
   const viewportHeight = bodyViewportHeight.value || 0
-  const itemScrollTop = Math.max(0, bodyScrollTop.value - parentSlotHeight.value)
+  const itemScrollTop = Math.max(0, bodyScrollTop.value - parentSlotHeight.value - FILE_BODY_CONTENT_TOP)
   const visibleSlots = Math.ceil(viewportHeight / FILE_ROW_SLOT_HEIGHT)
   const firstVisible = clamp(Math.floor(itemScrollTop / FILE_ROW_SLOT_HEIGHT), 0, Math.max(0, count - 1))
   const lastVisible = Math.min(count, firstVisible + visibleSlots)
@@ -380,14 +420,15 @@ function setRowRef(el: unknown, index: number) {
   rowRefs.value[index] = el instanceof HTMLElement ? el : null
 }
 
-async function focusRow(index: number) {
+async function focusRow(index: number, options: { scrollIntoView?: boolean } = {}) {
   const next = clampIndex(index)
   if (next < 0) return
   focusedIndex.value = next
-  scrollIndexIntoView(next)
+  const shouldScroll = options.scrollIntoView ?? true
+  if (shouldScroll) scrollIndexIntoView(next)
   await nextTick()
   const row = rowRefs.value[next]
-  row?.focus()
+  row?.focus({ preventScroll: !shouldScroll })
 }
 
 function scrollIndexIntoView(index: number) {
@@ -395,13 +436,13 @@ function scrollIndexIntoView(index: number) {
   if (!body) return
 
   const stickyOffset = parentSlotHeight.value
-  const rowTop = stickyOffset + index * FILE_ROW_SLOT_HEIGHT
+  const rowTop = FILE_BODY_CONTENT_TOP + stickyOffset + index * FILE_ROW_SLOT_HEIGHT
   const rowBottom = rowTop + FILE_ROW_SLOT_HEIGHT
   const visibleTop = body.scrollTop + stickyOffset
   const visibleBottom = body.scrollTop + body.clientHeight
 
   if (rowTop < visibleTop) {
-    body.scrollTop = Math.max(0, rowTop - stickyOffset)
+    body.scrollTop = Math.max(0, rowTop - FILE_BODY_CONTENT_TOP - stickyOffset)
   } else if (rowBottom > visibleBottom) {
     body.scrollTop = rowBottom - body.clientHeight
   }
@@ -472,6 +513,8 @@ let blankDragCurrentY = 0
 let longPressTimer: number | null = null
 let lastRowClickGesture: { x: number; y: number; time: number } | null = null
 let lastRowClickTimer: number | null = null
+// Row whose multi-selection collapses once the press turns out to be a click.
+let pendingSelectionCollapse: string | null = null
 let pressIndex: number | null = null
 let pressStartX = 0
 let pressStartY = 0
@@ -480,8 +523,11 @@ let isMounted = false
 
 function beginSelect(index: number, event: MouseEvent) {
   event.stopPropagation()
-  focusRow(index)
+  // Clicking a row only moves focus. Scrolling here would slide the list under
+  // the pressed pointer, which used to turn a plain click into a range select.
+  focusRow(index, { scrollIntoView: false })
   finishFileDrag()
+  pendingSelectionCollapse = null
 
   if (event.ctrlKey || event.metaKey) {
     event.preventDefault()
@@ -502,6 +548,9 @@ function beginSelect(index: number, event: MouseEvent) {
   if (selectedPathSet.value.has(item.path)) {
     anchorIndex.value = index
     focusedIndex.value = index
+    // Collapsing a multi-selection waits for the click: pressing on one of the
+    // selected rows may start a group drag that needs the whole selection.
+    if (props.selectedItems.length > 1) pendingSelectionCollapse = item.path
     emitSelection(new Set(selectedPathSet.value), item)
   } else {
     selectSingle(index)
@@ -540,6 +589,7 @@ function handlePressMove(event: MouseEvent) {
   )
     return
   cancelLongPress()
+  pendingSelectionCollapse = null
   dragActive.value = true
   dragAnchor.value = pressIndex
   dragOverIndex.value = pressIndex
@@ -601,7 +651,7 @@ function updateBlankDragSelection() {
 
   if (body && sortedItems.value.length > 0) {
     const bodyRect = body.getBoundingClientRect()
-    const contentTop = bodyRect.top + FILE_BODY_VERTICAL_PADDING + parentSlotHeight.value - body.scrollTop
+    const contentTop = bodyRect.top + FILE_BODY_CONTENT_TOP + parentSlotHeight.value - body.scrollTop
     const contentBottom = contentTop + sortedItems.value.length * FILE_ROW_SLOT_HEIGHT
     const intersectsHorizontally = right >= bodyRect.left && left <= bodyRect.right
 
@@ -638,14 +688,28 @@ function updateBlankDragSelection() {
   emitSelection(next, primaryIndex === null ? null : sortedItems.value[primaryIndex] ?? null)
 }
 
-function extendSelection(index: number) {
-  if (pressIndex !== null && !exportDragArmed.value && !dragActive.value && index !== pressIndex) {
+function extendSelection(index: number, event: MouseEvent) {
+  if (pressIndex === null || exportDragArmed.value) return
+
+  if (!dragActive.value) {
+    // Rows can slide under a stationary pointer when the list scrolls or
+    // re-renders. Starting a range selection there turned single clicks into
+    // accidental drag selections, so require actual pointer movement.
+    if (index === pressIndex) return
+    if (
+      Math.abs(event.clientX - pressStartX) < SELECT_DRAG_THRESHOLD &&
+      Math.abs(event.clientY - pressStartY) < SELECT_DRAG_THRESHOLD
+    ) {
+      return
+    }
     cancelLongPress()
+    pendingSelectionCollapse = null
     dragActive.value = true
     dragAnchor.value = pressIndex
     dragOverIndex.value = pressIndex
   }
-  if (!dragActive.value || dragAnchor.value === null) return
+
+  if (dragAnchor.value === null) return
   dragOverIndex.value = index
   selectRange(dragAnchor.value, index)
 }
@@ -679,6 +743,7 @@ function handleFileDragStart(index: number, event: DragEvent) {
   }
 
   exportDragActive.value = true
+  pendingSelectionCollapse = null
   resetPressState()
   writeChemSSHFileDrag(event.dataTransfer, items)
   setDragImage(event, items)
@@ -832,6 +897,11 @@ function handleKeydown(index: number, event: KeyboardEvent) {
   } else if (key === 'Enter') {
     event.preventDefault()
     handleOpen(index)
+  } else if (key === 'Delete') {
+    if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+    if (props.selectedItems.length === 0) return
+    event.preventDefault()
+    emit('delete')
   }
 }
 
@@ -843,13 +913,26 @@ function handleOpen(index: number) {
 function handleRowClick(index: number, event: MouseEvent) {
   if (event.button !== 0) return
   if (isDoubleClickGesture(event)) {
+    pendingSelectionCollapse = null
     if (props.loading) {
       queueDeferredOpenGesture(event)
       return
     }
     clearClickGesture()
     handleOpen(index)
+    return
   }
+
+  // A plain click on a row that was part of a multi-selection leaves just that
+  // row selected, matching the launcher SFTP page.
+  const collapsePath = pendingSelectionCollapse
+  pendingSelectionCollapse = null
+  if (!collapsePath) return
+  const item = sortedItems.value[index]
+  if (!item || item.path !== collapsePath) return
+  anchorIndex.value = index
+  focusedIndex.value = index
+  emitSelection(new Set([item.path]), item)
 }
 
 function handleParentRowClick(event: MouseEvent) {
@@ -946,6 +1029,24 @@ function openContextMenu(index: number, event: MouseEvent) {
     selectSingle(index)
   }
   emit('context-menu', item, event)
+}
+
+// Rows handle their own menu; anything else in the tree (blank space, header,
+// status line) gets the directory-level menu instead of the browser's.
+function handleRootContextMenu(event: MouseEvent) {
+  const target = event.target
+  if (target instanceof Element && target.closest('.file-row')) return
+  finishSelection()
+  emit('blank-context-menu', event)
+}
+
+function itemTooltip(item: FileItem) {
+  if (!item.is_symlink) return item.path
+  const target = item.link_target || ''
+  if (item.link_broken) {
+    return target ? t('file.symlinkBrokenWithTarget', { target }) : t('file.symlinkBroken')
+  }
+  return target ? t('file.symlinkTarget', { target }) : item.path
 }
 
 function isPreviewableItem(item: FileItem) {

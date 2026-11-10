@@ -57,3 +57,24 @@ class QueueJobActionResponse(BaseModel):
     action: QueueJobAction
     command: str
     message: str
+
+
+VaspStatSource = Literal["outcar", "traj"]
+
+
+class QueueVaspStatsRequest(BaseModel):
+    workdirs: list[str]
+
+
+class QueueVaspStat(BaseModel):
+    workdir: str
+    status: Literal["ok", "missing", "error"] = "ok"
+    steps: Optional[int] = None
+    steps_source: Optional[VaspStatSource] = None
+    fmax: Optional[float] = None
+    fmax_source: Optional[VaspStatSource] = None
+    message: str = ""
+
+
+class QueueVaspStatsResponse(BaseModel):
+    items: list[QueueVaspStat]

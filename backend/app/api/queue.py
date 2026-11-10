@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from backend.app.dependencies import get_queue_service
+from backend.app.dependencies import get_queue_service, get_vasp_stats_service
 from backend.app.models.queue import (
     CancelJobRequest,
     CancelJobResponse,
@@ -10,8 +10,11 @@ from backend.app.models.queue import (
     QueueJobActionResponse,
     QueueJobDetailResponse,
     QueueResponse,
+    QueueVaspStatsRequest,
+    QueueVaspStatsResponse,
 )
 from backend.app.services.queue_service import QueueService
+from backend.app.services.vasp_stats_service import VaspStatsService
 
 
 router = APIRouter(prefix="/queue", tags=["queue"])
@@ -47,3 +50,11 @@ def run_job_action(
     service: QueueService = Depends(get_queue_service),
 ) -> QueueJobActionResponse:
     return service.run_action(payload.job_id, payload.action)
+
+
+@router.post("/vasp-stats", response_model=QueueVaspStatsResponse)
+def queue_vasp_stats(
+    payload: QueueVaspStatsRequest,
+    service: VaspStatsService = Depends(get_vasp_stats_service),
+) -> QueueVaspStatsResponse:
+    return service.collect(payload.workdirs)

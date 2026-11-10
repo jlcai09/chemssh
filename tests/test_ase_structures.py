@@ -1434,6 +1434,63 @@ def test_ase_xsd_fast_parser_reads_complete_restriction_fixed_indices(tmp_path: 
     assert preview.json()["frame"]["fixed_indices"] == [1]
 
 
+def test_ase_xsd_fast_parser_expands_restriction_count_start_ranges(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    sample = tmp_path / "fixed-compressed-range.xsd"
+    sample.write_text(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<XSD><AtomisticTreeRoot><SymmetrySystem><MappingSet><MappingFamily><IdentityMapping>\n"
+        "<Atom3d ID=\"3\" Components=\"H\" XYZ=\"0,0,0\" />\n"
+        "<Atom3d ID=\"6\" Components=\"O\" XYZ=\"0.1,0.2,0.3\" />\n"
+        "<Atom3d ID=\"7\" Components=\"O\" XYZ=\"0.2,0.3,0.4\" />\n"
+        "<Atom3d ID=\"8\" Components=\"O\" XYZ=\"0.3,0.4,0.5\" />\n"
+        "<CompleteRestriction ID=\"9\" RestrictsObjects=\"ci(3):3+6\" RestrictsProperties=\"FractionalXYZ,FractionalXYZ,FractionalXYZ\" />\n"
+        "<SpaceGroup AVector=\"2,0,0\" BVector=\"0,3,0\" CVector=\"0,0,4\" />\n"
+        "</IdentityMapping></MappingFamily></MappingSet></SymmetrySystem></AtomisticTreeRoot></XSD>\n",
+        encoding="utf-8",
+    )
+
+    def fail_ase_read(*args, **kwargs):
+        raise AssertionError("periodic xsd should use the direct fast parser")
+
+    monkeypatch.setattr(structure_service_module, "iread", fail_ase_read)
+    monkeypatch.setattr(structure_service_module, "read", fail_ase_read)
+
+    preview = client.get("/api/structures/ase/preview", params={"path": str(sample)})
+
+    assert preview.status_code == 200
+    # 3+6 means three IDs starting at 6, so the H (ID 3) must stay free.
+    assert preview.json()["frame"]["fixed_indices"] == [1, 2, 3]
+
+
+def test_ase_xsd_fast_parser_maps_restriction_properties_per_object(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path)
+    sample = tmp_path / "fixed-per-object-properties.xsd"
+    sample.write_text(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<XSD><AtomisticTreeRoot><SymmetrySystem><MappingSet><MappingFamily><IdentityMapping>\n"
+        "<Atom3d ID=\"4\" Components=\"H\" XYZ=\"0,0,0\" />\n"
+        "<Atom3d ID=\"5\" Components=\"O\" XYZ=\"0.1,0.2,0.3\" />\n"
+        "<Atom3d ID=\"6\" Components=\"O\" XYZ=\"0.2,0.3,0.4\" />\n"
+        "<Restriction ID=\"8\" RestrictsObjects=\"ci(2):2+5\" RestrictsProperties=\"FractionalXYZ,FractionalX\" />\n"
+        "<SpaceGroup AVector=\"2,0,0\" BVector=\"0,3,0\" CVector=\"0,0,4\" />\n"
+        "</IdentityMapping></MappingFamily></MappingSet></SymmetrySystem></AtomisticTreeRoot></XSD>\n",
+        encoding="utf-8",
+    )
+
+    def fail_ase_read(*args, **kwargs):
+        raise AssertionError("periodic xsd should use the direct fast parser")
+
+    monkeypatch.setattr(structure_service_module, "iread", fail_ase_read)
+    monkeypatch.setattr(structure_service_module, "read", fail_ase_read)
+
+    preview = client.get("/api/structures/ase/preview", params={"path": str(sample)})
+
+    assert preview.status_code == 200
+    # Only ID 5 is fully fixed; ID 6 is restricted in X only.
+    assert preview.json()["frame"]["fixed_indices"] == [1]
+
+
 def test_ase_dmol_arc_preview_frame_and_binary_use_fast_parser(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path)
     sample = tmp_path / "movie.arc"

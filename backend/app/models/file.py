@@ -18,6 +18,11 @@ class FileItem(BaseModel):
     extension: str = ""
     preview_type: PreviewType = "file"
     format: Optional[str] = None
+    # Symlinks are listed with their raw target so the file manager can badge
+    # them; a broken link keeps the type of the entry that could be listed.
+    is_symlink: bool = False
+    link_target: Optional[str] = None
+    link_broken: bool = False
 
 
 class DirectoryListing(BaseModel):
@@ -84,3 +89,24 @@ class TailResponse(BaseModel):
     lines: int
     content: str
     truncated: bool = False
+
+
+class ArchiveTools(BaseModel):
+    """Which archive utilities exist on this host, and the formats they enable."""
+
+    tar: bool = False
+    zstd: bool = False
+    gzip: bool = False
+    xz: bool = False
+    formats: list[str] = []
+
+
+class CompressRequest(BaseModel):
+    paths: list[str] = []
+    target_directory: str
+    format: str
+
+
+class ExtractRequest(BaseModel):
+    path: str
+    target_directory: Optional[str] = None

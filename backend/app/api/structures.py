@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import time
-from typing import Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
 
 import anyio
 from fastapi import APIRouter, Depends, Query, Request
@@ -11,7 +11,14 @@ from fastapi.responses import Response, StreamingResponse
 
 from backend.app.dependencies import get_structure_service
 from backend.app.models.structure import AseFrame, AseFrameChunkResponse, AsePreviewResponse
-from backend.app.services.structure_service import STRUCTURE_BINARY_MEDIA_TYPE, StructureCancellationToken, StructureService
+from backend.app.services.structure_types import STRUCTURE_BINARY_MEDIA_TYPE, StructureCancellationToken
+
+if TYPE_CHECKING:
+    from backend.app.services.structure_service import StructureService
+else:
+    # The concrete service imports ase/scipy/numpy; keep it out of module import so
+    # server startup does not pay that cost. FastAPI only needs a resolvable hint.
+    StructureService = Any
 
 
 router = APIRouter(prefix="/structures", tags=["structures"])

@@ -92,7 +92,8 @@ export function sanitizeClientPreferencesForWorkspace(preferences: ClientPrefere
       : workspace,
     logs: {
       ...(preferences.logs ?? {}),
-      tailLines: preferences.logs?.tailLines ?? 20
+      tailLines: preferences.logs?.tailLines ?? 20,
+      tailCollapsed: preferences.logs?.tailCollapsed === true
     }
   }
 }

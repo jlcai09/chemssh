@@ -91,8 +91,10 @@ chemssh --help
 
 ```yaml
 workspace:
-  root: /home/user/project
+  root: ~/
 ```
+
+默认的 `~/` 会展开为后端运行用户的 home 目录；注意保留末尾的 `/`，单独的 `~` 会被 YAML 解析为 null。如需更窄的访问范围，请改成具体项目目录。
 
 所有文件读写、上传、下载、删除、移动、复制、预览、终端 cwd 同步和作业提交都会被限制在 `workspace.root` 内。
 
@@ -102,10 +104,10 @@ workspace:
 server:
   host: 127.0.0.1              # 监听地址；保持 127.0.0.1 仅本机/SSH 隧道可访问，暴露到公网前请改用可信地址并启用 token
   port: 8888                   # HTTP 与 WebSocket 服务端口
-  idle_shutdown_seconds: 3600 # 无活动后自动关闭服务的秒数；0 表示永不自动关闭
+  idle_shutdown_seconds: 10800 # 无活动 3 小时后自动关闭服务；0 表示永不自动关闭
 
 workspace:
-  root: .                      # 工作区根目录，所有文件读写/上传/下载/预览/终端/作业提交都被限制在此目录内（可用 CHEMSSH_WORKSPACE 或 --workspace-root 覆盖）
+  root: ~/                     # 工作区根目录；~ 展开为后端运行用户的 home。所有文件读写/上传/下载/预览/终端/作业提交都被限制在此目录内（可用 CHEMSSH_WORKSPACE 或 --workspace-root 覆盖）
   allow_delete: true           # 是否允许前端删除文件/目录
   max_upload_size_mb: 500      # 单次上传文件大小上限（MB）
   max_read_size_mb: 5          # 预览/读取时允许加载的最大文件体积（MB），超过需用户确认

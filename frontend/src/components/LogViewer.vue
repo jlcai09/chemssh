@@ -1,5 +1,5 @@
 <template>
-  <div class="log-viewer">
+  <div class="log-viewer" :class="{ 'is-collapsed': collapsed }">
     <div class="panel-header">
       <div class="log-title">
         <span class="eyebrow">tail</span>
@@ -7,36 +7,62 @@
       </div>
       <div class="header-actions">
         <slot name="header-actions" />
-        <el-input-number
-          v-model="lines"
-          class="tail-lines-input"
-          size="small"
-          :min="1"
-          :max="100"
-          :step="10"
-          controls-position="right"
-        />
-        <el-switch v-model="autoRefresh" size="small" :active-text="t('log.auto')" />
-        <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
-          <el-button :icon="Refresh" circle size="small" :disabled="!path" :loading="loading" @click="refresh" />
+        <template v-if="!collapsed">
+          <el-input-number
+            v-model="lines"
+            class="tail-lines-input"
+            size="small"
+            :min="1"
+            :max="100"
+            :step="10"
+            controls-position="right"
+          />
+          <el-switch v-model="autoRefresh" size="small" :active-text="t('log.auto')" />
+          <el-tooltip :content="t('toolbar.refresh')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
+            <el-button :icon="Refresh" circle size="small" :disabled="!path" :loading="loading" @click="refresh" />
+          </el-tooltip>
+        </template>
+        <el-tooltip
+          v-if="collapsible"
+          :content="collapsed ? t('log.expand') : t('log.collapse')"
+          placement="bottom"
+          popper-class="chemssh-passive-tooltip"
+          :enterable="false"
+          :show-after="500"
+        >
+          <button
+            class="log-collapse-toggle"
+            type="button"
+            :aria-label="collapsed ? t('log.expand') : t('log.collapse')"
+            :aria-expanded="!collapsed"
+            @click="collapsed = !collapsed"
+          >
+            <el-icon>
+              <CaretTop v-if="collapsed" />
+              <CaretBottom v-else />
+            </el-icon>
+          </button>
         </el-tooltip>
       </div>
     </div>
-    <pre ref="contentRef" class="log-content">{{ content || t('log.empty') }}</pre>
+    <pre v-show="!collapsed" ref="contentRef" class="log-content">{{ content || t('log.empty') }}</pre>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { CaretBottom, CaretTop, Refresh } from '@element-plus/icons-vue'
 import { tailFile } from '../api/files'
 import { t } from '../i18n'
 
 const props = defineProps<{
   path?: string | null
   initialLines?: number
+  collapsible?: boolean
 }>()
+
+const collapsed = defineModel<boolean>('collapsed', { default: false })
 
 const emit = defineEmits<{
   'lines-change': [lines: number]
@@ -74,7 +100,7 @@ async function refresh() {
 
 function schedule() {
   if (timer) window.clearInterval(timer)
-  if (!autoRefresh.value || !props.path) return
+  if (!autoRefresh.value || !props.path || collapsed.value) return
   timer = window.setInterval(refresh, 5000)
 }
 
@@ -108,6 +134,11 @@ watch(
 )
 
 watch(content, scrollToBottom)
+
+watch(collapsed, value => {
+  if (!value) refresh()
+  schedule()
+})
 
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer)

@@ -1,9 +1,13 @@
 <template>
   <div class="job-table" role="grid" aria-multiselectable="true" v-loading="loading" @dragstart.prevent>
     <div ref="scrollRef" class="job-table-scroll" @scroll="handleScroll" @mousedown.left="beginBlankSelect">
-      <div class="job-list-header" role="row">
+      <div class="job-list-header" :class="{ 'is-vasp': vaspMode }" role="row">
         <span role="columnheader">{{ t('job.id') }}</span>
         <span role="columnheader">{{ t('job.name') }}</span>
+        <template v-if="vaspMode">
+          <span class="job-vasp-header" role="columnheader">{{ t('job.steps') }}</span>
+          <span class="job-vasp-header" role="columnheader">{{ t('job.fmax') }}</span>
+        </template>
         <span role="columnheader">{{ t('job.state') }}</span>
         <span role="columnheader">{{ t('job.partition') }}</span>
         <span role="columnheader">{{ t('job.timeUsed') }}</span>
@@ -17,7 +21,7 @@
       <div
         v-else
         class="job-virtual-list"
-        :class="{ 'is-virtual': shouldVirtualize }"
+        :class="{ 'is-virtual': shouldVirtualize, 'is-vasp': vaspMode }"
         :style="virtualListStyle"
       >
         <div
@@ -29,7 +33,8 @@
             'is-selected': selectedJobIdSet.has(job.job_id),
             'is-drag-range': isInDragRange(index),
             'is-focused': focusedIndex === index,
-            'is-anchor': anchorIndex === index
+            'is-anchor': anchorIndex === index,
+            'is-vasp': vaspMode
           }"
           :style="rowStyle(index)"
           role="row"
@@ -44,6 +49,14 @@
         >
           <span class="job-cell job-id-cell" role="gridcell" :title="job.job_id">{{ job.job_id }}</span>
           <span class="job-cell" role="gridcell" :title="job.name">{{ job.name }}</span>
+          <template v-if="vaspMode">
+            <span class="job-cell job-vasp-cell" role="gridcell" :title="vaspStepsTitle(job)">
+              {{ vaspStepsText(job) }}
+            </span>
+            <span class="job-cell job-vasp-cell" role="gridcell" :title="vaspFmaxTitle(job)">
+              {{ vaspFmaxText(job) }}
+            </span>
+          </template>
           <span class="job-cell" role="gridcell">
             <el-tag :type="tagType(job.state)" effect="plain">{{ job.state || 'UNKNOWN' }}</el-tag>
           </span>
@@ -77,7 +90,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Close, InfoFilled } from '@element-plus/icons-vue'
-import type { QueueItem } from '../api/queue'
+import type { QueueItem, QueueVaspStat, QueueVaspStatSource } from '../api/queue'
 import { t } from '../i18n'
 
 const props = withDefaults(
@@ -85,9 +98,13 @@ const props = withDefaults(
     jobs: QueueItem[]
     loading?: boolean
     selectedJobs?: QueueItem[]
+    vaspMode?: boolean
+    vaspStats?: Record<string, QueueVaspStat>
   }>(),
   {
-    selectedJobs: () => []
+    selectedJobs: () => [],
+    vaspMode: false,
+    vaspStats: () => ({})
   }
 )
 
@@ -453,6 +470,48 @@ function tagType(state: string) {
   if (normalized.includes('FAIL') || normalized.includes('CANCEL') || normalized.includes('EXIT')) return 'danger'
   if (normalized.includes('HELD') || normalized === 'H') return 'info'
   return 'info'
+}
+
+function vaspStatsFor(job: QueueItem) {
+  const workdir = (job.workdir ?? '').trim()
+  return workdir ? props.vaspStats[workdir] : undefined
+}
+
+function vaspSourceLabel(source: QueueVaspStatSource | null | undefined) {
+  if (source === 'traj') return 'optimized.traj'
+  if (source === 'outcar') return 'OUTCAR'
+  return ''
+}
+
+function vaspStepsText(job: QueueItem) {
+  const stats = vaspStatsFor(job)
+  if (!stats) return (job.workdir ?? '').trim() ? '…' : '—'
+  return stats.status === 'ok' && stats.steps != null ? String(stats.steps) : '—'
+}
+
+function vaspStepsTitle(job: QueueItem) {
+  if (!(job.workdir ?? '').trim()) return t('queue.vaspNoWorkdir')
+  const stats = vaspStatsFor(job)
+  if (!stats) return t('queue.vaspParsing')
+  if (stats.status !== 'ok') return stats.message || t('queue.vaspUnavailable')
+  const source = vaspSourceLabel(stats.steps_source)
+  return source ? `${t('job.steps')}: ${source}` : t('job.steps')
+}
+
+function vaspFmaxText(job: QueueItem) {
+  const stats = vaspStatsFor(job)
+  if (!stats) return (job.workdir ?? '').trim() ? '…' : '—'
+  return stats.fmax == null ? '—' : stats.fmax.toFixed(3)
+}
+
+function vaspFmaxTitle(job: QueueItem) {
+  if (!(job.workdir ?? '').trim()) return t('queue.vaspNoWorkdir')
+  const stats = vaspStatsFor(job)
+  if (!stats) return t('queue.vaspParsing')
+  if (stats.status !== 'ok') return stats.message || t('queue.vaspUnavailable')
+  if (stats.fmax == null) return t('queue.vaspFmaxMissing')
+  const source = vaspSourceLabel(stats.fmax_source)
+  return source ? `fmax (eV/Å): ${source}` : 'fmax (eV/Å)'
 }
 
 function syncFocusedSelection() {

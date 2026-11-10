@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,7 @@ from backend.app.core.config import Settings
 from backend.app.core.errors import AppError
 from backend.app.core.security import WorkspaceSecurity
 from backend.app.models.file import (
+    ArchiveTools,
     DirectoryListing,
     FileOperationResponse,
     FileReadResponse,
@@ -16,7 +19,17 @@ from backend.app.models.file import (
     TailResponse,
 )
 from backend.app.providers.filesystem.local_fs import LocalFileSystemProvider
+from backend.app.services.archive_service import (
+    ArchivePlan,
+    archive_name,
+    available_formats,
+    compress_plan,
+    extract_plan,
+    probe_tools,
+)
 from backend.app.services.file_types import detect_preview
+
+ARCHIVE_TIMEOUT_SECONDS = 600
 
 
 class FileService:
@@ -318,6 +331,100 @@ class FileService:
             raise
 
         return archive_path
+
+    def archive_tools(self) -> ArchiveTools:
+        tools = probe_tools()
+        return ArchiveTools(
+            tar=tools["tar"],
+            zstd=tools["zstd"],
+            gzip=tools["gzip"],
+            xz=tools["xz"],
+            formats=available_formats(tools),
+        )
+
+    def compress_paths(self, raw_paths: list[str], raw_target_directory: str, fmt: str) -> FileOperationResponse:
+        target_directory = self._resolve_directory(raw_target_directory)
+        if not raw_paths:
+            raise AppError("NO_PATHS", "没有选择要压缩的文件或文件夹", 400)
+
+        tools = probe_tools()
+        if fmt not in available_formats(tools):
+            raise AppError("ARCHIVE_FORMAT_UNAVAILABLE", f"压缩格式不可用：{fmt}", 400)
+
+        names: list[str] = []
+        seen: set[Path] = set()
+        for raw_path in raw_paths:
+            path = self.security.resolve_path(raw_path)
+            if not path.exists():
+                raise AppError("PATH_NOT_FOUND", f"源路径不存在：{path}", 404)
+            if path == self.security.root:
+                raise AppError("ARCHIVE_WORKSPACE_ROOT", "不能压缩工作区根目录", 400)
+            if path.parent.resolve(strict=False) != target_directory.resolve(strict=False):
+                raise AppError("ARCHIVE_TARGET_MISMATCH", f"只能压缩当前文件夹内的项目：{path}", 400)
+            if path in seen:
+                continue
+            seen.add(path)
+            names.append(path.name)
+
+        archive = archive_name(target_directory, fmt)
+        plan = compress_plan(fmt, archive, names, uuid.uuid4().hex[:12])
+        self._run_archive_plan(plan, target_directory)
+        return FileOperationResponse(path=str(target_directory / archive), message="Archive created")
+
+    def extract_archive(self, raw_path: str, raw_target_directory: str | None = None) -> FileOperationResponse:
+        path = self.security.resolve_path(raw_path)
+        if not path.exists():
+            raise AppError("FILE_NOT_FOUND", f"文件不存在：{path}", 404)
+        if not path.is_file():
+            raise AppError("NOT_A_FILE", f"只能解压文件：{path}", 400)
+
+        plan = extract_plan(path.name, probe_tools(), str(path), uuid.uuid4().hex[:12])
+        if plan is None:
+            raise AppError("ARCHIVE_FORMAT_UNAVAILABLE", f"没有可用的解压工具处理：{path.name}", 400)
+
+        target_directory = (
+            self._resolve_directory(raw_target_directory) if raw_target_directory else path.parent
+        )
+        self._run_archive_plan(plan, target_directory)
+        return FileOperationResponse(path=str(target_directory), message="Archive extracted")
+
+    def _resolve_directory(self, raw_path: str) -> Path:
+        directory = self.security.resolve_path(raw_path)
+        if not directory.exists():
+            raise AppError("DIRECTORY_NOT_FOUND", f"目标文件夹不存在：{directory}", 404)
+        if not directory.is_dir():
+            raise AppError("NOT_A_DIRECTORY", f"目标路径不是文件夹：{directory}", 400)
+        return directory
+
+    def _run_archive_plan(self, plan: ArchivePlan, working_directory: Path) -> None:
+        try:
+            for step in plan.steps:
+                self._run_archive_command(step.argv, working_directory)
+        finally:
+            for leftover in plan.cleanup_paths():
+                (working_directory / leftover).unlink(missing_ok=True)
+
+    def _run_archive_command(self, argv: list[str], working_directory: Path) -> None:
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=str(working_directory),
+                capture_output=True,
+                text=True,
+                timeout=ARCHIVE_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise AppError("ARCHIVE_TOOL_MISSING", f"找不到命令：{argv[0]}", 400) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AppError("ARCHIVE_TIMEOUT", f"压缩/解压超时：{argv[0]}", 504) from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise AppError(
+                "ARCHIVE_FAILED",
+                f"命令执行失败：{' '.join(argv)}" + (f"。原因：{detail[:500]}" if detail else ""),
+                500,
+            )
 
     def _safe_parent(self, path: Path) -> str | None:
         parent = path.parent.resolve(strict=False)

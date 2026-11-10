@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,10 +28,32 @@ from backend.app.services.client_cache_service import ClientCacheService
 from backend.app.services.plugin_service import PluginService
 
 
+logger = logging.getLogger(__name__)
+
+
+def _warm_structure_service() -> None:
+    """Preload ase/scipy/numpy in the background after the server is up.
+
+    Structure parsing is only needed once a file preview or scheduler stats
+    request arrives. Importing it during startup adds seconds of cold-start
+    delay, so the request path imports it lazily and this thread pays the cost
+    off the critical path.
+    """
+    try:
+        import backend.app.services.structure_service  # noqa: F401
+    except Exception:
+        logger.warning("Could not preload the structure service", exc_info=True)
+
+
 def _build_lifespan(idle_shutdown: IdleShutdownManager):
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await idle_shutdown.start()
+        threading.Thread(
+            target=_warm_structure_service,
+            name="chemssh-structure-warmup",
+            daemon=True,
+        ).start()
         try:
             yield
         finally:
@@ -116,4 +140,15 @@ def create_app(settings: Settings | None = None, *, idle_shutdown_callback: Shut
     return app
 
 
-app = create_app()
+def __getattr__(name: str) -> FastAPI:
+    """Build the ASGI app only when a server imports ``backend.app.main:app``.
+
+    ``cli.main`` imports :func:`create_app` and passes explicit settings; an
+    eager module-level app would be created and then thrown away, duplicating
+    route registration and client-cache cleanup on every start.
+    """
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    app = create_app()
+    globals()["app"] = app
+    return app

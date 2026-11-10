@@ -32,10 +32,11 @@ from backend.app.core.config import Settings
 from backend.app.core.errors import AppError
 from backend.app.core.security import WorkspaceSecurity
 from backend.app.models.structure import AseFrame, AseFrameChunkResponse, AsePreviewResponse
-
-
-STRUCTURE_BINARY_MEDIA_TYPE = "application/vnd.chemssh.structure+bin"
-STRUCTURE_BINARY_MAGIC = b"CWB1"
+from backend.app.services.structure_types import (
+    STRUCTURE_BINARY_MAGIC,
+    STRUCTURE_BINARY_MEDIA_TYPE,
+    StructureCancellationToken,
+)
 
 
 def _tail_read_from_end(path: Path, max_bytes: int = 1_048_576) -> tuple[bytes, int, int]:
@@ -79,18 +80,6 @@ _PLAIN_XYZ_FMAX_RE = re.compile(
     rf"\b(?:fmax|max_force|maxforce|force_max)\b\s*[:=]\s*({_FLOAT_PATTERN})",
     re.IGNORECASE,
 )
-
-
-class StructureCancellationToken:
-    def __init__(self) -> None:
-        self._event = threading.Event()
-
-    def cancel(self) -> None:
-        self._event.set()
-
-    def check(self) -> None:
-        if self._event.is_set():
-            raise AppError("REQUEST_CANCELLED", "Request was cancelled", 499)
 
 
 @dataclass
@@ -430,6 +419,44 @@ class StructureService:
         )
         _profile_add_ms(profile, "build_payload_total_ms", t_build_0)
         return payload
+
+    def quick_outcar_stats(self, raw_path: str) -> tuple[int, float | None]:
+        """队列 VASP 模式：返回离子步数与最后一帧 fmax（排除固定原子）。"""
+        path = self._resolve_stats_file(raw_path)
+        summary = self._get_structure_summary(path, "vasp-out", StructureCancellationToken())
+        fmax: float | None = None
+        index = summary.fast_outcar_index
+        if index is not None and index.fmaxes:
+            fmax = index.fmaxes[-1]
+        elif summary.last_frame_data is not None:
+            fmax = summary.last_frame_data.fmax
+        return summary.n_frames, fmax
+
+    def quick_traj_stats(self, raw_path: str) -> tuple[int, float | None]:
+        """.traj 不保存力；仅当帧内带 forces 数组或计算器结果时才能得到 fmax。"""
+        path = self._resolve_stats_file(raw_path)
+        with Trajectory(str(path), mode="r") as trajectory:
+            count = len(trajectory)
+            atoms = trajectory[-1] if count > 0 else None
+        if atoms is None:
+            return 0, None
+        fixed_indices = tuple(_extract_fixed_indices(atoms))
+        forces: Any = None
+        try:
+            forces = atoms.get_forces()
+        except Exception:
+            forces = atoms.arrays.get("forces")
+        if forces is None:
+            return count, None
+        return count, _extract_fmax_from_forces(forces, len(atoms), fixed_indices)
+
+    def _resolve_stats_file(self, raw_path: str) -> Path:
+        path = self.security.resolve_path(raw_path)
+        if not path.exists():
+            raise AppError("FILE_NOT_FOUND", f"File not found: {path}", 404)
+        if not path.is_file():
+            raise AppError("NOT_A_FILE", f"Path is not a file: {path}", 400)
+        return path
 
     def _resolve_structure_file(self, raw_path: str, *, force: bool = False) -> Path:
         if not self.settings.viewer.ase.enabled:
@@ -3382,9 +3409,22 @@ class StructureService:
                         if len(coords) != 3:
                             raise FastParserUnsupported("XSD cell vector is invalid")
                         cell_rows.append(coords)
-                elif node.tag == "CompleteRestriction":
-                    if _xsd_restricts_full_position(node.get("RestrictsProperties")):
-                        restricted_object_ids.update(_parse_xsd_restricts_objects(node.get("RestrictsObjects")))
+                elif node.tag in ("CompleteRestriction", "Restriction"):
+                    object_ids = _parse_xsd_restricts_objects(node.get("RestrictsObjects"))
+                    properties = [
+                        part.strip()
+                        for part in (node.get("RestrictsProperties") or "").split(",")
+                        if part.strip()
+                    ]
+                    # MS normally writes one property per object; tolerate a single
+                    # property covering the whole restriction.
+                    if len(properties) == 1 and len(object_ids) > 1:
+                        properties = properties * len(object_ids)
+                    restricted_object_ids.update(
+                        object_id
+                        for object_id, value in zip(object_ids, properties)
+                        if _xsd_restricts_full_position(value)
+                    )
 
             if len(cell_rows) != 3 or not symbols:
                 raise FastParserUnsupported("XSD periodic frame is incomplete")
@@ -4211,20 +4251,27 @@ def _xsd_restricts_full_position(value: str | None) -> bool:
     return "fractionalxyz" in properties or "xyz" in properties
 
 
-def _parse_xsd_restricts_objects(value: str | None) -> set[str]:
+def _parse_xsd_restricts_objects(value: str | None) -> list[str]:
+    """Expand RestrictsObjects, where ``count+start`` means ``count`` IDs from ``start``."""
     if not value:
-        return set()
+        return []
     _, _, tail = value.partition(":")
     body = tail or value
-    object_ids: set[str] = set()
+    object_ids: list[str] = []
     for part in body.split(","):
         item = part.strip()
         if not item:
             continue
         if "+" in item:
-            item = item.split("+", 1)[0].strip()
-        if item:
-            object_ids.add(item)
+            count_text, start_text = item.split("+", 1)
+            try:
+                count = int(count_text)
+                start = int(start_text)
+            except ValueError:
+                continue
+            object_ids.extend(str(object_id) for object_id in range(start, start + count))
+        else:
+            object_ids.append(item)
     return object_ids
 
 

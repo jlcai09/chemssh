@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Optional
 
@@ -59,13 +58,12 @@ ASE_STRUCTURE_NAMES: dict[str, Optional[str]] = {
     "vasprun.xml": "vasp-xml",
 }
 
-VASP_STRUCTURE_NAME_RE = re.compile(
-    r"(^|[^A-Z0-9])(POSCAR|CONTCAR|XDATCAR|OUTCAR)(?:[0-9]+)?($|[^A-Z0-9])"
-)
+VASP_STRUCTURE_NAME_TOKENS = ("POSCAR", "CONTCAR", "XDATCAR", "OUTCAR")
 
 
 def is_forced_structure_name(path: Path) -> bool:
-    return bool(VASP_STRUCTURE_NAME_RE.search(path.name.upper()))
+    name = path.name.upper()
+    return any(token in name for token in VASP_STRUCTURE_NAME_TOKENS)
 
 
 def detect_preview(path: Path, *, is_dir: bool = False) -> tuple[str, Optional[str]]:

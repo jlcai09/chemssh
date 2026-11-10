@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, Header
 
@@ -13,7 +14,13 @@ from backend.app.services.file_service import FileService
 from backend.app.services.job_service import JobService
 from backend.app.services.client_cache_service import ClientCacheService
 from backend.app.services.queue_service import QueueService
-from backend.app.services.structure_service import StructureService
+from backend.app.services.vasp_stats_service import VaspStatsService
+
+if TYPE_CHECKING:
+    from backend.app.services.structure_service import StructureService
+else:
+    # Imported lazily in get_structure_service; keeps ase/scipy/numpy out of startup.
+    StructureService = Any
 
 
 CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
@@ -57,7 +64,9 @@ def get_file_service(settings: Settings = Depends(get_settings_dependency)) -> F
 
 
 def get_structure_service(settings: Settings = Depends(get_settings_dependency)) -> StructureService:
-    return StructureService(settings)
+    from backend.app.services.structure_service import StructureService as StructureServiceImpl
+
+    return StructureServiceImpl(settings)
 
 
 def get_client_cache_service(settings: Settings = Depends(get_settings_dependency)) -> ClientCacheService:
@@ -81,3 +90,9 @@ def get_job_service(
     provider: SchedulerProvider = Depends(get_scheduler_provider),
 ) -> JobService:
     return JobService(settings, provider)
+
+
+def get_vasp_stats_service(
+    structure_service: StructureService = Depends(get_structure_service),
+) -> VaspStatsService:
+    return VaspStatsService(structure_service)

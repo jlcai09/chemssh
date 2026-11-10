@@ -264,6 +264,7 @@ import type { CanvasFileManagerBindingTarget, CanvasTerminalTabBinding } from '.
 import { useTerminalSettings } from '../../composables/useTerminalSettings'
 import { useTerminalTransfer } from '../../composables/useTerminalTransfer'
 import { useTerminalSearch, type SearchableTab } from '../../composables/useTerminalSearch'
+import { writePreservingTerminalHistory } from '../../utils/terminalHistory'
 
 type TerminalMessage =
   | { type: 'output'; data: string }
@@ -891,7 +892,8 @@ function handleTabSocketMessage(tab: TerminalTab, raw: string) {
   }
 
   if (message.type === 'output') {
-    tab.terminal.write(message.data)
+    // Screen-wiping programs must not take the tab's scrollback with them.
+    writePreservingTerminalHistory(tab.terminal, message.data)
     if (!tab.interactiveReady && hasVisibleTerminalContent(message.data)) markTabInteractive(tab)
     if (tab.localId === activeTabId.value) scheduleSearchHighlightRefresh(tab, 50)
   } else if (message.type === 'cwd') {

@@ -37,10 +37,35 @@ class LocalFileSystemProvider(FileSystemProvider):
             with os.scandir(path) as children:
                 for child in children:
                     try:
-                        is_dir = child.is_dir()
-                        stat = child.stat()
+                        is_link = child.is_symlink()
                     except OSError:
                         continue
+                    try:
+                        stat = child.stat()
+                        link_broken = False
+                    except OSError:
+                        # A dangling symlink still belongs in the listing, with
+                        # its own lstat data, so the user can see and fix it.
+                        if not is_link:
+                            continue
+                        try:
+                            stat = child.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        link_broken = True
+                    try:
+                        is_dir = child.is_dir()
+                    except OSError:
+                        is_dir = False
+                    if link_broken:
+                        is_dir = False
+
+                    link_target: str | None = None
+                    if is_link:
+                        try:
+                            link_target = os.readlink(child.path)
+                        except OSError:
+                            link_target = None
 
                     child_path = Path(child.path)
                     preview_type, fmt = detect_preview(child_path, is_dir=is_dir)
@@ -52,11 +77,14 @@ class LocalFileSystemProvider(FileSystemProvider):
                                 name=child.name,
                                 path=child.path,
                                 type="directory" if is_dir else "file",
-                                size=None if is_dir else stat.st_size,
+                                size=None if is_dir or link_broken else stat.st_size,
                                 mtime=_mtime_iso(stat.st_mtime),
                                 extension="" if is_dir else child_path.suffix.lower(),
                                 preview_type=preview_type,
                                 format=fmt,
+                                is_symlink=is_link,
+                                link_target=link_target,
+                                link_broken=link_broken,
                             ),
                         )
                     )

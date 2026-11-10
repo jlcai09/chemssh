@@ -225,6 +225,7 @@ class LocalPtyTerminalProvider(TerminalProvider):
             path_parts.append(existing_path)
         env["PATH"] = os.pathsep.join(path_parts)
         env["CHEMSSH_TRANSFER_SHIM"] = "1"
+        env["CHEMSSH_TRANSFER_SHIM_DIR"] = str(shim_dir)
         transfer_executable = _transfer_bundle_executable()
         if transfer_executable is not None:
             env["CHEMSSH_TRANSFER_EXECUTABLE"] = transfer_executable
@@ -456,6 +457,19 @@ case "${PROMPT_COMMAND:-}" in
         ;;
 esac
 unset _chemssh_marker
+
+# Login profiles and conda/module hooks often rebuild PATH from scratch, which
+# pushes the transfer shim behind user-installed lrzsz binaries (e.g. a
+# ~/applications/lrzsz build). Re-assert it last so sz/rz keep resolving to the
+# ChemSSH wrappers; otherwise native ZMODEM grabs the pty and freezes the tab.
+if [[ -n "${CHEMSSH_TRANSFER_SHIM_DIR:-}" && -d "${CHEMSSH_TRANSFER_SHIM_DIR}" ]]; then
+    case "${PATH}:" in
+        "${CHEMSSH_TRANSFER_SHIM_DIR}:"*) ;;
+        *) PATH="${CHEMSSH_TRANSFER_SHIM_DIR}:${PATH}" ;;
+    esac
+    export PATH
+    hash -r 2>/dev/null || true
+fi
 '''
 
 

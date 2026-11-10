@@ -15,6 +15,7 @@ declare module 'vue' {
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
+    ElCheckboxGroup: typeof import('element-plus/es')['ElCheckboxGroup']
     ElConfigProvider: typeof import('element-plus/es')['ElConfigProvider']
     ElDescriptions: typeof import('element-plus/es')['ElDescriptions']
     ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
@@ -44,6 +45,7 @@ declare module 'vue' {
     LogViewer: typeof import('./src/components/LogViewer.vue')['default']
     MoleculeViewer: typeof import('./src/components/MoleculeViewer.vue')['default']
     MonacoTextEditor: typeof import('./src/components/MonacoTextEditor.vue')['default']
+    PreviewAutoOpenSettingsPopover: typeof import('./src/components/PreviewAutoOpenSettingsPopover.vue')['default']
     QueueStatus: typeof import('./src/components/QueueStatus.vue')['default']
     TerminalPanel: typeof import('./src/components/terminal/TerminalPanel.vue')['default']
   }

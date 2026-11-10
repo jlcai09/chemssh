@@ -748,6 +748,12 @@ def test_terminal_cwd_init_script_contains_expected_snippets() -> None:
     assert "${HOME}/.profile" in _CHEMSSH_CWD_INIT_SH
     # Idempotency: pattern guard for double-chaining the marker
     assert '"]633;P;Cwd="*)' in _CHEMSSH_CWD_INIT_SH
+    # Login profiles may rebuild PATH; the shim must be re-asserted afterwards
+    assert "${CHEMSSH_TRANSFER_SHIM_DIR}" in _CHEMSSH_CWD_INIT_SH
+    assert _CHEMSSH_CWD_INIT_SH.index("source /etc/profile") < _CHEMSSH_CWD_INIT_SH.index(
+        "${CHEMSSH_TRANSFER_SHIM_DIR}"
+    )
+    assert "hash -r" in _CHEMSSH_CWD_INIT_SH
 
 
 def test_local_pty_emits_cwd_init_script_into_transfer_shim_dir(
@@ -795,6 +801,24 @@ def test_local_pty_env_injects_prompt_command_marker_for_bash(
     # printf format args from the marker
     assert "%s" in env["PROMPT_COMMAND"]
     assert "$PWD" in env["PROMPT_COMMAND"]
+
+
+def test_terminal_env_exports_transfer_shim_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The rcfile re-asserts PATH after login profiles, so it needs the shim dir."""
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    monkeypatch.setattr("backend.app.providers.terminal.local_pty.tempfile.mkdtemp", lambda **_: str(shim_dir))
+    monkeypatch.setattr("backend.app.providers.terminal.local_pty._is_windows", lambda: False)
+
+    provider = LocalPtyTerminalProvider()
+    provider._shell = "/bin/bash"
+    env = provider._terminal_env()
+
+    assert env["CHEMSSH_TRANSFER_SHIM_DIR"] == str(shim_dir)
+    assert env["PATH"].split(os.pathsep)[0] == str(shim_dir)
 
 
 def test_local_pty_start_uses_rcfile_for_bash_shell(

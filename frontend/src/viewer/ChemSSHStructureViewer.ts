@@ -462,11 +462,7 @@ export class ChemSSHStructureViewer {
     if (!bounds) return 'orbit'
     if (this.isPointNearStructure(point, bounds)) return 'orbit'
 
-    const sidePadding = Math.max(48, Math.min(96, (bounds.right - bounds.left) * 0.18))
-    const insideStructureColumn = point.x >= bounds.left - sidePadding && point.x <= bounds.right + sidePadding
-    if (insideStructureColumn) return 'orbit'
-
-    const horizontalGap = point.x < bounds.left ? bounds.left - point.x : point.x - bounds.right
+    const horizontalGap = point.x < bounds.left ? bounds.left - point.x : point.x > bounds.right ? point.x - bounds.right : 0
     const verticalGap = point.y < bounds.top ? bounds.top - point.y : point.y > bounds.bottom ? point.y - bounds.bottom : 0
     return horizontalGap > verticalGap ? 'roll' : 'orbit'
   }
@@ -490,25 +486,14 @@ export class ChemSSHStructureViewer {
   private isPointNearStructure(point: { x: number; y: number }, bounds: { left: number; right: number; top: number; bottom: number }) {
     const structureWidth = Math.max(1, bounds.right - bounds.left)
     const structureHeight = Math.max(1, bounds.bottom - bounds.top)
-    const horizontalBand = point.x >= bounds.left - Math.max(36, structureWidth * 0.08) && point.x <= bounds.right + Math.max(36, structureWidth * 0.08)
-    const verticalBand = point.y >= bounds.top - Math.max(44, structureHeight * 0.35) && point.y <= bounds.bottom + Math.max(44, structureHeight * 0.35)
-    if (horizontalBand && verticalBand) return true
-
-    if (point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom) return true
-
-    const centerX = (bounds.left + bounds.right) / 2
-    const centerY = (bounds.top + bounds.bottom) / 2
-    const normalizedX = (point.x - centerX) / Math.max(60, structureWidth * 0.72)
-    const normalizedY = (point.y - centerY) / Math.max(60, structureHeight * 0.72)
-    if (normalizedX * normalizedX + normalizedY * normalizedY <= 1) return true
-
-    for (const atom of this.ensureProjectedAtoms()) {
-      const dx = point.x - atom.x
-      const dy = point.y - atom.y
-      const limit = Math.max(26, atom.radius + 14)
-      if (dx * dx + dy * dy <= limit * limit) return true
-    }
-    return false
+    const horizontalMargin = Math.max(20, Math.min(48, structureWidth * 0.08))
+    const verticalMargin = Math.max(20, Math.min(48, structureHeight * 0.08))
+    return (
+      point.x >= bounds.left - horizontalMargin &&
+      point.x <= bounds.right + horizontalMargin &&
+      point.y >= bounds.top - verticalMargin &&
+      point.y <= bounds.bottom + verticalMargin
+    )
   }
 
   private cursorForDragMode(mode: 'select' | 'pan' | 'orbit' | 'roll') {
@@ -1587,22 +1572,21 @@ function firstAvailableFrame(store: TrajectoryStore) {
 }
 
 function createInitialTransform() {
-  const yaw = -0.65
-  const pitch = 0.5
-  const cosY = Math.cos(yaw)
-  const sinY = Math.sin(yaw)
-  const cosX = Math.cos(pitch)
-  const sinX = Math.sin(pitch)
+  // Look from the (-X, -Y, +Z) corner while keeping +Z vertical, so the c axis
+  // is upright and both a and b stay visible.
+  const depth = normalizeVec([-1, -1, 0.5])
+  const up = normalizeVec(subtractVec([0, 0, 1], scaleVec(depth, depth[2])))
+  const right = crossVec(up, depth)
   return new Float32Array([
-    cosY,
-    0,
-    sinY,
-    sinX * sinY,
-    cosX,
-    -sinX * cosY,
-    -cosX * sinY,
-    sinX,
-    cosX * cosY
+    right[0],
+    right[1],
+    right[2],
+    up[0],
+    up[1],
+    up[2],
+    depth[0],
+    depth[1],
+    depth[2]
   ])
 }
 

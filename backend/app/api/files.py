@@ -9,10 +9,13 @@ from starlette.background import BackgroundTask
 from backend.app.dependencies import get_file_service
 from backend.app.core.errors import AppError
 from backend.app.models.file import (
+    ArchiveTools,
+    CompressRequest,
     CopyRequest,
     CreateDirectoryRequest,
     DirectoryListing,
     DownloadArchiveRequest,
+    ExtractRequest,
     FileOperationResponse,
     FileReadResponse,
     MoveRequest,
@@ -78,6 +81,27 @@ def copy_files(
     service: FileService = Depends(get_file_service),
 ) -> FileOperationResponse:
     return service.copy_paths(payload.paths, payload.target_directory, items=payload.items)
+
+
+@router.get("/archive-tools", response_model=ArchiveTools)
+def archive_tools(service: FileService = Depends(get_file_service)) -> ArchiveTools:
+    return service.archive_tools()
+
+
+@router.post("/compress", response_model=FileOperationResponse)
+def compress_paths(
+    payload: CompressRequest,
+    service: FileService = Depends(get_file_service),
+) -> FileOperationResponse:
+    return service.compress_paths(payload.paths, payload.target_directory, payload.format)
+
+
+@router.post("/extract", response_model=FileOperationResponse)
+def extract_archive(
+    payload: ExtractRequest,
+    service: FileService = Depends(get_file_service),
+) -> FileOperationResponse:
+    return service.extract_archive(payload.path, payload.target_directory)
 
 
 @router.post("/mkdir", response_model=FileOperationResponse)

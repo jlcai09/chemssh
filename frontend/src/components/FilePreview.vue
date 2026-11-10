@@ -1,6 +1,6 @@
 <template>
   <div class="file-preview">
-    <div class="preview-header">
+    <div class="preview-header" :class="{ 'has-mode-switch': Boolean(structureCandidate && displayPath) }">
       <el-segmented
         v-if="structureCandidate && displayPath"
         :model-value="mode"
@@ -38,6 +38,12 @@
             @click="handleSaveClick"
           />
         </el-tooltip>
+        <PreviewAutoOpenSettingsPopover
+          v-if="autoOpenSettings"
+          :settings="autoOpenSettings"
+          :terminals="autoOpenTerminals ?? []"
+          @change="handleAutoOpenSettingsChange"
+        />
         <el-tooltip v-if="canOpenPopout" :content="t('preview.openExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
           <el-button :icon="FullScreen" circle size="small" @click="popoutOpen = true" />
         </el-tooltip>
@@ -131,6 +137,12 @@
                 @click="handleSaveClick"
               />
             </el-tooltip>
+            <PreviewAutoOpenSettingsPopover
+              v-if="autoOpenSettings"
+              :settings="autoOpenSettings"
+              :terminals="autoOpenTerminals ?? []"
+              @change="handleAutoOpenSettingsChange"
+            />
             <el-tooltip :content="t('preview.exitExternal')" placement="bottom" popper-class="chemssh-passive-tooltip" :enterable="false" :show-after="500">
               <el-button :icon="ScaleToOriginal" circle size="small" @click="popoutOpen = false" />
             </el-tooltip>
@@ -161,9 +173,11 @@ import { EditPen, FullScreen, Loading, Refresh, ScaleToOriginal, WarningFilled }
 import type { FileReadResponse } from '../api/files'
 import { t } from '../i18n'
 import type { AsePreviewResponse } from '../types/structure'
+import type { PreviewAutoOpenSettings, PreviewAutoOpenTerminalOption } from '../api/previewAutoOpen'
+import MoleculeViewer from './MoleculeViewer.vue'
+import PreviewAutoOpenSettingsPopover from './PreviewAutoOpenSettingsPopover.vue'
 // Monaco 体积巨大，异步加载以确保其主包与 CSS 不进入首屏，仅在实际打开文本文件预览时才拉取。
 const MonacoTextEditor = defineAsyncComponent(() => import('./MonacoTextEditor.vue'))
-import MoleculeViewer from './MoleculeViewer.vue'
 
 type PreviewMode = 'structure' | 'text'
 type SaveState = 'readonly' | 'saved' | 'unsaved'
@@ -175,12 +189,15 @@ const props = defineProps<{
   loading?: boolean
   structureCandidate?: boolean
   structureError?: string | null
+  autoOpenSettings?: PreviewAutoOpenSettings | null
+  autoOpenTerminals?: PreviewAutoOpenTerminalOption[]
 }>()
 
 const emit = defineEmits<{
   refresh: []
   save: [content: string]
   'update:mode': [mode: PreviewMode]
+  'update:auto-open-settings': [settings: PreviewAutoOpenSettings]
 }>()
 
 const SaveIcon = defineComponent({
@@ -352,6 +369,10 @@ function handleModeChange(value: string | number | boolean) {
   if (value === 'structure' || value === 'text') {
     emit('update:mode', value)
   }
+}
+
+function handleAutoOpenSettingsChange(settings: PreviewAutoOpenSettings) {
+  emit('update:auto-open-settings', settings)
 }
 
 const previewTypeLabel = computed(() => {

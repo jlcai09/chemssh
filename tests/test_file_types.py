@@ -27,6 +27,9 @@ def test_detect_forced_vasp_structure_names() -> None:
     assert detect_preview(Path("OUTCAR")) == ("structure", None)
     assert detect_preview(Path("POSCAR.bak")) == ("structure", None)
     assert detect_preview(Path("notes_about_POSCAR.txt")) == ("structure", None)
+    assert detect_preview(Path("goodCONTCAR")) == ("structure", None)
+    assert detect_preview(Path("MYPOSCAR.bak")) == ("structure", None)
+    assert detect_preview(Path("my_outcar_notes.md")) == ("structure", None)
 
 
 def test_detect_text_types() -> None:
@@ -37,4 +40,3 @@ def test_detect_text_types() -> None:
 
 def test_unknown_file_defaults_to_file() -> None:
     assert detect_preview(Path("archive.bin")) == ("file", None)
-    assert detect_preview(Path("MYPOSCAR.bak")) == ("file", None)

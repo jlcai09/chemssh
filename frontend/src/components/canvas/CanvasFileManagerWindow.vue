@@ -49,10 +49,14 @@
         :loading="loading"
         :system-icon-provider="launcherSystemIconProvider"
         :preview-providers="previewProviders"
+        :empty-notice="fileTreeEmptyNotice"
+        @empty-action="openDefaultDirectory"
         @selection-change="handleSelectionChange"
         @context-menu="handleContextMenu"
+        @blank-context-menu="handleBlankContextMenu"
         @move-items="handleMoveItems"
         @open="openItem"
+        @delete="confirmDelete"
       />
     </div>
 
@@ -98,7 +102,7 @@
 
     <Teleport to="body">
       <div
-        v-if="contextMenu.visible"
+        v-if="contextMenu.visible && contextMenu.item"
         class="file-context-menu"
         :class="{ 'opens-left': contextMenu.opensLeft }"
         :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
@@ -148,6 +152,114 @@
             </button>
           </div>
         </div>
+        <span class="context-menu-separator" role="separator" />
+        <button class="context-menu-item" type="button" role="menuitem" @click="copyContextItems">
+          <el-icon><CopyDocument /></el-icon>
+          <span>{{ t('context.copy') }}</span>
+          <span />
+        </button>
+        <div v-if="archiveFormats.length > 0" class="context-menu-item has-submenu" role="menuitem" tabindex="0">
+          <el-icon><Files /></el-icon>
+          <span>{{ t('context.compress') }}</span>
+          <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
+          <div class="context-submenu" role="menu">
+            <button
+              v-for="format in archiveFormats"
+              :key="format"
+              class="context-menu-item"
+              type="button"
+              role="menuitem"
+              @click="compressSelection(format)"
+            >
+              <el-icon><Files /></el-icon>
+              <span>{{ t('context.compressAs', { format }) }}</span>
+              <span />
+            </button>
+          </div>
+        </div>
+        <button
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          :disabled="!canExtractSelection"
+          @click="extractSelection"
+        >
+          <el-icon><FolderOpened /></el-icon>
+          <span>{{ t('context.extract') }}</span>
+          <span />
+        </button>
+        <button
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          :disabled="selectedItems.length !== 1"
+          @click="renameContextItem"
+        >
+          <el-icon><EditPen /></el-icon>
+          <span>{{ t('context.rename') }}</span>
+          <span />
+        </button>
+        <button class="context-menu-item is-danger" type="button" role="menuitem" @click="deleteContextItems">
+          <el-icon><Delete /></el-icon>
+          <span>{{ t('context.delete') }}</span>
+          <span />
+        </button>
+      </div>
+
+      <div
+        v-if="contextMenu.visible && contextMenu.blank"
+        class="file-context-menu"
+        :class="{ 'opens-left': contextMenu.opensLeft }"
+        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+        role="menu"
+        @click.stop
+        @contextmenu.prevent
+      >
+        <button class="context-menu-item" type="button" role="menuitem" @click="selectAllFromMenu">
+          <el-icon><Select /></el-icon>
+          <span>{{ t('context.selectAll') }}</span>
+          <span />
+        </button>
+        <button class="context-menu-item" type="button" role="menuitem" @click="refreshFromMenu">
+          <el-icon><Refresh /></el-icon>
+          <span>{{ t('context.refresh') }}</span>
+          <span />
+        </button>
+        <button
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          :disabled="!hasFileClipboard"
+          @click="pasteFromMenu"
+        >
+          <el-icon><DocumentCopy /></el-icon>
+          <span>{{ t('context.paste') }}</span>
+          <span />
+        </button>
+        <span class="context-menu-separator" role="separator" />
+        <button class="context-menu-item" type="button" role="menuitem" @click="copyFolderPathFromMenu">
+          <el-icon><CopyDocument /></el-icon>
+          <span>{{ t('context.copyFolderPath') }}</span>
+          <span />
+        </button>
+        <span class="context-menu-separator" role="separator" />
+        <div class="context-menu-item has-submenu" role="menuitem" tabindex="0">
+          <el-icon><Plus /></el-icon>
+          <span>{{ t('context.new') }}</span>
+          <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
+          <div class="context-submenu" role="menu">
+            <button class="context-menu-item" type="button" role="menuitem" @click="newFolderFromMenu">
+              <el-icon><FolderOpened /></el-icon>
+              <span>{{ t('context.newFolder') }}</span>
+              <span />
+            </button>
+            <button class="context-menu-item" type="button" role="menuitem" @click="newFileFromMenu">
+              <el-icon><Document /></el-icon>
+              <span>{{ t('context.newFile') }}</span>
+              <span />
+            </button>
+          </div>
+        </div>
       </div>
 
       <div v-if="uploadConflictDialog.visible" class="upload-conflict-backdrop">
@@ -189,7 +301,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, CopyDocument, Document, EditPen, FolderOpened, Promotion, UploadFilled } from '@element-plus/icons-vue'
+import {
+  ArrowRight,
+  CopyDocument,
+  Delete,
+  Document,
+  DocumentCopy,
+  EditPen,
+  Files,
+  FolderOpened,
+  Plus,
+  Promotion,
+  Refresh,
+  Select,
+  UploadFilled
+} from '@element-plus/icons-vue'
 import {
   getActiveChemSSHFileDragPayload,
   hasChemSSHFileDrag,
@@ -197,7 +323,7 @@ import {
   type ChemSSHFileDragPayload
 } from '../../api/fileDrag'
 import { copyApiErrorMessage, moveApiErrorMessage, prepareMoveEntries } from '../../api/fileMove'
-import { downloadUrl } from '../../api/http'
+import { ApiError, downloadUrl } from '../../api/http'
 import { apiErrorMessage, localizeBackendMessage } from '../../api/apiMessages'
 import {
   isPathInsideWorkspace,
@@ -208,9 +334,13 @@ import {
   type LauncherBridgeCapabilities
 } from '../../api/launcherBridge'
 import {
+  canExtractName,
+  compressPaths,
   copyPaths,
   deletePath,
   downloadArchive,
+  extractArchive,
+  getArchiveTools,
   listFiles,
   makeDirectory,
   movePaths,
@@ -218,6 +348,8 @@ import {
   uploadFile,
   writeFile,
   type DirectoryListing,
+  type ArchiveFormat,
+  type ArchiveTools,
   type FileItem
 } from '../../api/files'
 import type { FilePreviewProvider } from '../../api/filePreviewProviders'
@@ -234,6 +366,7 @@ import {
   type UploadEntry
 } from '../../api/uploadEntries'
 import { confirmOversizedUpload } from '../../api/uploadSizeCheck'
+import { fileClipboardItems, hasFileClipboard, setFileClipboard } from '../../stores/fileClipboard'
 import { useSystemStore } from '../../stores/system'
 import { submitJob, type SubmitCommand } from '../../api/jobs'
 import { t } from '../../i18n'
@@ -258,6 +391,7 @@ const emit = defineEmits<{
 const systemStore = useSystemStore()
 
 const listing = shallowRef<DirectoryListing | null>(null)
+const directoryLoadError = ref<{ path: string; message: string; code?: string } | null>(null)
 const currentPath = ref(props.initialPath ?? '')
 const pathInput = ref(props.initialPath ?? '')
 const selectedItems = ref<FileItem[]>([])
@@ -272,6 +406,7 @@ const contextMenu = ref<ContextMenuState>({
   x: 0,
   y: 0,
   opensLeft: false,
+  blank: false,
   item: null
 })
 const uploadConflictDialog = ref<UploadConflictDialogState>({
@@ -287,6 +422,9 @@ type ContextMenuState = {
   x: number
   y: number
   opensLeft: boolean
+  // `blank` marks the directory-level menu opened on empty space; `item` is
+  // null in that mode.
+  blank: boolean
   item: FileItem | null
 }
 
@@ -301,6 +439,23 @@ type UploadConflictDialogState = {
 const visibleItems = computed(() => {
   const items = listing.value?.items ?? []
   return showHiddenFiles.value ? items : items.filter(item => !item.name.startsWith('.'))
+})
+
+const defaultDirectory = computed(() => props.workspaceRoot || systemStore.systemInfo?.workspace_root || '')
+
+// The tree is empty whenever a directory fails to load, so replace the blank
+// pane with a warning and a one-click way back to the configured root.
+const fileTreeEmptyNotice = computed(() => {
+  const error = directoryLoadError.value
+  if (!error) return null
+  // An empty requested path means "configured root", so there is nowhere else to go.
+  const failedPath = error.path || defaultDirectory.value
+  const canReturnToDefault = Boolean(defaultDirectory.value) && failedPath !== defaultDirectory.value
+  return {
+    title: error.code === 'DIRECTORY_NOT_FOUND' ? t('file.directoryMissing') : t('message.directoryLoadFailed'),
+    description: error.message,
+    actionLabel: canReturnToDefault ? t('file.backToDefaultDirectory') : undefined
+  }
 })
 const dragUploadActive = computed(() => dragUploadDepth.value > 0)
 const canGoBack = computed(() => directoryHistory.value.length > 0)
@@ -344,6 +499,7 @@ const launcherSystemIconProvider = computed(() => ({
 
 onMounted(() => {
   void loadDirectory(currentPath.value || undefined)
+  void loadArchiveTools()
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('resize', closeContextMenu)
@@ -375,6 +531,7 @@ async function loadDirectory(path?: string, options: { recordHistory?: boolean; 
   try {
     const response = await listFiles(path || undefined, { refresh: options.refresh })
     listing.value = response
+    directoryLoadError.value = null
     currentPath.value = response.path
     pathInput.value = response.path
     if (options.recordHistory) recordDirectoryHistory(previousPath, response.path)
@@ -382,10 +539,26 @@ async function loadDirectory(path?: string, options: { recordHistory?: boolean; 
     selectedItem.value = null
     emit('path-change', response.path)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('message.directoryLoadFailed'))
+    const message = apiErrorMessage(error, 'message.directoryLoadFailed')
+    ElMessage.error(message)
+    listing.value = null
+    selectedItems.value = []
+    selectedItem.value = null
+    directoryLoadError.value = {
+      path: (path ?? '').trim(),
+      message,
+      code: error instanceof ApiError ? error.code : undefined
+    }
+    if (path?.trim()) pathInput.value = path
   } finally {
     loading.value = false
   }
+}
+
+async function openDefaultDirectory() {
+  const target = defaultDirectory.value
+  if (!target) return
+  await loadDirectory(target, { recordHistory: true, refresh: true })
 }
 
 function openPath(path: string) {
@@ -440,7 +613,19 @@ function handleContextMenu(item: FileItem, event: MouseEvent) {
     x: clamp(event.clientX, 8, window.innerWidth - CONTEXT_MENU_WIDTH - 8),
     y: clamp(event.clientY, 8, window.innerHeight - CONTEXT_MENU_HEIGHT - 8),
     opensLeft: event.clientX > window.innerWidth - 360,
+    blank: false,
     item
+  }
+}
+
+function handleBlankContextMenu(event: MouseEvent) {
+  contextMenu.value = {
+    visible: true,
+    x: clamp(event.clientX, 8, window.innerWidth - CONTEXT_MENU_WIDTH - 8),
+    y: clamp(event.clientY, 8, window.innerHeight - CONTEXT_MENU_HEIGHT - 8),
+    opensLeft: event.clientX > window.innerWidth - 360,
+    blank: true,
+    item: null
   }
 }
 
@@ -451,6 +636,7 @@ function closeContextMenu() {
     x: 0,
     y: 0,
     opensLeft: false,
+    blank: false,
     item: null
   }
 }
@@ -504,6 +690,103 @@ async function openContextWithNotepad() {
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('message.localOpenFailed'))
   }
+}
+
+function renameContextItem() {
+  closeContextMenu()
+  void promptRename()
+}
+
+function deleteContextItems() {
+  closeContextMenu()
+  void confirmDelete()
+}
+
+function copyContextItems() {
+  closeContextMenu()
+  if (selectedItems.value.length === 0) return
+  setFileClipboard(selectedItems.value)
+  ElMessage.success(t('message.copiedToClipboard', { count: selectedItems.value.length }))
+}
+
+const archiveTools = ref<ArchiveTools | null>(null)
+const archiveFormats = computed<ArchiveFormat[]>(() => archiveTools.value?.formats ?? [])
+const canExtractSelection = computed(() => {
+  const items = selectedItems.value
+  if (items.length !== 1 || items[0].type !== 'file') return false
+  return canExtractName(items[0].name, archiveTools.value)
+})
+
+async function loadArchiveTools() {
+  archiveTools.value = await getArchiveTools().catch(() => null)
+}
+
+async function compressSelection(format: ArchiveFormat) {
+  closeContextMenu()
+  const paths = selectedItems.value.map(item => item.path)
+  const target = currentPath.value
+  if (paths.length === 0 || !target) return
+  try {
+    const response = await compressPaths(paths, target, format)
+    await loadDirectory(target, { refresh: true })
+    emit('directories-change', [target])
+    ElMessage.success(t('message.compressed', { name: response.path?.split(/[\\/]/).pop() ?? format }))
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, 'message.archiveFailed'))
+  }
+}
+
+async function extractSelection() {
+  closeContextMenu()
+  const item = selectedItems.value[0]
+  const target = currentPath.value
+  if (!item || !target) return
+  try {
+    await extractArchive(item.path, target)
+    await loadDirectory(target, { refresh: true })
+    emit('directories-change', [target])
+    ElMessage.success(t('message.extracted'))
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, 'message.archiveFailed'))
+  }
+}
+
+function selectAllFromMenu() {
+  closeContextMenu()
+  handleSelectionChange([...visibleItems.value], visibleItems.value[0] ?? null)
+}
+
+function refreshFromMenu() {
+  closeContextMenu()
+  void loadDirectory(currentPath.value, { refresh: true })
+}
+
+async function copyFolderPathFromMenu() {
+  const path = currentPath.value
+  closeContextMenu()
+  if (!path) return
+  try {
+    await copyTextToClipboard(path)
+    ElMessage.success(t('message.pathCopied'))
+  } catch {
+    ElMessage.error(t('message.clipboardFailed'))
+  }
+}
+
+function newFolderFromMenu() {
+  closeContextMenu()
+  void promptMkdir()
+}
+
+function newFileFromMenu() {
+  closeContextMenu()
+  void promptCreateFile()
+}
+
+function pasteFromMenu() {
+  closeContextMenu()
+  if (!currentPath.value) return
+  void handleCopyItems(fileClipboardItems.value, currentDirectoryItem.value)
 }
 
 async function copyContextPath() {
@@ -737,7 +1020,10 @@ async function handleMoveItems(items: FileItem[], targetDirectory: FileItem) {
   }
 }
 
-async function handleCopyItems(items: FileItem[], targetDirectory: FileItem) {
+async function handleCopyItems(
+  items: Pick<FileItem, 'name' | 'path' | 'type'>[],
+  targetDirectory: FileItem
+) {
   if (items.length === 0) return
   const changedDirectories = copyChangedDirectories(targetDirectory.path)
   try {

@@ -37,6 +37,15 @@ export interface CanvasTerminalTabBinding {
   active: boolean
 }
 
+export type PreviewAutoOpenSource = 'file-manager' | 'active-terminal' | 'terminal'
+
+export interface PreviewAutoOpenPreferences {
+  enabled?: boolean
+  source?: PreviewAutoOpenSource
+  terminalTabId?: string
+  filenames?: string[]
+}
+
 export interface CanvasBoard {
   id: string
   name: string
@@ -67,6 +76,11 @@ export interface ClientPreferences {
   }
   logs?: {
     tailLines?: number
+    tailCollapsed?: boolean
+  }
+  queue?: {
+    refreshSeconds?: number
+    mode?: 'default' | 'vasp'
   }
   workspace?: {
     fileTreeWidth?: number | null
@@ -75,6 +89,9 @@ export interface ClientPreferences {
     currentPath?: string
     showHiddenFiles?: boolean
     activeWorkPanelId?: string
+  }
+  preview?: {
+    autoOpen?: PreviewAutoOpenPreferences
   }
   canvas?: {
     lastBoardId?: string

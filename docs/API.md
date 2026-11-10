@@ -127,11 +127,21 @@ CLI 参数：
       "mtime": "2026-05-25T10:00:00",
       "extension": ".xyz",
       "preview_type": "structure",
-      "format": "xyz"
+      "format": "xyz",
+      "is_symlink": false,
+      "link_target": null,
+      "link_broken": false
     }
   ]
 }
 ```
+
+符号链接字段：
+
+- `is_symlink`：该条目本身是符号链接。前端在图标右下角显示链接徽标，`title` 展示 `link_target`。
+- `link_target`：`os.readlink()` 读到的原始目标字符串，读不到时为 `null`。
+- `link_broken`：目标不存在（`stat()` 失败但 `lstat()` 成功）。这类条目不再被列表跳过，`size` 为 `null`、`type` 记为 `file`，前端用红色徽标和「链接目标不存在」提示。
+- 指向目录的链接仍按目录列出，双击可进入，`type` 为 `directory`。
 
 ### `GET /api/files/read?path=/workspace/project/input.inp&force=false`
 
@@ -147,6 +157,18 @@ CLI 参数：
   "content": "..."
 }
 ```
+
+### 压缩与解压
+
+后端用 `backend/app/services/archive_service.py` 生成命令计划，`FileService` 负责校验路径并在文件所在目录里执行。工具能力由 `shutil.which` 探测（`tar` / `zstd` / `gzip` / `xz`），只有探测到的工具才会出现在右键菜单里。
+
+- `GET /api/files/archive-tools`：返回 `{"tar":true,"zstd":true,"gzip":false,"xz":false,"formats":["tar.zst","tar"]}`；`formats` 是可直接使用的压缩格式。
+- `POST /api/files/compress`：`{"paths":[...],"target_directory":"/workspace/project","format":"tar.zst"}`。所有路径必须是当前目录的直接子项；压缩包命名固定为 `archive.<format>`，已存在时依次追加 `_new`（`archive_new.tar.zst`、`archive_new_new.tar.zst`……），绝不覆盖。`tar.zst` 走两步：先 `tar -cf` 生成临时 tar（`.chemssh-archive-<token>.tar`），再 `zstd -1 -f` 压缩，最后删除临时文件；`-1` 是最低压缩档。`tar.gz` / `tar.xz` / `tar` 各用一条 `tar` 命令。
+- `POST /api/files/extract`：`{"path":"/workspace/project/archive.tar.zst","target_directory":"/workspace/project"}`。按后缀判断格式（`.tar.zst`/`.tzst`/`.tar.gz`/`.tgz`/`.tar.xz`/`.txz`/`.tar`/`.zst`/`.gz`/`.xz`，最长后缀优先），缺少对应工具时返回 `ARCHIVE_FORMAT_UNAVAILABLE`；`target_directory` 省略时解压到压缩包所在目录。单文件格式（`.gz`/`.xz`/`.zst`）解压结果写在压缩包旁边。
+
+执行失败返回 `ARCHIVE_FAILED`，正文带上命令与该命令 stderr 的前 500 字节；超时上限 600 秒（`ARCHIVE_TIMEOUT`）。命令一律以 argv 形式执行，不经过 shell，因此文件名里的空格和符号不会被解释。
+
+前端封装：`getArchiveTools()`、`compressPaths(paths, targetDirectory, format)`、`extractArchive(path, targetDirectory)`，`canExtractName(name, tools)` 判断某个文件是否可解压。
 
 ### `POST /api/files/mkdir`
 
@@ -388,6 +410,10 @@ GET /api/chemssh-bridge/open-sync-events?after=<lastSeq>
 - `vasp_outcar_constraints_missing` / `vasp_outcar_constraints_unreadable`：`OUTCAR` 自身不包含固定原子约束。解析器会与 ASE 一致，按同目录 `CONTCAR`、`POSCAR` 的顺序读取固定原子信息，用于 `fixed_indices` 和排除固定原子后的 `fmax`；如果没有这些文件或读取失败，结构预览器应提示当前 `Fmax` 为全部原子的 `Fmax`。
 - `XDATCAR` 自身同样不包含固定原子约束。后端快速解析器会按同目录 `CONTCAR`、`POSCAR` 的顺序读取 Selective Dynamics，并把固定原子写入每帧 `fixed_indices` 和二进制块 `fixed_mask`；缺失或不可读时沿用上述固定信息 warning。
 
+### 工作台自动预览
+
+工作台右侧预览面板头部的设置按钮（全屏按钮左侧）可启用“切换目录时自动打开”。目录来源支持绑定文件管理器、跟随前台终端或绑定指定终端；终端 cwd 取自 `TerminalPanel` 的 `binding-summary-change` 上报，只查询工作区内的目录。切换目录后按 `filenames` 顺序查找文件名完全匹配（区分大小写）的文件，找到第一个就复用双击文件的预览流程；都找不到时保持当前预览不变。自动打开遇到超大文件时不会弹出确认框，直接跳过。设置保存在 `chemssh.preferences.v1` 的 `preview.autoOpen` 中，并按工作区作用域持久化。
+
 ### `GET /api/structures/ase/frame?path=/workspace/project/mol.xyz&index=0&force=false`
 
 按索引读取单帧结构。
@@ -452,7 +478,7 @@ GET /api/chemssh-bridge/open-sync-events?after=<lastSeq>
 
 支持格式由 `backend/app/services/file_types.py` 与 ASE 能力共同决定。当前常见格式包括 `xyz`、`extxyz`、`traj`、`pdb`、`mol`、`sdf`、`cif`、`xsd`、`xtd`、`arc`、`db`，并强制识别 `POSCAR`、`CONTCAR`、`XDATCAR`、`OUTCAR` 等 VASP 文件名。
 
-XSD 周期结构会优先走后端快速解析器。解析器读取 `Atom3d XYZ` 作为分数坐标、`SpaceGroup` 的 `AVector`/`BVector`/`CVector` 作为晶胞，并把 `Atom3d RestrictedProperties="FractionalXYZ"` 或 `CompleteRestriction RestrictsObjects=... RestrictsProperties="FractionalXYZ"` 转换为 `frame.fixed_indices`。当前结构协议只表达整原子固定，不表达单轴固定。
+XSD 周期结构会优先走后端快速解析器。解析器读取 `Atom3d XYZ` 作为分数坐标、`SpaceGroup` 的 `AVector`/`BVector`/`CVector` 作为晶胞，并把 `Atom3d RestrictedProperties="FractionalXYZ"` 或 `CompleteRestriction`/`Restriction` 的 `RestrictsObjects=... RestrictsProperties="FractionalXYZ"` 转换为 `frame.fixed_indices`。`RestrictsObjects` 中的 `count+start`（如 `3+6`）表示从 `start` 开始的 `count` 个连续对象 ID；`RestrictsProperties` 与展开后的 ID 按位置一一对应，也兼容单个属性覆盖整条 restriction。当前结构协议只表达整原子固定，不表达单轴固定。
 
 前端封装：`frontend/src/api/structures.ts`。
 
@@ -664,7 +690,44 @@ Debug 诊断事件类型仅在后端以 `--debug` 启动，或配置 `server.deb
 
 常见动作包括 `cancel`、`hold`、`release`。具体支持取决于后端 provider。
 
+### `POST /api/queue/vasp-stats`
+
+队列 VASP 模式：批量读取作业目录的优化进度。请求体按工作目录去重，返回顺序与去重后的请求顺序一致；单个目录失败不影响其他目录。
+
+```json
+{
+  "workdirs": ["/workspace/project/co2rr_opt", "/workspace/project/ni_opt"]
+}
+```
+
+```json
+{
+  "items": [
+    {
+      "workdir": "/workspace/project/co2rr_opt",
+      "status": "ok",
+      "steps": 42,
+      "steps_source": "traj",
+      "fmax": 0.083,
+      "fmax_source": "outcar",
+      "message": ""
+    }
+  ]
+}
+```
+
+- `status`：`ok` / `missing`（目录内没有 OUTCAR 和 optimized.traj）/ `error`（路径越界、解析失败等，`message` 给出原因）。
+- 数据来源优先级：优先读取目录下的 `optimized.traj`（ASE 轨迹，仅提供帧数；`.traj` 默认不保存力，只有帧内带 `forces` 数组或计算器结果时才提供 fmax），缺失的部分回退到 `OUTCAR` 的内置快速解析器。`steps_source` / `fmax_source` 标明实际来源（`traj` / `outcar`）。
+- `fmax` 单位为 eV/Å，只统计非固定原子：OUTCAR 的固定原子来自同目录 POSCAR/CONTCAR 的 Selective Dynamics 标记；traj 读取 ASE `FixAtoms` 约束。
+- 后端复用结构预览的 OUTCAR 快速解析与摘要缓存（按路径、大小、mtime），自动刷新时未变化的文件不会重复扫描；该接口不受 `viewer.ase.enabled` 和预览文件大小限制约束。
+
 前端封装：`frontend/src/api/queue.ts`。
+
+队列窗口默认自动刷新间隔为 60 秒，用户修改后的间隔保存到 client preferences 的 `queue.refreshSeconds`。搜索框内容只做前端内存缓存（`frontend/src/api/queueSearchCache.ts`，按窗口 key 区分）：侧栏切换标签页会卸载并重建队列窗口，重建后恢复上次输入；该缓存不写入 client preferences 或服务端设置，刷新页面即清空。
+
+队列窗口的显示模式由刷新按钮右侧的设置按钮切换：`初始模式` 与 `VASP 模式`，选择保存到 client preferences 的 `queue.mode`（`default` / `vasp`）。VASP 模式下先照常显示队列基础内容，再按“当前筛选出的作业 → 其余作业”的顺序分批调用 `POST /api/queue/vasp-stats`，在作业表“名称”后增加 `步数` 与 `fmax` 两列；解析中的单元格显示 `…`，无 WorkDir 或无法解析显示 `—`。
+
+作业状态筛选位于漏斗按钮内：`RUNNING` / `PENDING` / `HELD` / `FAILED` 四个复选框，默认全部勾选（全部勾选等同不过滤；取消勾选后只显示匹配已选状态的作业）。
 
 ## 作业提交
 
@@ -707,6 +770,16 @@ WebSocket 连接使用 query 参数。启用 token 鉴权时还必须带 `token`
 ```
 
 后端只会列出、关闭、连接当前 client id 拥有的终端会话。`terminal.max_sessions` 是每个 client id 的上限，不是全局上限。client id 只用于会话隔离，不代表用户身份或安全认证。
+
+### 输出与回滚缓冲
+
+后端只转发 PTY 原始字节，不解析、也不改写转义序列。前端在写入 xterm 之前统一经过 `frontend/src/utils/terminalHistory.ts` 的 `preserveTerminalHistory`：
+
+- `CSI 2 J`（清屏）：先把可见行滚入回滚缓冲、把光标归位，再放行清屏序列。`top`、`clear`、Ctrl+L 因此不会吃掉此前的输出。
+- `CSI 3 J`（删除回滚缓冲）：直接丢弃，任何远端程序都不能清空本地历史。
+- `CSI J`（擦到屏幕/行尾）：原样放行，readline 编辑命令行时会频繁发送，按清屏处理会导致输入时反复滚动。
+
+备用屏（`vim`、`htop` 等）上的输出不做处理，退出后由 xterm 整屏还原。
 
 ### `POST /api/terminal/sessions`
 
@@ -855,6 +928,7 @@ WebSocket 连接使用 query 参数。启用 token 鉴权时还必须带 `token`
 安全规则：
 
 - shim 只影响当前终端会话子进程的 `PATH`，不会修改系统环境。
+- 登录 profile、conda/module 等启动脚本可能重写 `PATH`，把 shim 挤到用户自编译的 lrzsz 等目录后面。bash 的 rcfile 会在所有 profile 执行完之后再次把 shim 目录前置并执行 `hash -r`，避免 `sz`/`rz` 被原生二进制抢占。
 - `rz` 上传目标目录来自终端 shim 上报的 cwd，后端会按 workspace 安全规则解析。
 - `sz` 参数由后端解析为 workspace 内路径；越界、缺失或不存在的路径会以 `transfer_request.error` 返回，前端显示失败并回传 `transfer_result`。
 - 如果脚本显式调用 `/usr/bin/rz`、`/usr/bin/sz` 等绝对路径，会绕过 shim。后端会在 pty 输出流中识别常见原生 ZMODEM 起始特征并发送 `Ctrl+C` 中断，避免终端继续卡死。原生 `rz` 可继续接管为浏览器上传；原生 `sz` 在协议流中通常无法可靠恢复原始文件参数，因此会提示改用 PATH 解析到的 `sz` shim，除非后续实现完整 ZMODEM 接收器。
@@ -895,7 +969,7 @@ cache/<client_id>/
 目录内文件：
 
 - `meta.json`：`created_at`、`last_seen_at`、`last_saved_at`。
-- `preferences.json`：用户偏好，例如 tail 行数。
+- `preferences.json`：用户偏好，例如 tail 行数和 tail 窗口展开/收起状态。
 - `boards.json`：画板、viewport、窗口布局和窗口 payload。
 
 后端启动时会清理超过 `client_cache.cleanup_offline_days` 没有上线的 client cache，默认 14 天。
@@ -917,7 +991,8 @@ X-ChemSSH-Client-Id: client_xxx
   "preferences": {
     "version": 1,
     "logs": {
-      "tailLines": 20
+      "tailLines": 20,
+      "tailCollapsed": false
     },
     "theme": {
       "animatedBackdrop": false,
@@ -941,7 +1016,12 @@ X-ChemSSH-Client-Id: client_xxx
 {
   "version": 1,
   "logs": {
-    "tailLines": 80
+    "tailLines": 80,
+    "tailCollapsed": false
+  },
+  "queue": {
+    "refreshSeconds": 60,
+    "mode": "default"
   },
   "workspace": {
     "fileTreeWidth": 360,
@@ -969,8 +1049,12 @@ X-ChemSSH-Client-Id: client_xxx
 - `workspace.currentPath`：工作台当前目录。
 - `workspace.showHiddenFiles`：是否显示隐藏文件。
 - `workspace.activeWorkPanelId`：工作台右侧活跃面板。
+- `preview.autoOpen`：工作台预览面板的切换目录自动打开设置。`enabled` 为开关；`source` 为 `file-manager`、`active-terminal` 或 `terminal`；`terminalTabId` 在绑定指定终端时使用；`filenames` 为按优先级排列的文件名列表，默认 `optimized.traj`、`OUTCAR`。
 - `terminal.refreshFileManagerAfterCommand`：终端处于目录同步模式时，命令完成后是否刷新关联文件管理器，默认开启。
 - `logs.tailLines`：tail 行数。
+- `logs.tailCollapsed`：工作台 tail 窗口是否收起，默认展开。
+- `queue.refreshSeconds`：队列窗口自动刷新间隔（秒），默认 60。
+- `queue.mode`：队列窗口显示模式，`default`（初始模式）或 `vasp`（VASP 模式）。
 - `theme.animatedBackdrop`：是否启用全屏动态背景。
 - `theme.glassBlur`：是否启用毛玻璃背景模糊。
 
@@ -1035,6 +1119,7 @@ X-ChemSSH-Client-Id: client_xxx
 - 新建窗口菜单顺序为：文件、终端、预览、队列、Tail、插件。空画板的默认新建入口创建文件管理窗口。
 - 文件管理窗口会把当前目录保存到 `payload.path`，标题只显示当前目录名；新建时写入 `payload.bindingNumber` 和 `payload.bindingColor`，用于窗口类型标签、绑定徽标和关系线的一致颜色/编号。绑定到该文件管理器的 Tail 窗口在单击选中任意文件时会自动更新 `payload.path`，与工作台 Tail 的选中文件行为保持一致。画板文件管理窗口完成内部移动后会向 `CanvasBoard.vue` 上报受影响目录，画布层按各文件管理器当前目录匹配并递增 `refreshToken`，因此源目录窗口、目标目录窗口，以及其它打开相同目录的窗口都会自动刷新。
 - 文件管理器列表顶部在存在上级目录时固定显示 `..` 文件夹行。该行不参与选择、重命名或删除；双击进入上一级，也可作为内部文件拖拽的移动目标。工具栏不再提供“上一级”按钮；原位置改为类似 XFTP 的“后退”按钮和历史下拉，每个文件管理器本地记录最近 20 个用户主动访问过的目录，历史下拉显示完整绝对路径。刷新、上传完成、移动完成等重载当前目录的操作不会写入历史。
+- 目录加载失败（例如上次缓存的 `workspace.currentPath` 或画板 `payload.path` 指向的目录已被移动/删除）时，`listFiles()` 抛错，工作台和画板文件管理器都会清空列表并让 `FileTree` 渲染警告空状态，而不是留下一片空白：警告标题（`DIRECTORY_NOT_FOUND` 为“目录已不存在”，其它错误为“目录加载失败”）、来自 `apiErrorMessage()` 的详情，以及“回到默认目录”按钮。按钮调用 `loadDirectory(<workspace_root>, { recordHistory: true, refresh: true })`，`workspace_root` 来自 `GET /api/system/info` 的配置值；当失败目录本身就是默认主目录时不显示该按钮。`FileTree` 通过可选 prop `emptyNotice`（`{ title, description?, actionLabel? }`）接收该状态，并在点击按钮时 emit `empty-action`，因此新增文件管理器模块只要传入同样的 prop 即可获得一致行为。加载失败不会写入 `workspace.currentPath` 或画板 `payload.path`，也不会写入后退历史。
 - Tail 窗口通过 `payload.boundFileManagerId` 记录绑定的文件管理窗口。画板 Tail 不提供手动路径输入，绑定入口位于 Tail 标题栏右侧的连接图标；日志内容仍由 `LogViewer.vue` 调用 `GET /api/files/tail`。
 - Terminal 窗口通过 `payload.tabBindings` 保存当前终端标签页绑定摘要，形如：
 
@@ -1196,7 +1281,12 @@ function handleDrop(event: DragEvent) {
 - 文件管理器 -> 插件结构 provider：如果插件 UI 已加载并注册 active preview provider，文件管理器可先调用插件 `probe`，匹配成功后把插件 `StructureSource` 和文件路径发送到现有预览窗口。画板预览窗口同样支持插件 preview provider：`CanvasPluginWindow.vue` 接管插件注册/注销消息并上报 `CanvasBoard.vue`，画板通过共享的 `previewProviders` 状态把 provider 传递给 `CanvasFileManagerWindow.vue` 和 `CanvasPreviewWindow.vue`。预览窗口打开文件时会先尝试 resolve 匹配的 provider，命中后使用 provider 的 `StructureSource` 替代默认 ASE 数据源。
 - 文件管理器图标：已加载插件注册 active preview provider 后，文件列表会用 `accepts.extensions`、`accepts.filenames`、`accepts.preview_types` 做轻量匹配；匹配到的文件显示与结构文件一致的小眼睛图标。列表渲染阶段不调用 `probe`，真实可预览性仍在双击打开时确认。
 - 文件管理器 -> 新模块：默认读取 `application/x-chemssh-files`。如果模块只需要路径，使用 `payload.paths`；如果需要判断结构/文本/目录，使用 `payload.items[*].preview_type` 和 `type`。
-- 文件管理器右键菜单：第一项复制当前选择的第一个绝对路径到剪贴板；右键未选中项时先选中该项再复制。
+- 文件管理器右键菜单：用本地程序打开、用记事本打开、复制当前选择的第一个绝对路径到剪贴板；右键未选中项时先选中该项再复制。分隔线之后是「复制 / 压缩 / 解压 / 重命名 / 删除」：重命名只对单选可用，删除作用于整个选择，二者都复用工具栏的 `promptRename` / `confirmDelete`；「复制」把当前选择写入内存剪贴板 `frontend/src/stores/fileClipboard.ts`；「压缩」的二级菜单只列出本机已安装工具对应的格式（`tar.zst`、`tar.gz`、`tar.xz`、`tar`），「解压」仅在单选一个后缀可识别且工具齐全的文件时可用。
+- 文件管理器空白处右键菜单：`FileTree` 在根元素拦截 `contextmenu`，对 `.file-row` 以外的目标发出 `blank-context-menu` 事件（行内右键仍走行菜单），因此不再弹出浏览器自带菜单。菜单项为「全选 / 刷新 / 粘贴 / 复制文件夹路径 / 新建（二级菜单：新建文件夹、新建文件）」；「粘贴」用 `prepareMoveEntries` + `promptCopyConflict` 处理同名冲突后调用 `copyPaths`，把剪贴板里的文件复制到当前目录，所以可以先复制、切换目录再粘贴；剪贴板是跨窗口共享的，工作台与画板文件管理窗口之间同样可以粘贴。
+- 文件管理器键盘操作（`FileTree.vue`，事件挂在行上，多实例互不干扰）：`↑`/`↓`、`Home`/`End`、`PageUp`/`PageDown` 移动焦点（带 `Shift` 扩展选择、带 `Ctrl/Cmd` 只移动焦点），`Space` 切换当前行，`Ctrl/Cmd+A` 全选，`Esc` 清空选择，`Enter` 打开，`Delete` 触发 `delete` 事件交给父级确认删除。
+- 文件管理器选择收敛：多选后普通单击其中一个已选行，会在 `click` 阶段把选择收敛为该行（`pendingSelectionCollapse`）；`mousedown` 阶段不收敛，保证拖拽整组、长按拖出仍然作用于全部选择。拖拽、Ctrl/Shift 选区和清空选择都会清掉该标记。
+- 文件管理器点击与滚动：普通单击文件行只聚焦/选中该行，不会为了“滚入可视区”调整列表滚动位置，避免行在按下后从指针下方滑走；按住拖动进入区域多选必须伴随真实指针位移，滚动或虚拟列表重渲染导致的 `mouseenter` 不得开启区域选择。列表滚动只由滚轮、滚动条和键盘导航（`↑`/`↓`/`Home`/`End`/`PageUp`/`PageDown`）触发。
+- 文件管理器虚拟行几何：行槽位固定为 36px 行高 + 上下各 1px 外边距 = 38px，`.file-list-body` 使用 flex 列布局阻止外边距折叠，避免实际行距小于计算值。`FileTree.vue` 的 `FILE_ROW_SLOT_HEIGHT`、`FILE_BODY_CONTENT_TOP` 与 `styles.css` 必须同步修改，否则点击定位、框选命中和滚动到行都会偏移。
 - 外部文件 -> 工作区：根 `Workspace.vue` 只在 `DataTransfer.types` 包含 `Files` 时触发上传，避免和内部文件拖拽冲突。
 
 ### 给新增模块的实现提示
@@ -1206,7 +1296,7 @@ function handleDrop(event: DragEvent) {
 - 插件预览 provider 的类型与轻量匹配工具在 `frontend/src/api/filePreviewProviders.ts`；文件列表组件通过 `previewProviders` 属性接收当前 active providers。
 - 需要下载时优先使用 `downloadUrl(path)` 或 `downloadSelectionUrl(paths)`，不要硬编码接口地址。
 - 需要预览结构时，先看 `preview_type === 'structure'`，同时兼容 VASP 强制文件名。
-- VASP 强制结构文件名由后端 `file_types.py` 统一判断：`POSCAR`、`CONTCAR`、`XDATCAR`、`OUTCAR` 作为文件名片段出现时可识别为结构，并允许数字后缀或备份后缀，例如 `XDATCAR2`、`case_CONTCAR_001`、`case_xdatcar_backup`、`POSCAR.bak`。只要文件名匹配该规则，即使带 `.txt` 等文本扩展也按结构候选处理，例如 `notes_about_POSCAR.txt`。
+- VASP 强制结构文件名由后端 `file_types.py` 统一判断：文件名（不区分大小写）只要包含 `POSCAR`、`CONTCAR`、`XDATCAR`、`OUTCAR` 任一子串就按结构候选处理，不要求词边界或分隔符，例如 `XDATCAR2`、`case_CONTCAR_001`、`case_xdatcar_backup`、`POSCAR.bak`、`goodCONTCAR`、`MYPOSCAR.bak` 都算结构。只要文件名包含这些片段，即使带 `.txt` 等文本扩展也按结构候选处理，例如 `notes_about_POSCAR.txt`。代价是文件名中偶然包含这些词的非结构文件也会被判为结构。
 - VASP XML 结构预览仅对 `vasp.xml` / `vasprun.xml` 返回 `format: "vasp-xml"`；普通 `.xml` 文件按文本预览处理。
 - 大文件预览必须走确认流程，确认后才使用 `force=true`。
 - 所有路径展示可以是绝对路径；所有后端请求仍会做工作区越界校验。

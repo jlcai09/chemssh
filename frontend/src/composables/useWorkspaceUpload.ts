@@ -24,7 +24,7 @@ type UploadState = {
 
 type UploadConflictDialogState = {
   visible: boolean
-  mode: 'upload' | 'move'
+  mode: 'upload' | 'move' | 'copy'
   name: string
   applyAll: boolean
   resolve: ((resolution: UploadConflictResolution) => void) | null
@@ -227,6 +227,18 @@ export function useWorkspaceUpload(
     })
   }
 
+  async function promptCopyConflict(name: string) {
+    return new Promise<UploadConflictResolution>(resolve => {
+      uploadConflictDialog.value = {
+        visible: true,
+        mode: 'copy',
+        name,
+        applyAll: false,
+        resolve
+      }
+    })
+  }
+
   function chooseUploadConflict(action: UploadConflictAction) {
     const dialog = uploadConflictDialog.value
     if (!dialog.resolve) return
@@ -251,6 +263,7 @@ export function useWorkspaceUpload(
     handleTerminalTransferUpload,
     promptUploadConflict,
     promptMoveConflict,
+    promptCopyConflict,
     chooseUploadConflict
   }
 }

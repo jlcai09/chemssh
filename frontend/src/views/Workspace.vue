@@ -53,10 +53,14 @@
           :loading="loadingFiles"
           :preview-providers="previewProviders"
           :system-icon-provider="launcherSystemIconProvider"
+          :empty-notice="fileTreeEmptyNotice"
+          @empty-action="openDefaultDirectory"
           @selection-change="handleSelectionChange"
           @context-menu="openFileContextMenu"
+          @blank-context-menu="openBlankContextMenu"
           @move-items="handleMoveItems"
           @open="openItem"
+          @delete="confirmDelete"
         />
       </div>
     </section>
@@ -95,7 +99,12 @@
       @dblclick="resetColumnLayout"
     />
 
-    <aside ref="sidePaneRef" class="workspace-side" :style="sideStyle">
+    <aside
+      ref="sidePaneRef"
+      class="workspace-side"
+      :class="{ 'is-log-collapsed': logCollapsed }"
+      :style="sideStyle"
+    >
       <section class="side-work-panel">
         <div class="side-panel-tabbar">
           <button
@@ -148,7 +157,10 @@
             :loading="previewLoading"
             :structure-candidate="structurePreviewCandidate"
             :structure-error="previewError"
+            :auto-open-settings="previewAutoOpenSettings"
+            :auto-open-terminals="previewAutoOpenTerminals"
             @update:mode="setPreviewMode"
+            @update:auto-open-settings="updatePreviewAutoOpenSettings"
             @refresh="refreshPreview"
             @save="savePreview"
             @dragover="handlePreviewDragOver"
@@ -157,7 +169,8 @@
           <QueueStatus
             v-if="activeWorkPanel?.kind === 'queue'"
             class="side-queue"
-            :initial-interval="5"
+            :initial-interval="60"
+            :cache-key="activeWorkPanel?.id"
             :workspace-root="systemInfo?.workspace_root"
             @open-workdir="openQueueWorkdir"
           />
@@ -183,7 +196,14 @@
         @dblclick="resetSideLayout"
       />
 
-      <LogViewer class="side-log" :path="logPath" :initial-lines="workspaceTailLines" @lines-change="setWorkspaceTailLines" />
+      <LogViewer
+        v-model:collapsed="logCollapsed"
+        class="side-log"
+        collapsible
+        :path="logPath"
+        :initial-lines="workspaceTailLines"
+        @lines-change="setWorkspaceTailLines"
+      />
     </aside>
 
     <div v-if="dragUploadActive" class="workspace-drop-overlay" aria-live="polite">
@@ -226,13 +246,21 @@
       <div v-if="uploadConflictDialog.visible" class="upload-conflict-backdrop">
         <div class="upload-conflict-dialog" role="dialog" aria-modal="true">
           <div class="upload-conflict-title">
-            {{ uploadConflictDialog.mode === 'move' ? t('move.conflictTitle') : t('upload.conflictTitle') }}
+            {{
+              uploadConflictDialog.mode === 'copy'
+                ? t('copy.conflictTitle')
+                : uploadConflictDialog.mode === 'move'
+                  ? t('move.conflictTitle')
+                  : t('upload.conflictTitle')
+            }}
           </div>
           <p>
             {{
-              uploadConflictDialog.mode === 'move'
-                ? t('move.conflictMessage', { name: uploadConflictDialog.name })
-                : t('upload.conflictMessage', { name: uploadConflictDialog.name })
+              uploadConflictDialog.mode === 'copy'
+                ? t('copy.conflictMessage', { name: uploadConflictDialog.name })
+                : uploadConflictDialog.mode === 'move'
+                  ? t('move.conflictMessage', { name: uploadConflictDialog.name })
+                  : t('upload.conflictMessage', { name: uploadConflictDialog.name })
             }}
           </p>
           <label class="upload-conflict-apply">
@@ -249,7 +277,7 @@
       </div>
 
       <div
-        v-if="contextMenu.visible"
+        v-if="contextMenu.visible && contextMenu.item"
         class="file-context-menu"
         :class="{ 'opens-left': contextMenu.opensLeft }"
         :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
@@ -299,6 +327,114 @@
             </button>
           </div>
         </div>
+        <span class="context-menu-separator" role="separator" />
+        <button class="context-menu-item" type="button" role="menuitem" @click="copyContextItems">
+          <el-icon><CopyDocument /></el-icon>
+          <span>{{ t('context.copy') }}</span>
+          <span />
+        </button>
+        <div v-if="archiveFormats.length > 0" class="context-menu-item has-submenu" role="menuitem" tabindex="0">
+          <el-icon><Files /></el-icon>
+          <span>{{ t('context.compress') }}</span>
+          <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
+          <div class="context-submenu" role="menu">
+            <button
+              v-for="format in archiveFormats"
+              :key="format"
+              class="context-menu-item"
+              type="button"
+              role="menuitem"
+              @click="compressSelection(format)"
+            >
+              <el-icon><Files /></el-icon>
+              <span>{{ t('context.compressAs', { format }) }}</span>
+              <span />
+            </button>
+          </div>
+        </div>
+        <button
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          :disabled="!canExtractSelection"
+          @click="extractSelection"
+        >
+          <el-icon><FolderOpened /></el-icon>
+          <span>{{ t('context.extract') }}</span>
+          <span />
+        </button>
+        <button
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          :disabled="selectedItems.length !== 1"
+          @click="renameContextItem"
+        >
+          <el-icon><EditPen /></el-icon>
+          <span>{{ t('context.rename') }}</span>
+          <span />
+        </button>
+        <button class="context-menu-item is-danger" type="button" role="menuitem" @click="deleteContextItems">
+          <el-icon><Delete /></el-icon>
+          <span>{{ t('context.delete') }}</span>
+          <span />
+        </button>
+      </div>
+
+      <div
+        v-if="contextMenu.visible && contextMenu.blank"
+        class="file-context-menu"
+        :class="{ 'opens-left': contextMenu.opensLeft }"
+        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+        role="menu"
+        @click.stop
+        @contextmenu.prevent
+      >
+        <button class="context-menu-item" type="button" role="menuitem" @click="selectAllFromMenu">
+          <el-icon><Select /></el-icon>
+          <span>{{ t('context.selectAll') }}</span>
+          <span />
+        </button>
+        <button class="context-menu-item" type="button" role="menuitem" @click="refreshFromMenu">
+          <el-icon><Refresh /></el-icon>
+          <span>{{ t('context.refresh') }}</span>
+          <span />
+        </button>
+        <button
+          class="context-menu-item"
+          type="button"
+          role="menuitem"
+          :disabled="!hasFileClipboard"
+          @click="pasteFromMenu"
+        >
+          <el-icon><DocumentCopy /></el-icon>
+          <span>{{ t('context.paste') }}</span>
+          <span />
+        </button>
+        <span class="context-menu-separator" role="separator" />
+        <button class="context-menu-item" type="button" role="menuitem" @click="copyFolderPathFromMenu">
+          <el-icon><CopyDocument /></el-icon>
+          <span>{{ t('context.copyFolderPath') }}</span>
+          <span />
+        </button>
+        <span class="context-menu-separator" role="separator" />
+        <div class="context-menu-item has-submenu" role="menuitem" tabindex="0">
+          <el-icon><Plus /></el-icon>
+          <span>{{ t('context.new') }}</span>
+          <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
+          <div class="context-submenu" role="menu">
+            <button class="context-menu-item" type="button" role="menuitem" @click="newFolderFromMenu">
+              <el-icon><FolderOpened /></el-icon>
+              <span>{{ t('context.newFolder') }}</span>
+              <span />
+            </button>
+            <button class="context-menu-item" type="button" role="menuitem" @click="newFileFromMenu">
+              <el-icon><Document /></el-icon>
+              <span>{{ t('context.newFile') }}</span>
+              <span />
+            </button>
+          </div>
+        </div>
       </div>
     </Teleport>
   </div>
@@ -308,21 +444,43 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Close, CopyDocument, Document, EditPen, FolderOpened, Plus, Promotion, UploadFilled } from '@element-plus/icons-vue'
 import {
+  ArrowRight,
+  Close,
+  CopyDocument,
+  Delete,
+  Document,
+  DocumentCopy,
+  EditPen,
+  Files,
+  FolderOpened,
+  Plus,
+  Promotion,
+  Refresh,
+  Select,
+  UploadFilled
+} from '@element-plus/icons-vue'
+import {
+  canExtractName,
+  compressPaths,
+  copyPaths,
   deletePath,
   downloadArchive,
+  extractArchive,
+  getArchiveTools,
   listFiles,
   makeDirectory,
   movePaths,
   readFile,
   renamePath,
   writeFile,
+  type ArchiveFormat,
+  type ArchiveTools,
   type DirectoryListing,
   type FileItem,
   type FileReadResponse
 } from '../api/files'
-import { API_BASE, apiUrl, downloadUrl, getAuthToken, request } from '../api/http'
+import { API_BASE, ApiError, apiUrl, downloadUrl, getAuthToken, request } from '../api/http'
 import { apiErrorMessage, localizeBackendMessage } from '../api/apiMessages'
 import {
   configureClientPreferencesScope,
@@ -331,13 +489,21 @@ import {
   saveClientPreferencesPatch
 } from '../api/clientPreferences'
 import { hasChemSSHFileDrag, readChemSSHFileDrag } from '../api/fileDrag'
-import { moveApiErrorMessage, prepareMoveEntries } from '../api/fileMove'
+import { copyApiErrorMessage, moveApiErrorMessage, prepareMoveEntries } from '../api/fileMove'
 import {
   providerMatchesItem,
   type FilePreviewProvider,
   type PreviewProbeResponse
 } from '../api/filePreviewProviders'
 import { isStructurePreviewItem } from '../api/fileTypes'
+import {
+  defaultPreviewAutoOpenSettings,
+  findAutoOpenCandidate,
+  normalizePreviewAutoOpenSettings,
+  toPreviewAutoOpenPreferences,
+  type PreviewAutoOpenSettings,
+  type PreviewAutoOpenTerminalOption
+} from '../api/previewAutoOpen'
 import { submitJob, type SubmitCommand } from '../api/jobs'
 import {
   isPathInsideWorkspace,
@@ -381,6 +547,7 @@ import TerminalPanel from '../components/terminal/TerminalPanel.vue'
 import { t } from '../i18n'
 import { useWorkspaceLayout } from '../composables/useWorkspaceLayout'
 import { useWorkspaceUpload } from '../composables/useWorkspaceUpload'
+import { fileClipboardItems, hasFileClipboard, setFileClipboard } from '../stores/fileClipboard'
 import { useSystemStore } from '../stores/system'
 
 type OpenPathRequest = {
@@ -398,17 +565,23 @@ const systemInfo = computed(() => systemStoreInfo.value)
 const syncEvents = computed(() => systemStoreSyncEvents.value)
 
 const listing = shallowRef<DirectoryListing | null>(null)
+const directoryLoadError = ref<{ path: string; message: string; code?: string } | null>(null)
 const currentPath = ref('')
 const pathInput = ref('')
 const selectedItems = ref<FileItem[]>([])
 const selectedItem = ref<FileItem | null>(null)
 const showHiddenFiles = ref(false)
 const workspaceTailLines = ref(20)
+const logCollapsed = ref(false)
 const preview = ref<FileReadResponse | null>(null)
 const asePreview = ref<AsePreviewResponse | null>(null)
 const previewMode = ref<PreviewMode>('text')
 const previewCandidate = ref<FileItem | null>(null)
 const previewError = ref<string | null>(null)
+const previewAutoOpenSettings = ref<PreviewAutoOpenSettings>(defaultPreviewAutoOpenSettings())
+const previewAutoOpenTerminals = ref<PreviewAutoOpenTerminalOption[]>([])
+let lastAutoOpenDirectory: string | null = null
+let autoOpenRequestSerial = 0
 const loadingFiles = ref(false)
 const previewLoading = ref(false)
 const dragUploadDepth = ref(0)
@@ -432,6 +605,9 @@ type ContextMenuState = {
   x: number
   y: number
   opensLeft: boolean
+  // `blank` marks the directory-level menu opened on empty space; `item` is
+  // null in that mode.
+  blank: boolean
   item: FileItem | null
 }
 
@@ -453,6 +629,7 @@ const contextMenu = ref<ContextMenuState>({
   x: 0,
   y: 0,
   opensLeft: false,
+  blank: false,
   item: null
 })
 let previewRequestSerial = 0
@@ -473,6 +650,23 @@ const directoryHistoryEntries = computed(() => directoryHistory.value.map(path =
 })))
 
 const terminalInitialPath = computed(() => workspacePathOrRoot(currentPath.value, systemInfo.value?.workspace_root))
+
+const defaultDirectory = computed(() => systemInfo.value?.workspace_root ?? '')
+
+// The tree is empty whenever a directory fails to load, so replace the blank
+// pane with a warning and a one-click way back to the configured root.
+const fileTreeEmptyNotice = computed(() => {
+  const error = directoryLoadError.value
+  if (!error) return null
+  // An empty requested path means "configured root", so there is nowhere else to go.
+  const failedPath = error.path || defaultDirectory.value
+  const canReturnToDefault = Boolean(defaultDirectory.value) && failedPath !== defaultDirectory.value
+  return {
+    title: error.code === 'DIRECTORY_NOT_FOUND' ? t('file.directoryMissing') : t('message.directoryLoadFailed'),
+    description: error.message,
+    actionLabel: canReturnToDefault ? t('file.backToDefaultDirectory') : undefined
+  }
+})
 
 const launcherSystemIconProvider = computed(() => ({
   enabled: Boolean(
@@ -510,6 +704,7 @@ const {
   handleTerminalTransferUpload,
   promptUploadConflict,
   promptMoveConflict,
+  promptCopyConflict,
   chooseUploadConflict
 } = useWorkspaceUpload(currentPath, () => loadDirectory(currentPath.value, { refresh: true }))
 
@@ -535,20 +730,120 @@ const workspaceTerminalBindings = computed<CanvasTerminalTabBinding[]>(() => {
 
 function saveWorkspaceTerminalBindings(summary: CanvasTerminalTabBinding[]) {
   const tabs = sanitizeTerminalTabs(summary, systemInfo.value?.workspace_root ?? '') ?? []
+  previewAutoOpenTerminals.value = previewAutoOpenTerminalOptions(summary)
   void saveClientPreferencesPatch({
     version: 1,
     terminal: { tabs }
   }).catch(() => undefined)
+  maybeAutoOpenFromTerminalBindings(summary)
+}
+
+function previewAutoOpenTerminalOptions(bindings: CanvasTerminalTabBinding[]): PreviewAutoOpenTerminalOption[] {
+  return bindings
+    .filter(binding => Boolean(binding.cwd) && isPathInsideWorkspace(binding.cwd, systemInfo.value?.workspace_root))
+    .map(binding => ({
+      tabId: binding.tabId,
+      title: binding.title,
+      cwd: binding.cwd,
+      active: binding.active
+    }))
+}
+
+function terminalPathForAutoOpen(
+  settings: PreviewAutoOpenSettings,
+  terminals: PreviewAutoOpenTerminalOption[]
+) {
+  if (settings.source === 'active-terminal') return terminals.find(tab => tab.active)?.cwd ?? ''
+  if (settings.source === 'terminal') return terminals.find(tab => tab.tabId === settings.terminalTabId)?.cwd ?? ''
+  return ''
+}
+
+function savePreviewAutoOpenSettings(settings: PreviewAutoOpenSettings) {
+  void saveClientPreferencesPatch({
+    version: 1,
+    preview: { autoOpen: toPreviewAutoOpenPreferences(settings) }
+  }).catch(() => undefined)
+}
+
+function updatePreviewAutoOpenSettings(settings: PreviewAutoOpenSettings) {
+  const previous = previewAutoOpenSettings.value
+  previewAutoOpenSettings.value = settings
+  savePreviewAutoOpenSettings(settings)
+  const sourceChanged =
+    previous.enabled !== settings.enabled ||
+    previous.source !== settings.source ||
+    previous.terminalTabId !== settings.terminalTabId
+  if (!settings.enabled) {
+    lastAutoOpenDirectory = null
+    return
+  }
+  if (sourceChanged) {
+    lastAutoOpenDirectory = null
+    autoOpenFromActiveSource()
+  }
+}
+
+function autoOpenFromActiveSource() {
+  const settings = normalizePreviewAutoOpenSettings(previewAutoOpenSettings.value)
+  if (!settings.enabled) return
+  if (settings.source === 'file-manager') {
+    if (listing.value && listing.value.path === currentPath.value) {
+      maybeAutoOpenFromItems(currentPath.value, listing.value.items)
+    }
+    return
+  }
+  const path = terminalPathForAutoOpen(settings, previewAutoOpenTerminals.value)
+  if (path) void maybeAutoOpenFromTerminalPath(path)
+}
+
+function maybeAutoOpenFromItems(path: string, items: FileItem[]) {
+  const settings = normalizePreviewAutoOpenSettings(previewAutoOpenSettings.value)
+  if (!settings.enabled || settings.source !== 'file-manager') return
+  if (!path || path === lastAutoOpenDirectory) return
+  lastAutoOpenDirectory = path
+  const candidate = findAutoOpenCandidate(items, settings.filenames)
+  if (!candidate) return
+  void previewFile(candidate, { auto: true })
+}
+
+function maybeAutoOpenFromTerminalBindings(bindings: CanvasTerminalTabBinding[]) {
+  const settings = normalizePreviewAutoOpenSettings(previewAutoOpenSettings.value)
+  if (!settings.enabled || settings.source === 'file-manager') return
+  const path = terminalPathForAutoOpen(settings, previewAutoOpenTerminalOptions(bindings))
+  if (path) void maybeAutoOpenFromTerminalPath(path)
+}
+
+async function maybeAutoOpenFromTerminalPath(path: string) {
+  if (!path || path === lastAutoOpenDirectory) return
+  if (!isPathInsideWorkspace(path, systemInfo.value?.workspace_root)) return
+  lastAutoOpenDirectory = path
+  const requestId = ++autoOpenRequestSerial
+  const previewSerial = previewRequestSerial
+  try {
+    const directory = await listFiles(path)
+    if (requestId !== autoOpenRequestSerial || previewRequestSerial !== previewSerial) return
+    if (path !== lastAutoOpenDirectory) return
+    const settings = normalizePreviewAutoOpenSettings(previewAutoOpenSettings.value)
+    if (!settings.enabled || settings.source === 'file-manager') return
+    const candidate = findAutoOpenCandidate(directory.items, settings.filenames)
+    if (!candidate) return
+    await previewFile(candidate, { auto: true })
+  } catch {
+    // Terminal directories outside the workspace or temporarily unreadable are ignored.
+  }
 }
 
 function applyWorkspacePreferences() {
+  workspaceTailLines.value = getClientPreferences().logs?.tailLines ?? 20
+  logCollapsed.value = getClientPreferences().logs?.tailCollapsed === true
+  previewAutoOpenSettings.value = normalizePreviewAutoOpenSettings(getClientPreferences().preview?.autoOpen)
+  previewAutoOpenTerminals.value = previewAutoOpenTerminalOptions(workspaceTerminalBindings.value)
   const workspace = getClientPreferences().workspace
   if (!workspace) return
   leftPaneWidth.value = typeof workspace.fileTreeWidth === 'number' ? workspace.fileTreeWidth : null
   sidePaneWidth.value = typeof workspace.sidePaneWidth === 'number' ? workspace.sidePaneWidth : null
   sideQueueHeight.value = typeof workspace.queueHeight === 'number' ? workspace.queueHeight : null
   showHiddenFiles.value = Boolean(workspace.showHiddenFiles)
-  workspaceTailLines.value = getClientPreferences().logs?.tailLines ?? 20
   if (workspace.activeWorkPanelId && workPanels.value.some(panel => panel.id === workspace.activeWorkPanelId)) {
     activeWorkPanelId.value = workspace.activeWorkPanelId
   }
@@ -559,7 +854,8 @@ function saveWorkspacePreferences() {
   void saveClientPreferencesPatch({
     version: 1,
     logs: {
-      tailLines: workspaceTailLines.value
+      tailLines: workspaceTailLines.value,
+      tailCollapsed: logCollapsed.value
     },
     workspace: {
       fileTreeWidth: leftPaneWidth.value,
@@ -833,16 +1129,33 @@ async function loadDirectory(path?: string | null, options: { recordHistory?: bo
   loadingFiles.value = true
   try {
     listing.value = await listFiles(path ?? undefined, { refresh: options.refresh })
+    directoryLoadError.value = null
     currentPath.value = listing.value.path
     pathInput.value = listing.value.path
     if (options.recordHistory) recordDirectoryHistory(previousPath, currentPath.value)
     saveWorkspacePreferences()
     setSelection([], null)
+    maybeAutoOpenFromItems(currentPath.value, listing.value.items)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('message.directoryLoadFailed'))
+    const message = apiErrorMessage(error, 'message.directoryLoadFailed')
+    ElMessage.error(message)
+    listing.value = null
+    setSelection([], null)
+    directoryLoadError.value = {
+      path: (path ?? '').trim(),
+      message,
+      code: error instanceof ApiError ? error.code : undefined
+    }
+    if (path?.trim()) pathInput.value = path
   } finally {
     loadingFiles.value = false
   }
+}
+
+async function openDefaultDirectory() {
+  const target = defaultDirectory.value
+  if (!target) return
+  await loadDirectory(target, { recordHistory: true, refresh: true })
 }
 
 async function openDirectory(path?: string | null) {
@@ -919,7 +1232,7 @@ function throwIfAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
 }
 
-async function previewFile(itemOrPath: FileItem | string) {
+async function previewFile(itemOrPath: FileItem | string, options: { auto?: boolean } = {}) {
   const path = typeof itemOrPath === 'string' ? itemOrPath : itemOrPath.path
   const item = typeof itemOrPath === 'string'
     ? selectedItem.value?.path === path
@@ -933,56 +1246,76 @@ async function previewFile(itemOrPath: FileItem | string) {
   const isCurrentRequest = () => requestId === previewRequestSerial
   abortStructurePreviewRequest()
   previewLoading.value = true
-  previewCandidate.value = item
-  previewError.value = null
+  if (!options.auto) {
+    previewCandidate.value = item
+    previewError.value = null
+  }
   try {
     const provider = item ? await resolvePreviewProvider(item) : null
     if (!isCurrentRequest()) return
     const providerSource = provider ? providerStructureSource(provider) : null
     if (providerSource) {
-      previewMode.value = 'structure'
-      currentStructureSource.value = providerSource
-      if (preview.value?.path !== path) preview.value = null
-      const structure = await readStructurePreviewWithLargeConfirmation(path, providerSource, nextStructurePreviewSignal())
+      if (!options.auto) {
+        previewMode.value = 'structure'
+        currentStructureSource.value = providerSource
+        if (preview.value?.path !== path) preview.value = null
+      }
+      const structure = await readStructurePreviewWithLargeConfirmation(path, providerSource, nextStructurePreviewSignal(), options)
       if (!isCurrentRequest()) return
       if (structure) {
+        previewCandidate.value = item
+        previewMode.value = 'structure'
+        currentStructureSource.value = providerSource
+        if (preview.value?.path !== path) preview.value = null
         asePreview.value = structure
+        previewError.value = null
         openBuiltinPanel('preview')
       }
       return
     }
 
     if (item && isStructureCandidate(item)) {
-      previewMode.value = 'structure'
-      currentStructureSource.value = ASE_STRUCTURE_SOURCE
-      if (preview.value?.path !== path) preview.value = null
+      if (!options.auto) {
+        previewMode.value = 'structure'
+        currentStructureSource.value = ASE_STRUCTURE_SOURCE
+        if (preview.value?.path !== path) preview.value = null
+      }
       try {
-        const structure = await readStructurePreviewWithLargeConfirmation(path, ASE_STRUCTURE_SOURCE, nextStructurePreviewSignal())
+        const structure = await readStructurePreviewWithLargeConfirmation(path, ASE_STRUCTURE_SOURCE, nextStructurePreviewSignal(), options)
         if (!isCurrentRequest()) return
         if (structure) {
+          previewCandidate.value = item
+          previewMode.value = 'structure'
+          currentStructureSource.value = ASE_STRUCTURE_SOURCE
+          if (preview.value?.path !== path) preview.value = null
           asePreview.value = structure
+          previewError.value = null
           openBuiltinPanel('preview')
         }
         return
       } catch (error) {
         if (!isCurrentRequest()) return
-        previewError.value = previewApiErrorMessage(error)
-        previewMode.value = 'text'
+        if (!options.auto) {
+          previewError.value = previewApiErrorMessage(error)
+          previewMode.value = 'text'
+        }
       }
-    } else {
+    } else if (!options.auto) {
       previewMode.value = 'text'
     }
 
-    if (preview.value?.path !== path) preview.value = null
-    const file = await readTextPreviewWithLargeConfirmation(path)
+    if (!options.auto && preview.value?.path !== path) preview.value = null
+    const file = await readTextPreviewWithLargeConfirmation(path, options)
     if (!isCurrentRequest()) return
     if (file) {
+      previewCandidate.value = item
       preview.value = file
       previewMode.value = 'text'
+      previewError.value = null
       openBuiltinPanel('preview')
     }
   } catch (error) {
-    if (isCurrentRequest()) {
+    if (isCurrentRequest() && !options.auto) {
       preview.value = null
       if (!isAbortError(error)) ElMessage.error(previewApiErrorMessage(error))
     }
@@ -1089,11 +1422,12 @@ async function refreshStructurePreview() {
   }
 }
 
-async function readTextPreviewWithLargeConfirmation(path: string) {
+async function readTextPreviewWithLargeConfirmation(path: string, options: { auto?: boolean } = {}) {
   try {
     return await readFile(path, forcedLargeTextPreviews.has(path))
   } catch (error) {
     if (!isLargePreviewError(error, 'FILE_TOO_LARGE')) throw error
+    if (options.auto) return null
     const confirmed = await confirmLargePreview(error, 'text')
     if (!confirmed) return null
     forcedLargeTextPreviews.add(path)
@@ -1104,7 +1438,8 @@ async function readTextPreviewWithLargeConfirmation(path: string) {
 async function readStructurePreviewWithLargeConfirmation(
   path: string,
   source: StructureSource = ASE_STRUCTURE_SOURCE,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: { auto?: boolean } = {}
 ) {
   const cacheKey = `${source.id}:${path}`
   try {
@@ -1112,6 +1447,7 @@ async function readStructurePreviewWithLargeConfirmation(
   } catch (error) {
     if (isAbortError(error)) throw error
     if (!isLargePreviewError(error, 'STRUCTURE_FILE_TOO_LARGE')) throw error
+    if (options.auto) return null
     const confirmed = await confirmLargePreview(error, 'structure')
     throwIfAborted(signal)
     if (!confirmed) return null
@@ -1153,7 +1489,19 @@ function openFileContextMenu(item: FileItem, event: MouseEvent) {
     x: Math.min(Math.max(event.clientX, 8), window.innerWidth - CONTEXT_MENU_WIDTH - 8),
     y: Math.min(Math.max(event.clientY, 8), window.innerHeight - CONTEXT_MENU_HEIGHT - 8),
     opensLeft: event.clientX > window.innerWidth - 360,
+    blank: false,
     item
+  }
+}
+
+function openBlankContextMenu(event: MouseEvent) {
+  contextMenu.value = {
+    visible: true,
+    x: Math.min(Math.max(event.clientX, 8), window.innerWidth - CONTEXT_MENU_WIDTH - 8),
+    y: Math.min(Math.max(event.clientY, 8), window.innerHeight - CONTEXT_MENU_HEIGHT - 8),
+    opensLeft: event.clientX > window.innerWidth - 360,
+    blank: true,
+    item: null
   }
 }
 
@@ -1249,6 +1597,7 @@ function closeContextMenu(event?: Event) {
     x: 0,
     y: 0,
     opensLeft: false,
+    blank: false,
     item: null
   }
 }
@@ -1266,6 +1615,122 @@ async function submitContextJob(command: SubmitCommand) {
     ElMessage.success(localizeBackendMessage(response.message) || t('submit.jobSubmitted', { id: response.job_id ?? '' }))
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, 'message.submitFailed'))
+  }
+}
+
+function renameContextItem() {
+  closeContextMenu()
+  void promptRename()
+}
+
+function deleteContextItems() {
+  closeContextMenu()
+  void confirmDelete()
+}
+
+function copyContextItems() {
+  closeContextMenu()
+  if (selectedItems.value.length === 0) return
+  setFileClipboard(selectedItems.value)
+  ElMessage.success(t('message.copiedToClipboard', { count: selectedItems.value.length }))
+}
+
+const archiveTools = ref<ArchiveTools | null>(null)
+const archiveFormats = computed<ArchiveFormat[]>(() => archiveTools.value?.formats ?? [])
+const canExtractSelection = computed(() => {
+  const items = selectedItems.value
+  if (items.length !== 1 || items[0].type !== 'file') return false
+  return canExtractName(items[0].name, archiveTools.value)
+})
+
+async function loadArchiveTools() {
+  archiveTools.value = await getArchiveTools().catch(() => null)
+}
+
+async function compressSelection(format: ArchiveFormat) {
+  closeContextMenu()
+  const paths = selectedItems.value.map(item => item.path)
+  const target = currentPath.value
+  if (paths.length === 0 || !target) return
+  try {
+    const response = await compressPaths(paths, target, format)
+    await loadDirectory(target, { refresh: true })
+    ElMessage.success(t('message.compressed', { name: response.path?.split(/[\\/]/).pop() ?? format }))
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, 'message.archiveFailed'))
+  }
+}
+
+async function extractSelection() {
+  closeContextMenu()
+  const item = selectedItems.value[0]
+  const target = currentPath.value
+  if (!item || !target) return
+  try {
+    await extractArchive(item.path, target)
+    await loadDirectory(target, { refresh: true })
+    ElMessage.success(t('message.extracted'))
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, 'message.archiveFailed'))
+  }
+}
+
+function selectAllFromMenu() {
+  closeContextMenu()
+  setSelection([...visibleItems.value], visibleItems.value[0] ?? null)
+}
+
+function refreshFromMenu() {
+  closeContextMenu()
+  void loadDirectory(currentPath.value, { refresh: true })
+}
+
+async function copyFolderPathFromMenu() {
+  const path = currentPath.value
+  closeContextMenu()
+  if (!path) return
+  try {
+    await copyTextToClipboard(path)
+    ElMessage.success(t('message.pathCopied'))
+  } catch {
+    ElMessage.error(t('message.clipboardFailed'))
+  }
+}
+
+function newFolderFromMenu() {
+  closeContextMenu()
+  void promptMkdir()
+}
+
+function newFileFromMenu() {
+  closeContextMenu()
+  void promptCreateFile()
+}
+
+function pasteFromMenu() {
+  closeContextMenu()
+  void pasteClipboard()
+}
+
+async function pasteClipboard() {
+  const targetPath = currentPath.value
+  const clip = fileClipboardItems.value
+  if (!targetPath || clip.length === 0) return
+  try {
+    const prepared = await prepareMoveEntries(clip, {
+      targetPath,
+      promptConflict: promptCopyConflict
+    })
+    if (prepared.cancelled) return
+    if (prepared.entries.length === 0) {
+      ElMessage.info(t('message.copySkipped'))
+      return
+    }
+    await copyPaths(prepared.entries.map(entry => entry.path), targetPath, prepared.entries)
+    await loadDirectory(targetPath, { refresh: true })
+    ElMessage.success(t('message.copied'))
+  } catch (error) {
+    ElMessage.error(copyApiErrorMessage(error))
   }
 }
 
@@ -1526,6 +1991,7 @@ async function initializeWorkspace() {
 onMounted(() => {
   mounted = true
   void initializeWorkspace()
+  void loadArchiveTools()
 })
 
 watch(
@@ -1552,6 +2018,10 @@ watch(
 )
 
 watch(activeWorkPanelId, () => {
+  saveWorkspacePreferences()
+})
+
+watch(logCollapsed, () => {
   saveWorkspacePreferences()
 })
 
