@@ -55,18 +55,17 @@
         @context-menu="handleContextMenu"
         @blank-context-menu="handleBlankContextMenu"
         @move-items="handleMoveItems"
+        @upload-drop="handleExternalUploadDrop"
+        @upload-target-change="externalDropTargetPath = $event"
         @open="openItem"
         @delete="confirmDelete"
       />
     </div>
 
     <div
-      v-if="dragUploadActive"
+      v-if="dragUploadActive && !externalDropTargetPath"
       class="canvas-file-drop-overlay is-upload-overlay"
       aria-live="polite"
-      @dragenter.stop.prevent="handleUploadDropDragOver"
-      @dragover.stop.prevent="handleUploadDropDragOver"
-      @drop.stop.prevent="handleUploadDrop"
     >
       <el-icon><UploadFilled /></el-icon>
       <span>{{ t('file.dropUpload') }}</span>
@@ -400,6 +399,7 @@ const showHiddenFiles = ref(false)
 const loading = ref(false)
 const dragUploadDepth = ref(0)
 const currentDirectoryDragDepth = ref(0)
+const externalDropTargetPath = ref<string | null>(null)
 const directoryHistory = ref<string[]>([])
 const contextMenu = ref<ContextMenuState>({
   visible: false,
@@ -1103,6 +1103,7 @@ function handleDragEnter(event: DragEvent) {
   }
   if (!hasFileDrag(event)) return
   event.preventDefault()
+  externalDropTargetPath.value = null
   dragUploadDepth.value = 1
   setUploadDropEffect(event)
 }
@@ -1134,6 +1135,7 @@ function handleDragLeave(event: DragEvent) {
   if (root && related && root.contains(related)) return
   dragUploadDepth.value = 0
   currentDirectoryDragDepth.value = 0
+  externalDropTargetPath.value = null
 }
 
 function handleDrop(event: DragEvent) {
@@ -1149,26 +1151,20 @@ function handleDrop(event: DragEvent) {
   if (!hasFileDrag(event)) return
   event.preventDefault()
   dragUploadDepth.value = 0
+  externalDropTargetPath.value = null
   void collectDropUploadEntries(event).then(entries => {
     if (entries.length > 0) void handleUploadEntries(entries)
   })
 }
 
-function handleUploadDropDragOver(event: DragEvent) {
-  if (!hasFileDrag(event)) return
-  event.preventDefault()
-  dragUploadDepth.value = 1
-  setUploadDropEffect(event)
-}
-
-function handleUploadDrop(event: DragEvent) {
-  if (!hasFileDrag(event)) return
-  event.preventDefault()
+// Dropping on a directory row uploads into that folder instead of the listing
+// directory; the row already decided the target, so only the files are read here.
+async function handleExternalUploadDrop(target: FileItem, event: DragEvent) {
   dragUploadDepth.value = 0
   currentDirectoryDragDepth.value = 0
-  void collectDropUploadEntries(event).then(entries => {
-    if (entries.length > 0) void handleUploadEntries(entries)
-  })
+  externalDropTargetPath.value = null
+  const entries = await collectDropUploadEntries(event)
+  if (entries.length > 0) await handleUploadEntries(entries, target.path)
 }
 
 function handleCurrentDirectoryActionDragOver(action: 'move' | 'copy', event: DragEvent) {

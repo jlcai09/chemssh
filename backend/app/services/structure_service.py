@@ -31,7 +31,23 @@ from ase.io.extxyz import key_val_str_to_dict, parse_properties
 from backend.app.core.config import Settings
 from backend.app.core.errors import AppError
 from backend.app.core.security import WorkspaceSecurity
-from backend.app.models.structure import AseFrame, AseFrameChunkResponse, AsePreviewResponse
+from backend.app.models.structure import (
+    AseDynamicDisplayRequest,
+    AseDynamicDisplayResponse,
+    AseFragmentRequest,
+    AseFragmentResponse,
+    AseFrame,
+    AseFrameChunkResponse,
+    AsePreviewResponse,
+)
+from backend.app.services.structure_fragments import (
+    compute_whole_molecule_wrapped_positions,
+    evaluate_dynamic_display_rules,
+    get_cached_fragment_graph,
+    select_connected_fragments,
+    select_same_formula_fragments,
+    select_within_radius,
+)
 from backend.app.services.structure_types import (
     STRUCTURE_BINARY_MAGIC,
     STRUCTURE_BINARY_MEDIA_TYPE,
@@ -305,6 +321,183 @@ class StructureService:
         frame = self._read_frame(path, index, fmt, summary=summary)
         return self._frame_response(frame, index)
 
+    def query_fragments(
+        self,
+        req: AseFragmentRequest,
+        *,
+        cancellation: StructureCancellationToken | None = None,
+    ) -> AseFragmentResponse:
+        if req.frame_index < 0:
+            raise AppError("INVALID_FRAME_INDEX", "Frame index must be greater than or equal to 0", 400)
+        if req.mode == "within_radius" and (req.radius is None or req.radius <= 0):
+            raise AppError("INVALID_FRAGMENT_RADIUS", "Radius must be greater than 0 for within_radius mode", 400)
+
+        path = self._resolve_structure_file(req.path, force=req.force)
+        if cancellation:
+            cancellation.check()
+        summary = self._get_reusable_summary_if_supported(path, req.format, allow_incomplete=False)
+        frame = self._read_frame(path, req.frame_index, req.format, summary=summary)
+        if cancellation:
+            cancellation.check()
+
+        stat = path.stat()
+        cache_key = (
+            str(path),
+            stat.st_mtime_ns,
+            stat.st_size,
+            req.frame_index,
+            int(round(req.bond_scale * 1000)),
+            bool(req.use_pbc),
+        )
+        graph = get_cached_fragment_graph(
+            cache_key=cache_key,
+            positions=frame.positions,
+            numbers=frame.numbers,
+            symbols=frame.symbols,
+            cell=frame.cell,
+            pbc=frame.pbc,
+            bond_scale=req.bond_scale,
+            use_pbc=req.use_pbc,
+        )
+        if cancellation:
+            cancellation.check()
+
+        if req.mode == "connected":
+            atom_indices, fragment_count, formulas = select_connected_fragments(graph, req.seed_atoms)
+            return AseFragmentResponse(
+                frame_index=req.frame_index,
+                mode=req.mode,
+                atom_indices=atom_indices,
+                fragment_count=fragment_count,
+                formulas=formulas,
+            )
+
+        if req.mode == "same_formula":
+            atom_indices, fragment_count, formulas = select_same_formula_fragments(graph, req.seed_atoms)
+            return AseFragmentResponse(
+                frame_index=req.frame_index,
+                mode=req.mode,
+                atom_indices=atom_indices,
+                fragment_count=fragment_count,
+                formulas=formulas,
+            )
+
+        if req.mode == "within_radius":
+            atom_indices, fragment_count, formulas = select_within_radius(
+                graph=graph,
+                positions=frame.positions,
+                cell=frame.cell,
+                pbc=frame.pbc,
+                seed_atoms=req.seed_atoms,
+                radius=float(req.radius or 0.0),
+                use_pbc=req.use_pbc,
+                expand_fragments=req.expand_fragments,
+            )
+            return AseFragmentResponse(
+                frame_index=req.frame_index,
+                mode=req.mode,
+                atom_indices=atom_indices,
+                fragment_count=fragment_count,
+                formulas=formulas,
+            )
+
+        wrapped_positions = compute_whole_molecule_wrapped_positions(
+            graph=graph,
+            positions=frame.positions,
+            cell=frame.cell,
+            pbc=frame.pbc,
+        )
+        return AseFragmentResponse(
+            frame_index=req.frame_index,
+            mode=req.mode,
+            atom_indices=[],
+            fragment_count=graph.n_components,
+            formulas=sorted(graph.formula_to_components.keys()),
+            wrapped_positions=wrapped_positions,
+        )
+
+    def evaluate_dynamic_display(
+        self,
+        req: AseDynamicDisplayRequest,
+        *,
+        cancellation: StructureCancellationToken | None = None,
+    ) -> AseDynamicDisplayResponse:
+        if req.frame_index < 0:
+            raise AppError("INVALID_FRAME_INDEX", "Frame index must be greater than or equal to 0", 400)
+
+        path = self._resolve_structure_file(req.path, force=req.force)
+        if cancellation:
+            cancellation.check()
+        summary = self._get_reusable_summary_if_supported(path, req.format, allow_incomplete=False)
+        frame = self._read_frame(path, req.frame_index, req.format, summary=summary)
+        if cancellation:
+            cancellation.check()
+
+        stat = path.stat()
+        cache_key = (
+            str(path),
+            stat.st_mtime_ns,
+            stat.st_size,
+            req.frame_index,
+            int(round(req.bond_scale * 1000)),
+            bool(req.use_pbc),
+        )
+        graph = get_cached_fragment_graph(
+            cache_key=cache_key,
+            positions=frame.positions,
+            numbers=frame.numbers,
+            symbols=frame.symbols,
+            cell=frame.cell,
+            pbc=frame.pbc,
+            bond_scale=req.bond_scale,
+            use_pbc=req.use_pbc,
+        )
+        if cancellation:
+            cancellation.check()
+
+        atom_modes, rule_match_counts, available_formulas = evaluate_dynamic_display_rules(
+            graph=graph,
+            positions=frame.positions,
+            symbols=frame.symbols,
+            cell=frame.cell,
+            pbc=frame.pbc,
+            fixed_indices=frame.fixed_indices,
+            rules=req.rules,
+            default_style=req.default_style,
+            use_pbc=req.use_pbc,
+        )
+        return AseDynamicDisplayResponse(
+            frame_index=req.frame_index,
+            atom_modes=atom_modes,
+            rule_match_counts=rule_match_counts,
+            available_formulas=available_formulas,
+        )
+
+    def frame_chunk_count(
+        self,
+        summary: StructureSummary | None,
+        count: int,
+        *,
+        json_transport: bool = False,
+    ) -> int:
+        # A single frame is the minimum working set; this estimates allocations, not RSS.
+        config = self.settings.viewer.ase
+        n_atoms = config.max_atoms
+        if summary is not None and summary.topology_stable:
+            n_atoms = summary.n_atoms
+            if n_atoms > config.max_atoms:
+                raise AppError(
+                    "STRUCTURE_TOO_MANY_ATOMS",
+                    f"Structure has {n_atoms} atoms; limit is {config.max_atoms}",
+                    413,
+                )
+            if n_atoms <= 0:
+                raise AppError("STRUCTURE_PARSE_FAILED", "Structure summary has an empty frame", 400)
+
+        bytes_per_frame = max(1, n_atoms) * (256 if json_transport else 32) + 256
+        budget_bytes = config.max_chunk_size_mb * 1024 * 1024
+        return max(1, min(count, config.binary_chunk_frames, budget_bytes // bytes_per_frame))
+
     def read_frame_chunk_json(
         self,
         raw_path: str,
@@ -320,8 +513,8 @@ class StructureService:
             raise AppError("INVALID_FRAME_RANGE", "Chunk count must be greater than 0", 400)
 
         path = self._resolve_structure_file(raw_path, force=force)
-        safe_count = min(count, self.settings.viewer.ase.binary_chunk_frames)
         summary = self._get_reusable_summary_if_supported(path, fmt, allow_incomplete=False)
+        safe_count = self.frame_chunk_count(summary, count, json_transport=True)
         frame_data = self._read_frame_range(path, start, safe_count, fmt, summary=summary)
         if not frame_data:
             raise AppError("FRAME_INDEX_OUT_OF_RANGE", f"Frame start is outside range: {start}", 404)
@@ -343,8 +536,7 @@ class StructureService:
         if start >= summary.n_frames:
             raise AppError("FRAME_INDEX_OUT_OF_RANGE", f"Frame start is outside range: {start}", 404)
 
-        max_count = self.settings.viewer.ase.binary_chunk_frames
-        safe_count = min(count, max_count, summary.n_frames - start)
+        safe_count = min(self.frame_chunk_count(summary, count), summary.n_frames - start)
         direct_payload = self._try_build_direct_fixed_binary_payload(
             path=path,
             summary=summary,
@@ -389,8 +581,7 @@ class StructureService:
         if start >= summary.n_frames:
             raise AppError("FRAME_INDEX_OUT_OF_RANGE", f"Frame start is outside range: {start}", 404)
 
-        max_count = self.settings.viewer.ase.binary_chunk_frames
-        safe_count = min(count, max_count, summary.n_frames - start)
+        safe_count = min(self.frame_chunk_count(summary, count), summary.n_frames - start)
         _profile_set(profile, "safe_count", safe_count)
         direct_payload = self._try_build_direct_fixed_binary_payload(
             path=resolved_path,
@@ -518,8 +709,15 @@ class StructureService:
             return self._get_structure_summary(path, fmt, allow_incomplete=allow_incomplete)
         return self._get_cached_structure_summary(path, fmt)
 
-    def stream_requires_complete_summary(self, path: Path, fmt: str | None) -> bool:
-        return _is_vasp_xdatcar_format(path, fmt)
+    def stream_requires_complete_summary(
+        self, path: Path, fmt: str | None, summary: StructureSummary | None = None,
+    ) -> bool:
+        if _is_vasp_xdatcar_format(path, fmt):
+            return True
+        if summary is not None and not summary.scan_completed:
+            index = summary.fast_xyz_index
+            return index is None or index.detected_format != "xyz" or _stable_plain_xyz_frame_stride(index) is None
+        return False
 
     def _get_cached_structure_summary(self, path: Path, fmt: str | None) -> StructureSummary | None:
         key = self._cache_key(path, fmt)
@@ -583,8 +781,27 @@ class StructureService:
 
             first_frame = self._read_native_frame(path, detected_format, 0)
             self._validate_structure_frame(first_frame, path)
-            last_frame = self._read_native_frame(path, detected_format, -1)
-            self._validate_structure_frame(last_frame, path)
+            file_incomplete = False
+            effective_frames = n_frames
+            last_frame = None
+            last_error: Exception | None = None
+            min_probe_index = max(0, n_frames - 8)
+            for candidate_idx in range(n_frames - 1, min_probe_index - 1, -1):
+                cancellation.check()
+                try:
+                    candidate = self._read_native_frame(path, detected_format, candidate_idx)
+                    self._validate_structure_frame(candidate, path)
+                    last_frame = candidate
+                    effective_frames = candidate_idx + 1
+                    file_incomplete = candidate_idx < n_frames - 1
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    continue
+            if last_frame is None:
+                if isinstance(last_error, AppError):
+                    raise last_error
+                raise AppError("STRUCTURE_PARSE_FAILED", f"ASE could not parse {path.name}: {last_error}", 400) from last_error
             first_numbers = _frame_numbers(first_frame)
             last_numbers = _frame_numbers(last_frame)
             topology_stable = _frame_atom_count(first_frame) == _frame_atom_count(last_frame) and first_numbers == last_numbers
@@ -594,13 +811,14 @@ class StructureService:
             raise AppError("STRUCTURE_PARSE_FAILED", f"ASE could not parse {path.name}: {exc}", 400) from exc
 
         return StructureSummary(
-            n_frames=n_frames,
+            n_frames=effective_frames,
             n_atoms=_frame_atom_count(first_frame),
             last_atoms=last_frame if isinstance(last_frame, Atoms) else None,
             last_frame_data=last_frame if isinstance(last_frame, FrameData) else None,
             topology_stable=topology_stable,
             detected_format=detected_format,
-            fast_native_index=FastNativeIndex(n_frames=n_frames, detected_format=detected_format),
+            fast_native_index=FastNativeIndex(n_frames=effective_frames, detected_format=detected_format),
+            file_incomplete=file_incomplete,
         )
 
     def _native_frame_count(self, path: Path, detected_format: str) -> int:
@@ -2120,6 +2338,10 @@ class StructureService:
             for atoms in iterator:
                 self._validate_atoms(atoms, path)
                 frames.append(atoms)
+                # Some ASE readers do not honor the requested slice. Do not
+                # accumulate the whole trajectory before applying the budget.
+                if len(frames) >= count:
+                    break
         except Exception:
             frames = []
 
@@ -2134,6 +2356,8 @@ class StructureService:
                     break
                 self._validate_atoms(atoms, path)
                 frames.append(atoms)
+                if len(frames) >= count:
+                    break
         except Exception as exc:
             raise AppError("STRUCTURE_PARSE_FAILED", f"ASE could not parse {path.name}: {exc}", 400) from exc
 

@@ -59,6 +59,14 @@ release/
 - 使用发行包的用户不需要安装 Node.js
 - 随包提供 `constraints-oldlinux.txt`，供旧版 Linux 用户规避 glibc 兼容问题（见下文）
 
+## latest.json（供 launcher 一键安装/更新）
+
+打包脚本最后一步会调用 `packaging/make_latest_json.py`，在 `release/` 下生成 `latest.json`，内容包括版本、tag、两个压缩包的 sha256 和 `deps_fingerprint`。
+
+- `deps_fingerprint` 由 `pyproject.toml` 的 `dependencies`、`requires-python`、`[project.scripts]` 和 `constraints-oldlinux.txt` 计算。指纹不变时，launcher 只覆盖程序文件，不重装依赖。
+- 创建 GitHub Release 时必须把 `latest.json` 一并上传（脚本末尾的上传命令已包含），launcher 通过 `releases/latest/download/latest.json` 读取它。
+- 压缩包顶层目录必须保持为 `chemssh-<version>/`，launcher 依赖这个布局。
+
 ## 打包前检查
 
 - [ ] `backend/app/__init__.py` 中的版本号正确

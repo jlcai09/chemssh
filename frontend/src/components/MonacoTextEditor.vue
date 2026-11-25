@@ -85,6 +85,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
+  save: []
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
@@ -165,6 +166,16 @@ onMounted(async () => {
   editor.onDidChangeModelContent(() => {
     if (!editor || syncing) return
     emit('update:modelValue', editor.getValue())
+  })
+
+  // 在 Monaco 内拦截 Ctrl/Cmd+S，避免浏览器弹出“保存网页”对话框。
+  editor.addAction({
+    id: 'chemssh.save-file',
+    label: 'Save',
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
+    run: () => {
+      emit('save')
+    }
   })
 })
 

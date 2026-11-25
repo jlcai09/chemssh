@@ -158,13 +158,15 @@ CLI 参数：
 }
 ```
 
+预览面板的文本编辑器使用 Monaco：进入编辑模式后工具栏保存按钮与 `Ctrl/Cmd+S` 走同一个保存事件（`FilePreview` 的 `save`），快捷键在 Monaco 内部注册并拦截，不会触发浏览器“保存网页”；未进入编辑模式或内容未修改时快捷键不执行保存。
+
 ### 压缩与解压
 
-后端用 `backend/app/services/archive_service.py` 生成命令计划，`FileService` 负责校验路径并在文件所在目录里执行。工具能力由 `shutil.which` 探测（`tar` / `zstd` / `gzip` / `xz`），只有探测到的工具才会出现在右键菜单里。
+后端用 `backend/app/services/archive_service.py` 生成命令计划，`FileService` 负责校验路径并在文件所在目录里执行。工具能力由 `shutil.which` 探测（`tar` / `zstd` / `gzip` / `xz` / `zip` / `unzip` / `7z`），只有探测到的工具才会出现在右键菜单里。
 
-- `GET /api/files/archive-tools`：返回 `{"tar":true,"zstd":true,"gzip":false,"xz":false,"formats":["tar.zst","tar"]}`；`formats` 是可直接使用的压缩格式。
-- `POST /api/files/compress`：`{"paths":[...],"target_directory":"/workspace/project","format":"tar.zst"}`。所有路径必须是当前目录的直接子项；压缩包命名固定为 `archive.<format>`，已存在时依次追加 `_new`（`archive_new.tar.zst`、`archive_new_new.tar.zst`……），绝不覆盖。`tar.zst` 走两步：先 `tar -cf` 生成临时 tar（`.chemssh-archive-<token>.tar`），再 `zstd -1 -f` 压缩，最后删除临时文件；`-1` 是最低压缩档。`tar.gz` / `tar.xz` / `tar` 各用一条 `tar` 命令。
-- `POST /api/files/extract`：`{"path":"/workspace/project/archive.tar.zst","target_directory":"/workspace/project"}`。按后缀判断格式（`.tar.zst`/`.tzst`/`.tar.gz`/`.tgz`/`.tar.xz`/`.txz`/`.tar`/`.zst`/`.gz`/`.xz`，最长后缀优先），缺少对应工具时返回 `ARCHIVE_FORMAT_UNAVAILABLE`；`target_directory` 省略时解压到压缩包所在目录。单文件格式（`.gz`/`.xz`/`.zst`）解压结果写在压缩包旁边。
+- `GET /api/files/archive-tools`：返回 `{"tar":true,"zstd":true,"gzip":false,"xz":false,"zip":true,"unzip":true,"seven_zip":false,"formats":["tar.zst","tar","zip"]}`；`formats` 是可直接使用的压缩格式。`zip` 表示打包工具、`unzip` 表示解压 `.zip` 的工具，`seven_zip` 对应 `7z`（打包与解压共用）。
+- `POST /api/files/compress`：`{"paths":[...],"target_directory":"/workspace/project","format":"tar.zst"}`。所有路径必须是当前目录的直接子项；只选单个文件或文件夹时，压缩包以原始名称加格式后缀命名（如 `notes.txt.tar.zst`、`data.zip`）；选中多个时使用 `archive.<format>`。已存在时依次追加 `_new`（`notes.txt_new.tar.zst`、`archive_new.zip`……），绝不覆盖。`tar.zst` 走两步：先 `tar -cf` 生成临时 tar（`.chemssh-archive-<token>.tar`），再 `zstd -1 -f` 压缩，最后删除临时文件；`-1` 是最低压缩档。`tar.gz` / `tar.xz` / `tar` 各用一条 `tar` 命令；`zip` 用 `zip -r`，`7z` 用 `7z a -y`。
+- `POST /api/files/extract`：`{"path":"/workspace/project/archive.tar.zst","target_directory":"/workspace/project"}`。按后缀判断格式（`.tar.zst`/`.tzst`/`.tar.gz`/`.tgz`/`.tar.xz`/`.txz`/`.tar`/`.zst`/`.gz`/`.xz`/`.zip`/`.7z`，最长后缀优先），缺少对应工具时返回 `ARCHIVE_FORMAT_UNAVAILABLE`；`target_directory` 省略时解压到压缩包所在目录。单文件格式（`.gz`/`.xz`/`.zst`）解压结果写在压缩包旁边。`.zip` 用 `unzip -o`，`.7z` 用 `7z x -y`。
 
 执行失败返回 `ARCHIVE_FAILED`，正文带上命令与该命令 stderr 的前 500 字节；超时上限 600 秒（`ARCHIVE_TIMEOUT`）。命令一律以 argv 形式执行，不经过 shell，因此文件名里的空格和符号不会被解释。
 
@@ -312,6 +314,8 @@ CLI 参数：
 
 常见错误码包括 `PATH_NOT_FOUND`、`DIRECTORY_NOT_FOUND`、`PATH_EXISTS`、`COPY_INTO_SELF`、`COPY_SAME_PATH`、`COPY_TYPE_CONFLICT`、`COPY_WORKSPACE_ROOT` 和 `COPY_FAILED`。前端封装：`copyPaths(paths, targetDirectory, entries)`，定义在 `frontend/src/api/files.ts`。
 
+同目录复制时选择“添加 `.new` 后缀”，文件或目录会生成同级副本；若 `.new` 名称已存在，则继续追加 `.new`，不覆盖已有项目。直接覆盖源项目自身仍返回 `COPY_SAME_PATH`。`copyPaths()` 与 `movePaths()` 接收的前端条目字段为 `targetName`，发送请求时必须转换为后端的 `items[].target_name`，不能直接序列化前端条目。
+
 ### `GET /api/files/tail?path=/workspace/project/slurm-123.out&lines=300`
 
 读取日志类文件末尾 N 行，适合 `.log`、`.out`、`slurm-*.out`、`OUTCAR`、`OSZICAR` 等。
@@ -402,7 +406,7 @@ GET /api/chemssh-bridge/open-sync-events?after=<lastSeq>
 
 ### `GET /api/structures/ase/preview?path=/workspace/project/mol.xyz&force=false`
 
-读取结构摘要和初始帧。大文件会返回 `STRUCTURE_FILE_TOO_LARGE`，用户确认后前端可用 `force=true` 重试。`XDATCAR` 预览可先返回尾部快速解析出的最后一帧，此时 `scan_completed=false` 表示后端尚未建立完整随机访问索引；后续 `/frame`、`/frames.bin` 和 XDATCAR 的 `/frames.stream` 会要求完整 summary 并按需重扫建立索引。普通固定步长 XYZ 的 `/frames.stream` 可复用快速 summary，先按稳定帧跨度推送二进制块，避免最后一帧已显示但缓存进度延迟启动。
+读取结构摘要和初始帧。大文件会返回 `STRUCTURE_FILE_TOO_LARGE`，用户确认后前端可用 `force=true` 重试。`XDATCAR` 预览可先返回尾部快速解析出的最后一帧，此时 `scan_completed=false` 表示后端尚未建立完整随机访问索引；后续 `/frame`、`/frames.bin` 和 XDATCAR 的 `/frames.stream` 会要求完整 summary 并按需重扫建立索引。普通固定步长 XYZ 的 `/frames.stream` 可复用快速 summary，先按稳定帧跨度推送二进制块，避免最后一帧已显示但缓存进度延迟启动。不能确认固定帧跨度的快速 XYZ 摘要，以及没有完整索引的 EXTXYZ 摘要，会在 SSE 推送前补全扫描，避免把估算帧数误当成已完成的精确帧数。
 
 响应包含 `warnings: string[]`，用于提示可预览但可能不完整或不适合作为结构源的情况。当前已定义：
 
@@ -420,7 +424,11 @@ GET /api/chemssh-bridge/open-sync-events?after=<lastSeq>
 
 ### `GET /api/structures/ase/frames.bin?path=/workspace/project/traj.xyz&start=0&count=32&force=false`
 
-读取轨迹二进制帧块。
+读取轨迹二进制帧块。`count` 是请求上限，不保证返回这么多帧；调用方必须使用 CWB1 header 的 `start` / `count` 推进，不能按请求 count 跳到下一块。JSON `/ase/frames` 同样以响应的 `count` 和 `frames` 为准。
+
+`viewer.ase.max_chunk_size_mb` 默认 8，允许 1–64 MiB；与 `binary_chunk_frames` 一起限制块大小。固定拓扑使用摘要原子数估算，可变拓扑或未知摘要使用 `max_atoms` 保守估算；二进制按每原子 32 字节、JSON 按每原子 256 字节、每帧另加 256 字节计算。至少允许一帧，因此单帧可能超过该预算；这不是进程 RSS 或响应长度的硬上限，原子数限制仍有效。
+
+内置结构接口及队列 VASP 统计最多同时处理两个普通请求，另有两个独立的 SSE 名额，名额保持至响应发送结束；慢流不会占用普通读取名额。该限制不覆盖插件自定义接口，也不跨后端进程共享。
 
 `preview.transport` 在多帧轨迹且启用 `prefer_binary` 时返回 `binary-available`；前端据此决定是否预加载二进制帧块。拓扑稳定的轨迹走固定步长 `CWB1` 子格式，拓扑不稳定（每帧原子数或元素顺序不同）的轨迹走 `variable-atoms-v1` 子格式。
 
@@ -487,7 +495,7 @@ XSD 周期结构会优先走后端快速解析器。解析器读取 `Atom3d XYZ`
 - 原格式：通过 `/api/files/download` 下载当前文件。
 - 当前帧 XYZ：从当前显示帧生成 XYZ/extxyz；有固定原子时写入 `fixed:I:1` 列。
 - 当前帧 XSD：从当前显示帧生成 Materials Studio XSD，保留 `RestrictedBy`、`RestrictedProperties="FractionalXYZ"` 和 `CompleteRestriction` 固定信息。
-- 整个轨迹 XYZ / Arc：仅轨迹文件显示，导出已加载或按需读取的全部帧。
+- 整个轨迹 XYZ / Arc：仅轨迹文件显示，逐帧读取和格式化，不收集全部帧。浏览器支持 `showSaveFilePicker` 时直接写文件流；否则只允许最多 64 MiB 的编码后 Blob 缓冲，超限明确提示改用原文件下载或支持文件流的浏览器。读取失败或取消会中止导出，不跳过失败帧生成不完整轨迹；切换结构或关闭窗口会取消当前导出。
 
 `frontend/src/api/structures.ts` 也提供通用 `StructureSource` 版本的读取函数。ASE 是默认数据源：
 
@@ -519,7 +527,7 @@ SSE (Server-Sent Events) 长连接端点，后端持续推送二进制帧块，�
   - `path` (必填): 工作区相对路径
   - `format` (可选): 文件格式
   - `force` (可选, 默认 `false`): 跳过大文件保护
-  - `chunk` (可选, 默认 `32`, 范围 1–512): 每个事件包含的帧数
+  - `chunk` (可选, 默认 `32`, 范围 1–512): 每个事件请求的帧数上限，实际数量还受配置和字节预算限制
 - **响应头**:
   - `Cache-Control: no-cache`
   - `X-Accel-Buffering: no`（防止反向代理缓冲）
@@ -539,13 +547,82 @@ Debug 诊断事件类型仅在后端以 `--debug` 启动，或配置 `server.deb
 | `ready` | `{"t_resolve_ms": <number>, "t_scan_ms": <number>, "total_frames": <int>, "chunk_size": <int>, "server_emit_ms": <number>}` | 轨迹解析前置统计和总帧数 |
 | `meta` | `{"start": <int>, "count": <int>, "t_pack_ms": <number>, "t_b64_ms": <number>, "server_emit_ms": <number>, "size_b64": <int>, "profile": <object>}` | 紧跟在每个 `chunk` 前，包含后端打包和 profiling 明细 |
 
-后端在客户端断连时自动取消剩余块的计算（通过 `request.is_disconnected()` 轮询检测）。当客户端请求头包含 `Accept-Encoding: br` 时，BrotliMiddleware 会对 `text/event-stream` 使用 Brotli `quality=1` 做真正流式压缩：每个 SSE body chunk 经 `process()` 后立即 `flush()`，响应保留 SSE 协议但设置 `Content-Encoding: br`，不设置 `Content-Length`，避免为压缩而缓冲完整轨迹。
+后端按每块实际返回的 count 连续推进；空块、错位块或打包错误发送 `error` 后结束，不再发送 `done`。Debug 的 `ready.chunk_size` 是预算裁剪后的上限，`meta.count` 是该块实际帧数。客户端断连后停止安排后续块，并在生成器退出时取消、等待断连监视任务；当前已经开始的同步解析需要完成或到达协作式取消检查点，并非强行终止线程。
+
+当客户端接受 `br` 时，BrotliMiddleware 对 SSE 及其他可压缩的多块响应逐块 `process()` / `flush()`，删除 `Content-Length`；普通单体响应保留压缩后的准确长度。ZIP、不可压缩类型、已有 `Content-Encoding`、204/206/304 直接透传原始消息，不累积完整内容；HEAD 或拒绝 Brotli 的请求不改变响应。
 
 `meta.profile` 用于开发 profiling，字段可能按实现扩展；当前包含 `read_frame_range_ms`、`build_payload_total_ms`、`normalize_frame_data_ms`、`normalize_atoms_ms`、`topology_check_ms`、`array_fill_ms`、`add_array_tobytes_ms`、`header_json_ms`、`payload_join_ms`、`payload_bytes`、`safe_count`、`read_path`、`topology`。业务前端不应依赖这些字段做渲染逻辑，开发测试页可用它们定位后端瓶颈。
 
-前端封装：`frontend/src/api/structures.ts` 的 `streamStructureFrames()` 创建 EventSource 并处理 SSE 事件，`onChunk` 回调直接调用 `parseStructureBinaryChunk()` 解码。`MoleculeViewer.vue` 的 `streamBinaryTrajectoryFrames()` 负责调度：对 `transport === 'binary-available'` 的轨迹优先走 SSE，每个 `chunk` 事件到达后立即写入 store/cache 并更新帧计数。
+前端封装：`frontend/src/api/structures.ts` 的 `streamStructureFrames()` 创建 EventSource 并处理 SSE 事件，`onChunk` 回调直接调用 `parseStructureBinaryChunk()` 解码。单帧、JSON 块和二进制块读取函数的末尾参数均支持 `{ signal?: AbortSignal }`。
+
+`MoleculeViewer.vue` 使用单窗口 64 MiB、页面共享 256 MiB 的估算缓存预算。固定拓扑且预算足够时保留 dense store 和 SSE 预取；超预算、JSON 或可变拓扑使用有限邻域读取与按字节计费的 LRU，不全量预取。当前显示帧可以不放入缓存，作为单帧例外；初始预览对象、临时解码、渲染/GPU 内存不包含在缓存预算内。缓存/图表表示驻留或已缓存数据，不代表整条轨迹的完整统计。
+
+前台跳帧从目标索引发起请求，并使用响应实际 count 判断覆盖；旧请求在切换目标、结构或卸载时取消并通过代次隔离。后台块只有覆盖当前显示帧时才触发当前场景更新。主动关闭 SSE 与自然 done/error 都会收束连接，不依赖额外轮询定时器。
 
 兼容接口扩展：插件如需 SSE 推送，可注册 `GET {apiBase}/frames.stream` 端点，遵循相同的 SSE 事件协议。
+
+### `POST /api/structures/ase/fragments`
+
+用于复杂结构与轨迹预览中的高速连通片段分析、化学式匹配、半径壳层选择以及按完整分子周期性包裹（Whole-Molecule Wrap）。后端使用 `ase.neighborlist.primitive_neighbor_list`（PBC）或 `scipy.spatial.cKDTree`（非 PBC）加 `scipy.sparse.csgraph.connected_components` 计算，并按 `(path, mtime_ns, size, frame_index, bond_scale, use_pbc)` 做线程安全 LRU 缓存。
+
+请求体（`AseFragmentRequest`）：
+
+```json
+{
+  "path": "/workspace/project/traj.extxyz",
+  "format": null,
+  "force": false,
+  "frame_index": 0,
+  "bond_scale": 1.25,
+  "seed_atoms": [0],
+  "mode": "connected",
+  "use_pbc": true,
+  "radius": 3.5,
+  "expand_fragments": true
+}
+```
+
+- `mode`:
+  - `"connected"`：选中与 `seed_atoms` 相连的全部连通片段（支持跨周期性边界成键）。
+  - `"same_formula"`：选中整帧中与 `seed_atoms` 所属片段具有相同 Hill 化学式的全部连通片段（适合一键选中体相溶剂）。
+  - `"within_radius"`：选中距离 `seed_atoms` 不超过 `radius`（Å，周期性体系自动采用最小镜像距离）的原子；`expand_fragments=true` 时扩展为完整连通片段。
+  - `"whole_molecule_wrap"`：沿 PBC 连通边展开每个连通片段并将片段质心包裹回 `[0, 1)^3` 晶胞，在响应中返回 `wrapped_positions`。
+
+响应体（`AseFragmentResponse`）：
+
+```json
+{
+  "frame_index": 0,
+  "mode": "same_formula",
+  "atom_indices": [1, 2, 3, 4, 5, 6],
+  "fragment_count": 2,
+  "formulas": ["H2O"],
+  "wrapped_positions": null
+}
+```
+
+前端封装：`frontend/src/api/structures.ts` 的 `queryStructureFragments(source, payload, options?)`。
+
+### `POST /api/structures/ase/dynamic-display`
+
+每帧动态显示规则批量求值接口，复用后端 `FragmentGraph` LRU 缓存，在单次请求中按规则列表顺序叠加求值并返回整帧逐原子显示模式编码（`0=stick, 1=sphere, 2=line, 3=dim, 4=hidden`），适用于溶剂/溶质原子交换、质子转移、溶剂化壳层进出与界面切片等复杂轨迹预览场景。
+
+支持 6 类动态规则（`DynamicDisplayRule.type`）：
+- `"formula"`：按当前帧连通片段的 Hill 化学式匹配（如 `["H2O"]`）。
+- `"shell"`：按距离指定元素或锚点原子的最小镜像半径壳层匹配，支持 `outside`（半径外）与 `expand_fragments`（扩展为完整片段）。
+- `"coordination"`：按当前帧配位数（`eq`/`ne`/`lt`/`le`/`gt`/`ge`）及可选元素过滤。
+- `"slice"`：按 X/Y/Z 笛卡尔或分数坐标区间匹配，支持 `outside` 与 `expand_fragments`。
+- `"minority"`：按化学式原子数占比 `<= max_fraction` 匹配非常规/反应物种，`invert=true` 时改为匹配主流背景溶剂。
+- `"element_fixed"`：按元素集合及/或固定约束（`fixed_only`）匹配。
+
+响应体（`AseDynamicDisplayResponse`）包含 `frame_index`、`atom_modes: number[]`、`rule_match_counts: Record<string, number>` 与 `available_formulas: string[]`。
+
+前端封装：`frontend/src/api/structures.ts` 的 `evaluateStructureDynamicDisplay(source, payload, options?)`。
+
+结构预览器交互约定：
+- 右键原地单击（位移 ≤ 4px）唤出上下文菜单，**不自动改变当前选区**；右键拖拽超过 4px 正常进入视角旋转。
+- 菜单文案全部通过 `frontend/src/i18n.ts` 跟随当前语言状态。
+- 逐原子显示模式（`stick` / `sphere` / `line` / `dim` / `hidden`）与选区均按原胞原子索引存储，在多帧切换与超胞调整时保留；当画面存在多种显示方式、弱化或隐藏原子时，左上角全局模式选项卡自动熄灭，再次点击任一选项卡将全部原子重置为该模式。
 
 ## 插件
 
@@ -723,11 +800,13 @@ Debug 诊断事件类型仅在后端以 `--debug` 启动，或配置 `server.deb
 
 前端封装：`frontend/src/api/queue.ts`。
 
-队列窗口默认自动刷新间隔为 60 秒，用户修改后的间隔保存到 client preferences 的 `queue.refreshSeconds`。搜索框内容只做前端内存缓存（`frontend/src/api/queueSearchCache.ts`，按窗口 key 区分）：侧栏切换标签页会卸载并重建队列窗口，重建后恢复上次输入；该缓存不写入 client preferences 或服务端设置，刷新页面即清空。
+队列窗口默认自动刷新间隔为 60 秒，用户修改后的间隔保存到 client preferences 的 `queue.refreshSeconds`。搜索框内容保存到 `queue.search`：侧栏切换标签页会卸载并重建队列窗口，重建后恢复上次输入；刷新页面或重启后仍生效。工作台侧栏队列与画板队列窗口共用同一个搜索值。
 
 队列窗口的显示模式由刷新按钮右侧的设置按钮切换：`初始模式` 与 `VASP 模式`，选择保存到 client preferences 的 `queue.mode`（`default` / `vasp`）。VASP 模式下先照常显示队列基础内容，再按“当前筛选出的作业 → 其余作业”的顺序分批调用 `POST /api/queue/vasp-stats`，在作业表“名称”后增加 `步数` 与 `fmax` 两列；解析中的单元格显示 `…`，无 WorkDir 或无法解析显示 `—`。
 
 作业状态筛选位于漏斗按钮内：`RUNNING` / `PENDING` / `HELD` / `FAILED` 四个复选框，默认全部勾选（全部勾选等同不过滤；取消勾选后只显示匹配已选状态的作业）。
+
+队列数据会同步写入前端共享快照 `frontend/src/stores/queueJobs.ts`（`publishQueueJobs`，队列窗口每次刷新后更新，同时记录 `scheduler`）。终端窗口据此在右上角全屏按钮下方显示半透明作业悬浮窗：当前活动终端的 `cwd` 与作业 `workdir` 规范化后完全相同时，列出这些作业的 ID；没有匹配作业时不显示。悬浮窗右侧的下拉箭头提供作业操作：SLURM 显示 `hold` / `release` / `scancel`，PBS 显示 `qhold` / `qrls` / `qdel`，确认后对该目录下所有匹配作业执行，并强制刷新队列快照。终端在快照超过 60 秒未更新时自行调用一次 `GET /api/queue/list?current_user_only=true` 兜底（共享去重），因此队列窗口未打开时该悬浮窗仍能工作。
 
 ## 作业提交
 
@@ -766,8 +845,11 @@ X-ChemSSH-Client-Id: client_xxx
 WebSocket 连接使用 query 参数。启用 token 鉴权时还必须带 `token` 或先有有效 `chemssh_token` cookie：
 
 ```text
-/api/terminal/ws/{session_id}?client_id=client_xxx&token=...
+/api/terminal/ws/{session_id}?client_id=client_xxx&binary=1&token=...
 ```
+
+- 传入 `binary=1` 时，服务端终端普通输出直接以 Binary WebSocket 帧（原始 UTF-8 字节）发送，控制消息（`cwd`、`command_done`、`transfer_request`、`error`、`exit`）仍以 JSON Text 帧发送；不传 `binary=1` 时保持原有 JSON `{"type": "output", "data": ...}` 文本帧格式，向后兼容。
+- 客户端发送 Binary 帧时，服务端直接按 UTF-8 解码写入 PTY（零 JSON 序列化）；仍兼容原有 JSON `{"type": "input", "data": ...}` 消息。
 
 后端只会列出、关闭、连接当前 client id 拥有的终端会话。`terminal.max_sessions` 是每个 client id 的上限，不是全局上限。client id 只用于会话隔离，不代表用户身份或安全认证。
 
@@ -1021,7 +1103,8 @@ X-ChemSSH-Client-Id: client_xxx
   },
   "queue": {
     "refreshSeconds": 60,
-    "mode": "default"
+    "mode": "default",
+    "search": ""
   },
   "workspace": {
     "fileTreeWidth": 360,
@@ -1055,6 +1138,7 @@ X-ChemSSH-Client-Id: client_xxx
 - `logs.tailCollapsed`：工作台 tail 窗口是否收起，默认展开。
 - `queue.refreshSeconds`：队列窗口自动刷新间隔（秒），默认 60。
 - `queue.mode`：队列窗口显示模式，`default`（初始模式）或 `vasp`（VASP 模式）。
+- `queue.search`：队列窗口搜索框内容，默认空字符串；刷新页面、重启后恢复。
 - `theme.animatedBackdrop`：是否启用全屏动态背景。
 - `theme.glassBlur`：是否启用毛玻璃背景模糊。
 
@@ -1281,7 +1365,8 @@ function handleDrop(event: DragEvent) {
 - 文件管理器 -> 插件结构 provider：如果插件 UI 已加载并注册 active preview provider，文件管理器可先调用插件 `probe`，匹配成功后把插件 `StructureSource` 和文件路径发送到现有预览窗口。画板预览窗口同样支持插件 preview provider：`CanvasPluginWindow.vue` 接管插件注册/注销消息并上报 `CanvasBoard.vue`，画板通过共享的 `previewProviders` 状态把 provider 传递给 `CanvasFileManagerWindow.vue` 和 `CanvasPreviewWindow.vue`。预览窗口打开文件时会先尝试 resolve 匹配的 provider，命中后使用 provider 的 `StructureSource` 替代默认 ASE 数据源。
 - 文件管理器图标：已加载插件注册 active preview provider 后，文件列表会用 `accepts.extensions`、`accepts.filenames`、`accepts.preview_types` 做轻量匹配；匹配到的文件显示与结构文件一致的小眼睛图标。列表渲染阶段不调用 `probe`，真实可预览性仍在双击打开时确认。
 - 文件管理器 -> 新模块：默认读取 `application/x-chemssh-files`。如果模块只需要路径，使用 `payload.paths`；如果需要判断结构/文本/目录，使用 `payload.items[*].preview_type` 和 `type`。
-- 文件管理器右键菜单：用本地程序打开、用记事本打开、复制当前选择的第一个绝对路径到剪贴板；右键未选中项时先选中该项再复制。分隔线之后是「复制 / 压缩 / 解压 / 重命名 / 删除」：重命名只对单选可用，删除作用于整个选择，二者都复用工具栏的 `promptRename` / `confirmDelete`；「复制」把当前选择写入内存剪贴板 `frontend/src/stores/fileClipboard.ts`；「压缩」的二级菜单只列出本机已安装工具对应的格式（`tar.zst`、`tar.gz`、`tar.xz`、`tar`），「解压」仅在单选一个后缀可识别且工具齐全的文件时可用。
+- 文件管理器右键菜单：用本地程序打开、用记事本打开、复制当前选择的第一个绝对路径到剪贴板；右键未选中项时先选中该项再复制。分隔线之后是「复制 / 压缩 / 解压 / 重命名 / 删除」：重命名只对单选可用，删除作用于整个选择，二者都复用工具栏的 `promptRename` / `confirmDelete`；「复制」把当前选择写入内存剪贴板 `frontend/src/stores/fileClipboard.ts`；「压缩」的二级菜单只列出本机已安装工具对应的格式（`tar.zst`、`tar.gz`、`tar.xz`、`tar`、`zip`、`7z`），「解压」仅在单选一个后缀可识别且工具齐全的文件时可用。
+- 文件列表键盘焦点：从空白区域开始框选时，`FileTree` 显式聚焦可程序聚焦的列表主体（`tabindex="-1"`，`preventScroll: true`），确保从终端切回后第一次按 Delete 就能对当前多选弹出删除确认。主体仅处理自身的 keydown，文件行沿用行级处理，避免冒泡重复触发；不添加全局 Delete 监听，终端和输入框保留各自按键行为。
 - 文件管理器空白处右键菜单：`FileTree` 在根元素拦截 `contextmenu`，对 `.file-row` 以外的目标发出 `blank-context-menu` 事件（行内右键仍走行菜单），因此不再弹出浏览器自带菜单。菜单项为「全选 / 刷新 / 粘贴 / 复制文件夹路径 / 新建（二级菜单：新建文件夹、新建文件）」；「粘贴」用 `prepareMoveEntries` + `promptCopyConflict` 处理同名冲突后调用 `copyPaths`，把剪贴板里的文件复制到当前目录，所以可以先复制、切换目录再粘贴；剪贴板是跨窗口共享的，工作台与画板文件管理窗口之间同样可以粘贴。
 - 文件管理器键盘操作（`FileTree.vue`，事件挂在行上，多实例互不干扰）：`↑`/`↓`、`Home`/`End`、`PageUp`/`PageDown` 移动焦点（带 `Shift` 扩展选择、带 `Ctrl/Cmd` 只移动焦点），`Space` 切换当前行，`Ctrl/Cmd+A` 全选，`Esc` 清空选择，`Enter` 打开，`Delete` 触发 `delete` 事件交给父级确认删除。
 - 文件管理器选择收敛：多选后普通单击其中一个已选行，会在 `click` 阶段把选择收敛为该行（`pendingSelectionCollapse`）；`mousedown` 阶段不收敛，保证拖拽整组、长按拖出仍然作用于全部选择。拖拽、Ctrl/Shift 选区和清空选择都会清掉该标记。

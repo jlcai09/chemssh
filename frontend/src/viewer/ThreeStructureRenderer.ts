@@ -28,7 +28,41 @@ import {
   type Object3D
 } from 'three'
 import { elementFromNumber, elementColor, covalentRadius } from './elements'
-import type { ViewerStyle } from './types'
+import type { AtomDisplayMode, ViewerStyle, ViewerStyleMode } from './types'
+
+export const ATOM_MODE_STICK = 0
+export const ATOM_MODE_SPHERE = 1
+export const ATOM_MODE_LINE = 2
+export const ATOM_MODE_DIM = 3
+export const ATOM_MODE_HIDDEN = 4
+
+export function atomDisplayModeToCode(mode: AtomDisplayMode): number {
+  switch (mode) {
+    case 'sphere':
+      return ATOM_MODE_SPHERE
+    case 'line':
+      return ATOM_MODE_LINE
+    case 'dim':
+      return ATOM_MODE_DIM
+    case 'hidden':
+      return ATOM_MODE_HIDDEN
+    default:
+      return ATOM_MODE_STICK
+  }
+}
+
+export function styleModeToCode(mode: ViewerStyleMode): number {
+  if (mode === 'sphere') return ATOM_MODE_SPHERE
+  if (mode === 'line') return ATOM_MODE_LINE
+  return ATOM_MODE_STICK
+}
+
+export function codeToStyleMode(code: number): ViewerStyleMode | null {
+  if (code === ATOM_MODE_STICK) return 'stick'
+  if (code === ATOM_MODE_SPHERE) return 'sphere'
+  if (code === ATOM_MODE_LINE) return 'line'
+  return null
+}
 
 type Vec3 = [number, number, number]
 type CellCopies = { x: number; y: number; z: number }
@@ -78,6 +112,18 @@ export class ThreeStructureRenderer {
   private readonly selectionGeometry = new SphereGeometry(1, 12, 8)
   private readonly bondGeometry = new CylinderGeometry(1, 1, 1, 12, 1)
   private readonly bondMaterial = new MeshBasicMaterial({ color: 0x596575 })
+  private readonly dimBondMaterial = new MeshBasicMaterial({
+    color: 0x8e9aa8,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false
+  })
+  private readonly dimAtomMaterial = new MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.30,
+    depthWrite: false
+  })
   private readonly cellMaterial = new LineBasicMaterial({ color: 0x8b99a6, transparent: true, opacity: 0.78 })
   private readonly lightAtomOutlineMaterial = new MeshBasicMaterial({ color: 0x465568, side: BackSide })
   private readonly selectionBackMaterial = new MeshBasicMaterial({ color: 0x0b0f14, side: BackSide })
@@ -90,9 +136,24 @@ export class ThreeStructureRenderer {
   private selectionPointCloud: Points | null = null
   private readonly selectionPointMaterial = createSelectionPointMaterial()
   private bondMesh: InstancedMesh | null = null
+  private dimBondMesh: InstancedMesh | null = null
   private cellLines: LineSegments | null = null
   private frame: RenderAtomFrame | null = null
   private bonds: RenderBond[] = []
+  private atomModes: Uint8Array | null = null
+  private cachedAtomGroups: Array<{
+    symbol: string
+    indices: number[]
+    mesh: InstancedMesh
+    outlineMesh: InstancedMesh | null
+    outlineScale: number
+    fixedAttr: InstancedBufferAttribute
+  }> = []
+  private cachedDimGroup: { indices: number[]; mesh: InstancedMesh } | null = null
+  private cachedAtomNAtoms = 0
+  private cachedAtomSymbolHash = 0
+  private cachedAtomPointCloud = false
+  private atomLayoutDirty = true
   private style: RendererStyle
   private fixedMarkersVisible = true
   private selectedAtoms: readonly number[] = []
@@ -160,10 +221,25 @@ export class ThreeStructureRenderer {
     }
   }
 
-  setStructure(frame: RenderAtomFrame | null, bonds: RenderBond[], center: Vec3) {
+  setStructure(
+    frame: RenderAtomFrame | null,
+    bonds: RenderBond[],
+    center: Vec3,
+    atomModes?: Uint8Array | null,
+    selectedAtoms?: readonly number[]
+  ) {
     this.frame = frame
     this.bonds = bonds
     this.center = center
+    if (atomModes !== undefined) {
+      if (this.atomModes !== atomModes) {
+        this.atomModes = atomModes
+        this.atomLayoutDirty = true
+      }
+    }
+    if (selectedAtoms !== undefined) {
+      this.selectedAtoms = selectedAtoms
+    }
     this.updateAtoms()
     this.updateBonds()
     this.updateCell()
@@ -220,11 +296,22 @@ export class ThreeStructureRenderer {
     this.updateSelection()
   }
 
+  setAtomModes(modes: Uint8Array | null) {
+    if (this.atomModes === null && modes === null) return
+    this.atomModes = modes
+    this.atomLayoutDirty = true
+    this.updateAtoms()
+    this.updateBonds()
+    this.updateSelection()
+  }
+
   render() {
     this.renderer.render(this.scene, this.camera)
   }
 
   clear() {
+    this.atomModes = null
+    this.atomLayoutDirty = true
     this.setStructure(null, [], [0, 0, 0])
     this.render()
   }
@@ -234,6 +321,7 @@ export class ThreeStructureRenderer {
     for (const mesh of this.selectionMeshes) this.disposeObject(mesh)
     this.disposeObject(this.selectionPointCloud)
     this.disposeObject(this.bondMesh)
+    this.disposeObject(this.dimBondMesh)
     this.disposeObject(this.cellLines)
     for (const geometry of this.atomGeometries) geometry.dispose()
     this.selectionGeometry.dispose()
@@ -242,6 +330,8 @@ export class ThreeStructureRenderer {
     this.atomPointMaterial.dispose()
     this.selectionPointMaterial.dispose()
     this.bondMaterial.dispose()
+    this.dimBondMaterial.dispose()
+    this.dimAtomMaterial.dispose()
     this.cellMaterial.dispose()
     this.lightAtomOutlineMaterial.dispose()
     this.selectionBackMaterial.dispose()
@@ -249,24 +339,126 @@ export class ThreeStructureRenderer {
     this.renderer.dispose()
   }
 
-  private updateAtoms() {
+  private modeCodeForAtom(index: number): number {
+    if (this.atomModes && index >= 0 && index < this.atomModes.length) {
+      return this.atomModes[index] ?? ATOM_MODE_STICK
+    }
+    return styleModeToCode(this.style.mode)
+  }
+
+  private computeAtomSymbolHash(frame: RenderAtomFrame): number {
+    let hash = 2166136261 >>> 0
+    for (let i = 0; i < frame.nAtoms; i += 1) {
+      const num = frame.numbers[i] ?? 0
+      hash ^= num & 0xff
+      hash = Math.imul(hash, 16777619) >>> 0
+    }
+    return hash
+  }
+
+  private clearAtomMeshes() {
     for (const mesh of this.atomMeshes) this.disposeObject(mesh)
     for (const material of this.atomMaterials) material.dispose()
     this.disposeObject(this.atomPointCloud)
     this.atomPointCloud = null
     this.atomMeshes = []
     this.atomMaterials = []
-    const frame = this.frame
-    if (!frame?.nAtoms) return
+    this.cachedAtomGroups = []
+    this.cachedDimGroup = null
+    this.cachedAtomNAtoms = 0
+    this.cachedAtomSymbolHash = 0
+    this.cachedAtomPointCloud = false
+  }
 
-    if (this.shouldUseAtomPointCloud(frame.nAtoms)) {
+  private updateAtomsInPlace(frame: RenderAtomFrame) {
+    for (const group of this.cachedAtomGroups) {
+      const { symbol, indices, mesh, outlineMesh, outlineScale, fixedAttr } = group
+      const fixedFlags = fixedAttr.array as Float32Array
+      for (let instanceIndex = 0; instanceIndex < indices.length; instanceIndex += 1) {
+        const atomIndex = indices[instanceIndex]
+        const modeCode = this.modeCodeForAtom(atomIndex)
+        const radius = atomWorldRadiusForMode(symbol, modeCode, this.style)
+        fixedFlags[instanceIndex] = this.fixedMarkersVisible && frame.fixedMask?.[atomIndex] === 1 ? 1 : 0
+        const offset = atomIndex * 3
+        this.position.set(
+          (frame.positions[offset] ?? 0) - this.center[0],
+          (frame.positions[offset + 1] ?? 0) - this.center[1],
+          (frame.positions[offset + 2] ?? 0) - this.center[2]
+        )
+        this.scale.setScalar(radius)
+        this.matrix.compose(this.position, this.quaternion.identity(), this.scale)
+        mesh.setMatrixAt(instanceIndex, this.matrix)
+        if (outlineMesh) {
+          this.scale.setScalar(radius * outlineScale)
+          this.matrix.compose(this.position, this.quaternion, this.scale)
+          outlineMesh.setMatrixAt(instanceIndex, this.matrix)
+        }
+      }
+      if (outlineMesh) outlineMesh.instanceMatrix.needsUpdate = true
+      mesh.instanceMatrix.needsUpdate = true
+      fixedAttr.needsUpdate = true
+    }
+
+    if (this.cachedDimGroup) {
+      const { indices, mesh } = this.cachedDimGroup
+      for (let instanceIndex = 0; instanceIndex < indices.length; instanceIndex += 1) {
+        const atomIndex = indices[instanceIndex]
+        const symbol = frame.symbols[atomIndex] ?? elementFromNumber(frame.numbers[atomIndex]) ?? 'X'
+        const radius = atomWorldRadiusForMode(symbol, ATOM_MODE_DIM, this.style)
+        const offset = atomIndex * 3
+        this.position.set(
+          (frame.positions[offset] ?? 0) - this.center[0],
+          (frame.positions[offset + 1] ?? 0) - this.center[1],
+          (frame.positions[offset + 2] ?? 0) - this.center[2]
+        )
+        this.scale.setScalar(radius)
+        this.matrix.compose(this.position, this.quaternion.identity(), this.scale)
+        mesh.setMatrixAt(instanceIndex, this.matrix)
+      }
+      mesh.instanceMatrix.needsUpdate = true
+    }
+  }
+
+  private updateAtoms() {
+    const frame = this.frame
+    if (!frame?.nAtoms) {
+      this.clearAtomMeshes()
+      return
+    }
+
+    const usePointCloud = this.shouldUseAtomPointCloud(frame.nAtoms)
+    if (usePointCloud) {
+      this.clearAtomMeshes()
+      this.cachedAtomPointCloud = true
+      this.atomLayoutDirty = false
       this.updateAtomPointCloud(frame)
       return
     }
 
+    const symbolHash = this.computeAtomSymbolHash(frame)
+    if (
+      !this.atomLayoutDirty &&
+      !this.cachedAtomPointCloud &&
+      this.cachedAtomNAtoms === frame.nAtoms &&
+      this.cachedAtomSymbolHash === symbolHash &&
+      (this.cachedAtomGroups.length > 0 || this.cachedDimGroup !== null)
+    ) {
+      this.updateAtomsInPlace(frame)
+      return
+    }
+
+    this.clearAtomMeshes()
+
     const atomGeometry = this.atomGeometryForFrame(frame.nAtoms)
     const groups = new Map<string, number[]>()
+    const dimIndices: number[] = []
     for (let index = 0; index < frame.nAtoms; index += 1) {
+      const modeCode = this.modeCodeForAtom(index)
+      if (modeCode === ATOM_MODE_HIDDEN) continue
+      if (modeCode === ATOM_MODE_DIM) {
+        dimIndices.push(index)
+        continue
+      }
       const symbol = frame.symbols[index] ?? elementFromNumber(frame.numbers[index]) ?? 'X'
       const group = groups.get(symbol)
       if (group) group.push(index)
@@ -277,7 +469,8 @@ export class ThreeStructureRenderer {
       const color = elementColor(symbol)
       const geometry = atomGeometry.clone()
       const fixedFlags = new Float32Array(indices.length)
-      geometry.setAttribute('fixedFlag', new InstancedBufferAttribute(fixedFlags, 1))
+      const fixedAttr = new InstancedBufferAttribute(fixedFlags, 1)
+      geometry.setAttribute('fixedFlag', fixedAttr)
       const material = createAtomMaterial(color)
       const mesh = new InstancedMesh(geometry, material, indices.length)
       const outlineScale = lightAtomOutlineScale(symbol, color)
@@ -288,9 +481,10 @@ export class ThreeStructureRenderer {
         outlineMesh.instanceMatrix.setUsage(DynamicDrawUsage)
         outlineMesh.frustumCulled = false
       }
-      const radius = atomWorldRadius(symbol, this.style)
       for (let instanceIndex = 0; instanceIndex < indices.length; instanceIndex += 1) {
         const atomIndex = indices[instanceIndex]
+        const modeCode = this.modeCodeForAtom(atomIndex)
+        const radius = atomWorldRadiusForMode(symbol, modeCode, this.style)
         fixedFlags[instanceIndex] = this.fixedMarkersVisible && frame.fixedMask?.[atomIndex] === 1 ? 1 : 0
         const offset = atomIndex * 3
         this.position.set(
@@ -313,12 +507,47 @@ export class ThreeStructureRenderer {
         this.model.add(outlineMesh)
       }
       mesh.instanceMatrix.needsUpdate = true
-      const fixedAttribute = geometry.getAttribute('fixedFlag')
-      if (fixedAttribute) fixedAttribute.needsUpdate = true
+      fixedAttr.needsUpdate = true
       this.atomMeshes.push(mesh)
       this.atomMaterials.push(material)
+      this.cachedAtomGroups.push({ symbol, indices, mesh, outlineMesh, outlineScale, fixedAttr })
       this.model.add(mesh)
     }
+
+    if (dimIndices.length > 0) {
+      const dimMesh = new InstancedMesh(atomGeometry, this.dimAtomMaterial, dimIndices.length)
+      dimMesh.instanceMatrix.setUsage(DynamicDrawUsage)
+      dimMesh.frustumCulled = false
+      dimMesh.renderOrder = 2
+      const tempColor = new Color()
+      const grayTarget = new Color(0xcbd5e1)
+      for (let instanceIndex = 0; instanceIndex < dimIndices.length; instanceIndex += 1) {
+        const atomIndex = dimIndices[instanceIndex]
+        const symbol = frame.symbols[atomIndex] ?? elementFromNumber(frame.numbers[atomIndex]) ?? 'X'
+        const radius = atomWorldRadiusForMode(symbol, ATOM_MODE_DIM, this.style)
+        const offset = atomIndex * 3
+        this.position.set(
+          (frame.positions[offset] ?? 0) - this.center[0],
+          (frame.positions[offset + 1] ?? 0) - this.center[1],
+          (frame.positions[offset + 2] ?? 0) - this.center[2]
+        )
+        this.scale.setScalar(radius)
+        this.matrix.compose(this.position, this.quaternion.identity(), this.scale)
+        dimMesh.setMatrixAt(instanceIndex, this.matrix)
+        tempColor.set(elementColor(symbol)).lerp(grayTarget, 0.52)
+        dimMesh.setColorAt(instanceIndex, tempColor)
+      }
+      dimMesh.instanceMatrix.needsUpdate = true
+      if (dimMesh.instanceColor) dimMesh.instanceColor.needsUpdate = true
+      this.atomMeshes.push(dimMesh)
+      this.cachedDimGroup = { indices: dimIndices, mesh: dimMesh }
+      this.model.add(dimMesh)
+    }
+
+    this.cachedAtomNAtoms = frame.nAtoms
+    this.cachedAtomSymbolHash = symbolHash
+    this.cachedAtomPointCloud = false
+    this.atomLayoutDirty = false
   }
 
   private updateSelection() {
@@ -329,7 +558,9 @@ export class ThreeStructureRenderer {
     const frame = this.frame
     if (!frame?.nAtoms || !this.selectedAtoms.length) return
 
-    const valid = this.selectedAtoms.filter(index => Number.isInteger(index) && index >= 0 && index < frame.nAtoms)
+    const valid = this.selectedAtoms.filter(
+      index => Number.isInteger(index) && index >= 0 && index < frame.nAtoms && this.modeCodeForAtom(index) !== ATOM_MODE_HIDDEN
+    )
     if (!valid.length) return
 
     if (valid.length >= SELECTION_POINT_CLOUD_THRESHOLD) {
@@ -348,7 +579,7 @@ export class ThreeStructureRenderer {
       const atomIndex = valid[instanceIndex]
       const symbol = frame.symbols[atomIndex] ?? elementFromNumber(frame.numbers[atomIndex]) ?? 'X'
       this.setAtomPosition(frame, atomIndex, this.position)
-      const radius = atomWorldRadius(symbol, this.style)
+      const radius = atomWorldRadiusForMode(symbol, this.modeCodeForAtom(atomIndex), this.style)
       const frontRadius = selectionFrontRadius(radius)
       const backRadius = selectionBackRadius(radius, frontRadius)
       this.scale.setScalar(backRadius)
@@ -380,7 +611,7 @@ export class ThreeStructureRenderer {
       positions[targetOffset + 2] = (frame.positions[offset + 2] ?? 0) - this.center[2]
 
       const symbol = frame.symbols[atomIndex] ?? elementFromNumber(frame.numbers[atomIndex]) ?? 'X'
-      const atomRadius = atomWorldRadius(symbol, this.style)
+      const atomRadius = atomWorldRadiusForMode(symbol, this.modeCodeForAtom(atomIndex), this.style)
       const frontRadius = selectionFrontRadius(atomRadius)
       const backRadius = selectionBackRadius(atomRadius, frontRadius)
       backRadii[instanceIndex] = backRadius
@@ -402,38 +633,111 @@ export class ThreeStructureRenderer {
     this.model.add(points)
   }
 
-  private updateBonds() {
-    this.disposeObject(this.bondMesh)
-    this.bondMesh = null
-    const frame = this.frame
-    if (!frame?.nAtoms || this.atomPointCloud || this.style.mode === 'sphere' || !this.bonds.length) return
-
-    const mesh = new InstancedMesh(this.bondGeometry, this.bondMaterial, this.bonds.length)
+  private ensureBondMesh(current: InstancedMesh | null, required: number, material: Material, renderOrder = 0): InstancedMesh | null {
+    if (required <= 0) {
+      if (current) this.disposeObject(current)
+      return null
+    }
+    const capacity = current ? current.instanceMatrix.count : 0
+    if (current && capacity >= required && capacity <= required * 2 + 128) {
+      current.count = required
+      return current
+    }
+    if (current) this.disposeObject(current)
+    const alloc = Math.max(required, Math.ceil(required * 1.15))
+    const mesh = new InstancedMesh(this.bondGeometry, material, alloc)
+    mesh.count = required
     mesh.instanceMatrix.setUsage(DynamicDrawUsage)
     mesh.frustumCulled = false
-    const radius = this.style.mode === 'line' ? 0.018 : this.style.bondRadius
+    if (renderOrder !== 0) mesh.renderOrder = renderOrder
+    this.model.add(mesh)
+    return mesh
+  }
 
-    for (let index = 0; index < this.bonds.length; index += 1) {
-      const bond = this.bonds[index]
-      this.setAtomPosition(frame, bond.a, this.bondStart)
-      this.setAtomPosition(frame, bond.b, this.bondEnd)
-      this.bondDirection.subVectors(this.bondEnd, this.bondStart)
-      const length = this.bondDirection.length()
-      if (length <= 1e-6) {
-        this.matrix.identity()
-        mesh.setMatrixAt(index, this.matrix)
-        continue
-      }
-      this.bondMid.addVectors(this.bondStart, this.bondEnd).multiplyScalar(0.5)
-      this.quaternion.setFromUnitVectors(this.zAxis, this.bondDirection.normalize())
-      this.scale.set(radius, radius, length)
-      this.matrix.compose(this.bondMid, this.quaternion, this.scale)
-      mesh.setMatrixAt(index, this.matrix)
+  private updateBonds() {
+    const frame = this.frame
+    if (!frame?.nAtoms || this.atomPointCloud || !this.bonds.length || (!this.atomModes && this.style.mode === 'sphere')) {
+      this.disposeObject(this.bondMesh)
+      this.disposeObject(this.dimBondMesh)
+      this.bondMesh = null
+      this.dimBondMesh = null
+      return
     }
 
-    mesh.instanceMatrix.needsUpdate = true
-    this.bondMesh = mesh
-    this.model.add(mesh)
+    const bonds = this.bonds
+    const nBonds = bonds.length
+    let normalCount = 0
+    let dimCount = 0
+
+    if (!this.atomModes) {
+      // Fast uniform path: zero per-bond mode lookup
+      normalCount = nBonds
+    } else {
+      for (let i = 0; i < nBonds; i += 1) {
+        const bond = bonds[i]
+        const modeA = this.modeCodeForAtom(bond.a)
+        const modeB = this.modeCodeForAtom(bond.b)
+        if (modeA === ATOM_MODE_HIDDEN || modeB === ATOM_MODE_HIDDEN) continue
+        if (modeA === ATOM_MODE_SPHERE && modeB === ATOM_MODE_SPHERE) continue
+        if (modeA === ATOM_MODE_DIM || modeB === ATOM_MODE_DIM) dimCount += 1
+        else normalCount += 1
+      }
+    }
+
+    this.bondMesh = this.ensureBondMesh(this.bondMesh, normalCount, this.bondMaterial)
+    this.dimBondMesh = this.ensureBondMesh(this.dimBondMesh, dimCount, this.dimBondMaterial, 1)
+
+    if (!this.atomModes) {
+      const mesh = this.bondMesh
+      if (mesh) {
+        const radius = this.style.mode === 'line' ? 0.018 : this.style.bondRadius
+        for (let i = 0; i < nBonds; i += 1) {
+          this.writeBondInstance(frame, mesh, i, bonds[i], radius)
+        }
+        mesh.instanceMatrix.needsUpdate = true
+      }
+      return
+    }
+
+    let normalIdx = 0
+    let dimIdx = 0
+    const stickRadius = this.style.bondRadius
+    for (let i = 0; i < nBonds; i += 1) {
+      const bond = bonds[i]
+      const modeA = this.modeCodeForAtom(bond.a)
+      const modeB = this.modeCodeForAtom(bond.b)
+      if (modeA === ATOM_MODE_HIDDEN || modeB === ATOM_MODE_HIDDEN) continue
+      if (modeA === ATOM_MODE_SPHERE && modeB === ATOM_MODE_SPHERE) continue
+      if (modeA === ATOM_MODE_DIM || modeB === ATOM_MODE_DIM) {
+        if (this.dimBondMesh) {
+          this.writeBondInstance(frame, this.dimBondMesh, dimIdx, bond, 0.016)
+          dimIdx += 1
+        }
+      } else if (this.bondMesh) {
+        const radius = modeA === ATOM_MODE_LINE || modeB === ATOM_MODE_LINE ? 0.018 : stickRadius
+        this.writeBondInstance(frame, this.bondMesh, normalIdx, bond, radius)
+        normalIdx += 1
+      }
+    }
+    if (this.bondMesh) this.bondMesh.instanceMatrix.needsUpdate = true
+    if (this.dimBondMesh) this.dimBondMesh.instanceMatrix.needsUpdate = true
+  }
+
+  private writeBondInstance(frame: RenderAtomFrame, mesh: InstancedMesh, index: number, bond: RenderBond, radius: number) {
+    this.setAtomPosition(frame, bond.a, this.bondStart)
+    this.setAtomPosition(frame, bond.b, this.bondEnd)
+    this.bondDirection.subVectors(this.bondEnd, this.bondStart)
+    const length = this.bondDirection.length()
+    if (length <= 1e-6) {
+      this.matrix.identity()
+      mesh.setMatrixAt(index, this.matrix)
+      return
+    }
+    this.bondMid.addVectors(this.bondStart, this.bondEnd).multiplyScalar(0.5)
+    this.quaternion.setFromUnitVectors(this.zAxis, this.bondDirection.normalize())
+    this.scale.set(radius, radius, length)
+    this.matrix.compose(this.bondMid, this.quaternion, this.scale)
+    mesh.setMatrixAt(index, this.matrix)
   }
 
   private updateCell() {
@@ -477,25 +781,37 @@ export class ThreeStructureRenderer {
   }
 
   private updateAtomPointCloud(frame: RenderAtomFrame) {
-    const positions = new Float32Array(frame.nAtoms * 3)
-    const colors = new Float32Array(frame.nAtoms * 3)
-    const radii = new Float32Array(frame.nAtoms)
-    const fixedFlags = new Float32Array(frame.nAtoms)
-    const color = new Color()
-
+    const visibleIndices: number[] = []
     for (let index = 0; index < frame.nAtoms; index += 1) {
-      const sourceOffset = index * 3
-      positions[sourceOffset] = (frame.positions[sourceOffset] ?? 0) - this.center[0]
-      positions[sourceOffset + 1] = (frame.positions[sourceOffset + 1] ?? 0) - this.center[1]
-      positions[sourceOffset + 2] = (frame.positions[sourceOffset + 2] ?? 0) - this.center[2]
+      if (this.modeCodeForAtom(index) !== ATOM_MODE_HIDDEN) visibleIndices.push(index)
+    }
+    if (!visibleIndices.length) return
 
+    const count = visibleIndices.length
+    const positions = new Float32Array(count * 3)
+    const colors = new Float32Array(count * 3)
+    const radii = new Float32Array(count)
+    const fixedFlags = new Float32Array(count)
+    const color = new Color()
+    const dimGray = new Color(0xd8e0e8)
+
+    for (let i = 0; i < count; i += 1) {
+      const index = visibleIndices[i]
+      const sourceOffset = index * 3
+      const targetOffset = i * 3
+      positions[targetOffset] = (frame.positions[sourceOffset] ?? 0) - this.center[0]
+      positions[targetOffset + 1] = (frame.positions[sourceOffset + 1] ?? 0) - this.center[1]
+      positions[targetOffset + 2] = (frame.positions[sourceOffset + 2] ?? 0) - this.center[2]
+
+      const modeCode = this.modeCodeForAtom(index)
       const symbol = frame.symbols[index] ?? elementFromNumber(frame.numbers[index]) ?? 'X'
       color.set(elementColor(symbol))
-      colors[sourceOffset] = color.r
-      colors[sourceOffset + 1] = color.g
-      colors[sourceOffset + 2] = color.b
-      radii[index] = atomWorldRadius(symbol, this.style)
-      fixedFlags[index] = this.fixedMarkersVisible && frame.fixedMask?.[index] === 1 ? 1 : 0
+      if (modeCode === ATOM_MODE_DIM) color.lerp(dimGray, 0.72)
+      colors[targetOffset] = color.r
+      colors[targetOffset + 1] = color.g
+      colors[targetOffset + 2] = color.b
+      radii[i] = atomWorldRadiusForMode(symbol, modeCode, this.style)
+      fixedFlags[i] = this.fixedMarkersVisible && frame.fixedMask?.[index] === 1 ? 1 : 0
     }
 
     const geometry = new BufferGeometry()
@@ -516,9 +832,11 @@ export class ThreeStructureRenderer {
   }
 }
 
-function atomWorldRadius(symbol: string, style: RendererStyle) {
-  if (style.mode === 'line') return Math.max(0.045, covalentRadius(symbol) * style.atomScale * 0.62)
-  const modeScale = style.mode === 'sphere' ? 1.62 : 1
+function atomWorldRadiusForMode(symbol: string, modeCode: number, style: RendererStyle) {
+  if (modeCode === ATOM_MODE_LINE || modeCode === ATOM_MODE_DIM) {
+    return Math.max(0.045, covalentRadius(symbol) * style.atomScale * 0.62)
+  }
+  const modeScale = modeCode === ATOM_MODE_SPHERE ? 1.62 : 1
   return Math.max(0.055, covalentRadius(symbol) * style.atomScale * modeScale)
 }
 

@@ -39,7 +39,7 @@ import { ElMessage } from 'element-plus'
 import { ArrowRight } from '@element-plus/icons-vue'
 import { readFile, writeFile, type FileItem, type FileReadResponse, type PreviewType } from '../../api/files'
 import { hasChemSSHFileDrag, readChemSSHFileDrag } from '../../api/fileDrag'
-import { extensionFromName, isStructurePreviewPath, pathBaseName } from '../../api/fileTypes'
+import { extensionFromName, isBinaryStructureFile, isStructurePreviewPath, pathBaseName } from '../../api/fileTypes'
 import {
   type FilePreviewProvider,
   type PreviewProbeResponse,
@@ -176,6 +176,10 @@ async function openPath(path: string, metadata?: PreviewMetadata) {
       } catch (error) {
         if (!isCurrentRequest() || isAbortError(error)) return
         previewError.value = previewApiErrorMessage(error)
+        if (isBinaryStructureFile(nextPath, structureFormat(nextPath))) {
+          ElMessage.error(previewError.value)
+          return
+        }
         previewMode.value = 'text'
       }
     }

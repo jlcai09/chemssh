@@ -37,6 +37,7 @@ class AseViewerConfig(BaseModel):
     max_frames: int = 2_000
     max_points_json: int = 200_000
     binary_chunk_frames: int = Field(default=32, ge=1, le=512)
+    max_chunk_size_mb: int = Field(default=8, ge=1, le=64)
     cache_ttl_minutes: int = 30
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import struct
 from io import BytesIO
@@ -38,12 +39,13 @@ def make_client(
     *,
     max_points_json: int = 200_000,
     max_file_size_mb: int = 50,
+    max_atoms: int = 200_000,
     debug: bool = False,
 ) -> TestClient:
     settings = Settings(
         server=ServerConfig(debug=debug),
         workspace=WorkspaceConfig(root=root),
-        viewer=ViewerConfig(max_file_size_mb=max_file_size_mb, ase=AseViewerConfig(max_points_json=max_points_json)),
+        viewer=ViewerConfig(max_file_size_mb=max_file_size_mb, ase=AseViewerConfig(max_points_json=max_points_json, max_atoms=max_atoms)),
     )
     return TestClient(create_app(settings))
 
@@ -136,7 +138,7 @@ def test_ase_frame_reads_requested_index(tmp_path: Path) -> None:
 
 
 def test_ase_preview_and_json_chunk_support_variable_topology_db(tmp_path: Path) -> None:
-    client = make_client(tmp_path)
+    client = make_client(tmp_path, max_atoms=100)
     sample = tmp_path / "mixed.db"
     database = connect(sample)
     database.write(Atoms("H", positions=[[0, 0, 0]]))
@@ -161,7 +163,7 @@ def test_ase_preview_and_json_chunk_support_variable_topology_db(tmp_path: Path)
 
 
 def test_ase_variable_topology_db_binary_chunk(tmp_path: Path) -> None:
-    client = make_client(tmp_path)
+    client = make_client(tmp_path, max_atoms=100)
     sample = tmp_path / "mixed.db"
     database = connect(sample)
     database.write(Atoms("H", positions=[[0, 0, 0]]))
@@ -490,6 +492,18 @@ def test_ase_large_plain_xyz_fast_range_falls_back_when_stride_changes(tmp_path:
     assert response.status_code == 200
     assert "event: chunk" in response.text
     assert "event: error" not in response.text
+    next_frame = 0
+    for event in response.text.strip().split("\n\n"):
+        lines = event.splitlines()
+        if lines[0] != "event: chunk":
+            continue
+        body = base64.b64decode(lines[1].removeprefix("data: "))
+        header_len = struct.unpack_from("<I", body, 4)[0]
+        header = json.loads(body[8:8 + header_len])
+        assert header["start"] == next_frame
+        next_frame += header["count"]
+    assert next_frame == frame_count
+    assert response.text.endswith(f'event: done\ndata: {{"n_frames": {frame_count}}}\n\n')
 
 
 def test_ase_extxyz_fast_range_preserves_cell_and_offsets(tmp_path: Path) -> None:
@@ -687,7 +701,7 @@ def test_ase_plain_xyz_fixed_topology_fast_range_keeps_metadata(tmp_path: Path) 
 
 
 def test_ase_plain_xyz_variable_topology_range_uses_fallback(tmp_path: Path, monkeypatch) -> None:
-    client = make_client(tmp_path)
+    client = make_client(tmp_path, max_atoms=100)
     sample = tmp_path / "movie.xyz"
     sample.write_text(
         "1\nframe 0\nH 0 0 0\n"
@@ -961,7 +975,7 @@ def test_ase_xdatcar_binary_chunk_uses_fast_parser(tmp_path: Path, monkeypatch) 
 
 
 def test_ase_xdatcar_header_per_frame_variant_uses_fast_variable_parser(tmp_path: Path, monkeypatch) -> None:
-    client = make_client(tmp_path)
+    client = make_client(tmp_path, max_atoms=100)
     sample = tmp_path / "XDATCAR2"
     sample.write_text(
         "Ag Cu O\n"

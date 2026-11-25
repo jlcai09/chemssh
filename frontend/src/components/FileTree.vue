@@ -81,7 +81,15 @@
         </button>
       </span>
     </div>
-    <div ref="bodyRef" class="file-list-body" role="rowgroup" @scroll="handleBodyScroll" @mousedown.left="beginBlankSelect">
+    <div
+      ref="bodyRef"
+      class="file-list-body"
+      role="rowgroup"
+      tabindex="-1"
+      @keydown.self="handleKeydown(focusedIndex ?? 0, $event)"
+      @scroll="handleBodyScroll"
+      @mousedown.left="beginBlankSelect"
+    >
       <div
         v-if="parentItem"
         class="file-row file-parent-row is-directory"
@@ -131,6 +139,7 @@
           'is-drag-range': isInDragRange(index),
           'is-drag-export': exportDragPathSet.has(item.path),
           'is-move-drop-target': moveDropTargetPath === item.path,
+          'is-upload-drop-target': uploadDropTargetPath === item.path,
           'is-focused': focusedIndex === index,
           'is-anchor': anchorIndex === index
         }"
@@ -247,6 +256,7 @@ import {
   type ChemSSHFileDragPayload
 } from '../api/fileDrag'
 import { hasActivePreviewProvider, type FilePreviewProvider } from '../api/filePreviewProviders'
+import { hasFileDrag } from '../api/uploadEntries'
 import type { FileItem } from '../api/files'
 import { launcherBridgeIconFailureKey } from '../api/launcherBridge'
 import { locale, t } from '../i18n'
@@ -285,6 +295,8 @@ const emit = defineEmits<{
   'selection-change': [items: FileItem[], primary: FileItem | null]
   'context-menu': [item: FileItem, event: MouseEvent]
   'move-items': [items: FileItem[], targetDirectory: FileItem]
+  'upload-drop': [targetDirectory: FileItem, event: DragEvent]
+  'upload-target-change': [path: string | null]
   open: [item: FileItem]
   delete: []
   'blank-context-menu': [event: MouseEvent]
@@ -504,6 +516,7 @@ const exportDragPathSet = ref(new Set<string>())
 const exportDragArmed = ref(false)
 const exportDragActive = ref(false)
 const moveDropTargetPath = ref<string | null>(null)
+const uploadDropTargetPath = ref<string | null>(null)
 const deferredOpenGesture = ref<{ x: number; y: number; time: number } | null>(null)
 
 let blankDragStartX = 0
@@ -620,6 +633,9 @@ function beginBlankSelect(event: MouseEvent) {
   if (target instanceof Element && target.closest('.file-row')) return
 
   event.preventDefault()
+  // Blank-area selection prevents the browser's default focus transfer. Take
+  // focus from the terminal explicitly, without scrolling or changing selection.
+  body.focus({ preventScroll: true })
   dragActive.value = false
   dragAnchor.value = null
   dragOverIndex.value = null
@@ -755,7 +771,11 @@ function handleMoveDragOver(index: number, event: DragEvent) {
 }
 
 function handleMoveDragOverItem(item: FileItem | undefined | null, event: DragEvent) {
-  if (!item || !hasChemSSHFileDrag(event)) return
+  if (!item) return
+  if (!hasChemSSHFileDrag(event)) {
+    handleExternalDragOverItem(item, event)
+    return
+  }
   const payload = fileDragPayloadForEvent(event)
   if (!payload || !isValidMoveTarget(item, payload)) {
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
@@ -769,13 +789,41 @@ function handleMoveDragOverItem(item: FileItem | undefined | null, event: DragEv
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
 }
 
+// Files dragged in from Explorer/desktop are uploads. The parent `..` row stays
+// a navigation shortcut; only real directory rows accept the drop.
+function handleExternalDragOverItem(item: FileItem, event: DragEvent) {
+  if (!hasFileDrag(event)) return
+  if (item.type !== 'directory' || item.path === parentItem.value?.path) {
+    setUploadDropTarget(null)
+    return
+  }
+  event.preventDefault()
+  event.stopPropagation()
+  setUploadDropTarget(item.path)
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function setUploadDropTarget(path: string | null) {
+  if (uploadDropTargetPath.value === path) return
+  uploadDropTargetPath.value = path
+  emit('upload-target-change', path)
+}
+
 function handleMoveDragLeave(index: number, event: DragEvent) {
   const item = sortedItems.value[index]
   handleMoveDragLeaveItem(item, event)
 }
 
 function handleMoveDragLeaveItem(item: FileItem | undefined | null, event: DragEvent) {
-  if (!item || moveDropTargetPath.value !== item.path) return
+  if (!item) return
+  if (uploadDropTargetPath.value === item.path) {
+    const row = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+    const related = event.relatedTarget instanceof Node ? event.relatedTarget : null
+    if (row && related && row.contains(related)) return
+    setUploadDropTarget(null)
+    return
+  }
+  if (moveDropTargetPath.value !== item.path) return
   const row = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   const related = event.relatedTarget instanceof Node ? event.relatedTarget : null
   if (row && related && row.contains(related)) return
@@ -788,9 +836,18 @@ function handleMoveDrop(index: number, event: DragEvent) {
 }
 
 function handleMoveDropItem(item: FileItem | undefined | null, event: DragEvent) {
+  if (!item) return
+  if (!hasChemSSHFileDrag(event) && hasFileDrag(event)) {
+    if (item.type !== 'directory' || item.path === parentItem.value?.path) return
+    event.preventDefault()
+    event.stopPropagation()
+    setUploadDropTarget(null)
+    emit('upload-drop', item, event)
+    return
+  }
   const payload = fileDragPayloadForEvent(event)
   moveDropTargetPath.value = null
-  if (!item || !payload || !isValidMoveTarget(item, payload)) return
+  if (!payload || !isValidMoveTarget(item, payload)) return
 
   event.preventDefault()
   event.stopPropagation()
@@ -837,6 +894,7 @@ function finishFileDrag() {
   exportDragArmed.value = false
   exportDragPathSet.value = new Set()
   moveDropTargetPath.value = null
+  setUploadDropTarget(null)
   clearActiveChemSSHFileDragPayload()
 }
 

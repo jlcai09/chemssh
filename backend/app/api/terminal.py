@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
 from typing import Any
 
@@ -71,12 +72,26 @@ async def terminal_ws(
         await websocket.close(code=1008)
         return
 
+    binary_mode = websocket.query_params.get("binary") == "1"
     send_lock = asyncio.Lock()
-    reader_task = asyncio.create_task(_terminal_reader(websocket, session, send_lock))
+    reader_task = asyncio.create_task(_terminal_reader(websocket, session, send_lock, binary_mode=binary_mode))
 
     try:
         while True:
-            message = await websocket.receive_json()
+            event = await websocket.receive()
+            event_type = event.get("type")
+            if event_type == "websocket.disconnect":
+                break
+            raw_bytes = event.get("bytes")
+            if raw_bytes is not None:
+                text = raw_bytes.decode("utf-8", errors="replace")
+                if text:
+                    session.write(text)
+                continue
+            raw_text = event.get("text")
+            if raw_text is None:
+                continue
+            message = json.loads(raw_text)
             await _handle_terminal_message(websocket, send_lock, session, message)
     except (WebSocketDisconnect, ValueError):
         pass
@@ -87,10 +102,16 @@ async def terminal_ws(
         terminal_manager.detach_client(session_id, client_id)
 
 
-async def _terminal_reader(websocket: WebSocket, session: TerminalSession, send_lock: asyncio.Lock) -> None:
+async def _terminal_reader(
+    websocket: WebSocket,
+    session: TerminalSession,
+    send_lock: asyncio.Lock,
+    *,
+    binary_mode: bool = False,
+) -> None:
     try:
         while session.is_alive():
-            data = await asyncio.to_thread(session.read, 4096)
+            data = await asyncio.to_thread(session.read, 16384)
             cwd = session.consume_cwd_update()
             if cwd:
                 await _send_json(websocket, send_lock, {"type": "cwd", "path": cwd})
@@ -99,7 +120,10 @@ async def _terminal_reader(websocket: WebSocket, session: TerminalSession, send_
             for transfer in session.consume_transfer_requests():
                 await _send_json(websocket, send_lock, transfer.to_message())
             if data:
-                await _send_json(websocket, send_lock, {"type": "output", "data": data})
+                if binary_mode:
+                    await _send_bytes(websocket, send_lock, data.encode("utf-8"))
+                else:
+                    await _send_json(websocket, send_lock, {"type": "output", "data": data})
         await _send_json(websocket, send_lock, {"type": "exit", "code": session.provider.exit_code()})
     except asyncio.CancelledError:
         raise
@@ -159,6 +183,11 @@ async def _handle_terminal_message(
 async def _send_json(websocket: WebSocket, send_lock: asyncio.Lock, payload: dict[str, Any]) -> None:
     async with send_lock:
         await websocket.send_json(payload)
+
+
+async def _send_bytes(websocket: WebSocket, send_lock: asyncio.Lock, payload: bytes) -> None:
+    async with send_lock:
+        await websocket.send_bytes(payload)
 
 
 def _error_message(exc: AppError) -> dict[str, Any]:

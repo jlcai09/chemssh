@@ -84,3 +84,85 @@ export interface AseFrameJsonChunk {
   count: number
   frames: AseFrame[]
 }
+
+export type FragmentQueryMode =
+  | 'connected'
+  | 'same_formula'
+  | 'within_radius'
+  | 'whole_molecule_wrap'
+
+export interface AseFragmentRequest {
+  path: string
+  format?: string | null
+  force?: boolean
+  frame_index: number
+  bond_scale: number
+  seed_atoms?: number[]
+  mode: FragmentQueryMode
+  use_pbc?: boolean
+  radius?: number
+  expand_fragments?: boolean
+}
+
+export interface AseFragmentResponse {
+  frame_index: number
+  mode: FragmentQueryMode
+  atom_indices: number[]
+  fragment_count: number
+  formulas: string[]
+  wrapped_positions?: number[][] | null
+}
+
+export type DynamicRuleType =
+  | 'formula'
+  | 'shell'
+  | 'coordination'
+  | 'slice'
+  | 'minority'
+  | 'element_fixed'
+
+export type CoordOperator = 'eq' | 'ne' | 'lt' | 'le' | 'gt' | 'ge'
+
+export type DynamicDisplayStyle = 'stick' | 'sphere' | 'line' | 'dim' | 'hidden'
+
+export interface DynamicDisplayRule {
+  id: string
+  enabled: boolean
+  type: DynamicRuleType
+  style: DynamicDisplayStyle
+  formulas?: string[]
+  anchor_type?: 'atoms' | 'elements'
+  anchor_atoms?: number[]
+  anchor_elements?: string[]
+  radius?: number
+  outside?: boolean
+  expand_fragments?: boolean
+  elements?: string[]
+  operator?: CoordOperator
+  count?: number
+  axis?: 'x' | 'y' | 'z'
+  min_val?: number | null
+  max_val?: number | null
+  fractional?: boolean
+  max_fraction?: number
+  invert?: boolean
+  fixed_only?: boolean
+}
+
+export interface AseDynamicDisplayRequest {
+  path: string
+  format?: string | null
+  force?: boolean
+  frame_index: number
+  bond_scale: number
+  use_pbc?: boolean
+  default_style?: DynamicDisplayStyle
+  rules: DynamicDisplayRule[]
+}
+
+export interface AseDynamicDisplayResponse {
+  frame_index: number
+  atom_modes: number[]
+  rule_match_counts: Record<string, number>
+  available_formulas: string[]
+}

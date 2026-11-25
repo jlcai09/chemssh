@@ -98,6 +98,9 @@ class ArchiveTools(BaseModel):
     zstd: bool = False
     gzip: bool = False
     xz: bool = False
+    zip: bool = False
+    unzip: bool = False
+    seven_zip: bool = False
     formats: list[str] = []
 
 

@@ -22,7 +22,11 @@ export interface TerminalHistoryScreen {
  * line is being edited, and treating that as a screen wipe would scroll the
  * terminal on every keystroke.
  */
-const ERASE_DISPLAY = /\x1b\[(?:2J|3J)/g
+const ERASE_DISPLAY = /\x1b\[(?:2J|3J)|\x1b\[\?(?:1049|1047|47)[hl]/g
+
+export interface TerminalHistoryState {
+  altScreen: boolean
+}
 
 /**
  * `top`, `clear` and other screen-owning programs erase the display before they
@@ -30,21 +34,50 @@ const ERASE_DISPLAY = /\x1b\[(?:2J|3J)/g
  * ChemSSH keeps a long scrollback per tab, so the visible rows are moved into
  * the scrollback first and a scrollback wipe is ignored outright.
  */
-export function preserveTerminalHistory(screen: TerminalHistoryScreen, data: string): string {
-  if (!data.includes('\x1b[')) return data
+export function preserveTerminalHistory(
+  screen: TerminalHistoryScreen,
+  data: string,
+  state?: TerminalHistoryState
+): string {
+  // Fast-path skip: 99% of keystroke echoes and ANSI color sequences contain no
+  // erase-display or alternate-screen transitions.
+  if (
+    !data.includes('\x1b[') ||
+    (!data.includes('2J') &&
+      !data.includes('3J') &&
+      !data.includes('1049') &&
+      !data.includes('1047') &&
+      !data.includes('47'))
+  ) {
+    return data
+  }
+
   let out = ''
   let index = 0
   let matched = false
+  // Track alternate-screen transitions across chunks because xterm updates
+  // buffer.active.type only after write() runs (vim sends ?1049h and 2J together).
+  let alt = state ? state.altScreen : screen.buffer.active.type === 'alternate'
+
   for (const match of data.matchAll(ERASE_DISPLAY)) {
     matched = true
     const at = match.index ?? 0
     out += data.slice(index, at)
     index = at + match[0].length
+    if (match[0].includes('?')) {
+      alt = match[0].endsWith('h')
+      out += match[0]
+      continue
+    }
     // No remote program may throw away this tab's scrollback.
-    if (match[0].endsWith('3J')) continue
-    out += scrollScreenIntoScrollback(screen)
+    if (match[0].endsWith('3J')) {
+      if (alt) out += match[0]
+      continue
+    }
+    if (!alt) out += scrollScreenIntoScrollback(screen)
     out += match[0]
   }
+  if (state) state.altScreen = alt
   return matched ? out + data.slice(index) : data
 }
 
@@ -72,6 +105,10 @@ export function scrollScreenIntoScrollback(screen: TerminalHistoryScreen): strin
 }
 
 /** Writes terminal output after applying the history guard. */
-export function writePreservingTerminalHistory(terminal: Terminal, data: string) {
-  terminal.write(preserveTerminalHistory(terminal, data))
+export function writePreservingTerminalHistory(
+  terminal: Terminal,
+  data: string,
+  state?: TerminalHistoryState
+) {
+  terminal.write(preserveTerminalHistory(terminal, data, state))
 }

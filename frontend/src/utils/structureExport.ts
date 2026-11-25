@@ -71,6 +71,95 @@ export function exportTrajectoryToXYZ(frames: AseFrame[], filename: string): str
   return frames.map(frame => exportToXYZ(frame, filename)).join('\n')
 }
 
+export function exportSelectedAtomsToXYZ(frame: AseFrame, indices: readonly number[], filename: string): string {
+  const symbols = frame.symbols || []
+  const positions = frame.positions || []
+  const valid = indices.filter(idx => Number.isInteger(idx) && idx >= 0 && idx < positions.length)
+  if (!valid.length) {
+    throw new Error('No atoms selected to export')
+  }
+  const fixedSet = new Set(frame.fixed_indices || [])
+  const subFixed: number[] = []
+  const subSymbols: string[] = []
+  const subPositions: number[][] = []
+  valid.forEach((origIdx, newIdx) => {
+    subSymbols.push(symbols[origIdx] || 'X')
+    subPositions.push(positions[origIdx])
+    if (fixedSet.has(origIdx)) subFixed.push(newIdx)
+  })
+  const subFrame: AseFrame = {
+    ...frame,
+    symbols: subSymbols,
+    positions: subPositions,
+    fixed_indices: subFixed
+  }
+  return exportToXYZ(subFrame, filename)
+}
+
+export const MAX_TRAJECTORY_DOWNLOAD_BYTES = 64 * 1024 * 1024
+
+export class TrajectoryExportTooLargeError extends Error {
+  constructor() {
+    super('Trajectory export exceeds the browser download buffer limit')
+  }
+}
+
+export async function writeTrajectoryExport(
+  frames: AsyncIterable<AseFrame>,
+  output: 'xyz' | 'arc',
+  filename: string,
+  write: (text: string) => Promise<void>,
+  signal?: AbortSignal
+) {
+  let count = 0
+  for await (const frame of frames) {
+    signal?.throwIfAborted()
+    const text = output === 'xyz' ? exportToXYZ(frame, filename) : exportTrajectoryToArc([frame], filename)
+    const body = output === 'arc' && count > 0 ? text.slice(text.indexOf('\n', text.indexOf('\n') + 1) + 1) : text
+    await write(`${body}\n`)
+    count += 1
+  }
+  signal?.throwIfAborted()
+  if (count === 0) throw new Error('No frames to export')
+}
+
+export async function downloadTrajectoryExport(
+  frames: AsyncIterable<AseFrame>, output: 'xyz' | 'arc', filename: string, signal?: AbortSignal
+) {
+  type ExportWriter = { write(data: string): Promise<void>; close(): Promise<void>; abort(): Promise<void> }
+  type SavePicker = (options: { suggestedName: string }) => Promise<{ createWritable(): Promise<ExportWriter> }>
+  const picker = (window as Window & { showSaveFilePicker?: SavePicker }).showSaveFilePicker
+  if (picker) {
+    const handle = await picker.call(window, { suggestedName: filename })
+    signal?.throwIfAborted()
+    const writer = await handle.createWritable()
+    try {
+      await writeTrajectoryExport(frames, output, filename, text => writer.write(text), signal)
+      await writer.close()
+    } catch (error) {
+      await writer.abort().catch(() => undefined)
+      throw error
+    }
+    return
+  }
+
+  const parts: Uint8Array<ArrayBuffer>[] = []
+  const encoder = new TextEncoder()
+  let bytes = 0
+  await writeTrajectoryExport(frames, output, filename, async text => {
+    const part = encoder.encode(text)
+    bytes += part.byteLength
+    if (bytes > MAX_TRAJECTORY_DOWNLOAD_BYTES) throw new TrajectoryExportTooLargeError()
+    parts.push(part)
+  }, signal)
+  const url = URL.createObjectURL(new Blob(parts, { type: output === 'xyz' ? 'chemical/x-xyz' : 'chemical/x-arc' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 /**
  * Export multiple frames to Arc format (trajectory)
  * Matches ASE write_dmol_arc format exactly

@@ -1,7 +1,18 @@
 import { frameFromTrajectoryStore } from './TrajectoryStore'
-import { ThreeStructureRenderer } from './ThreeStructureRenderer'
+import {
+  ATOM_MODE_DIM,
+  ATOM_MODE_HIDDEN,
+  ATOM_MODE_LINE,
+  ATOM_MODE_SPHERE,
+  ATOM_MODE_STICK,
+  ThreeStructureRenderer,
+  atomDisplayModeToCode,
+  codeToStyleMode,
+  styleModeToCode
+} from './ThreeStructureRenderer'
 import { NUMBER_SYMBOLS, elementFromNumber, elementColor, covalentRadius } from './elements'
 import type {
+  AtomDisplayMode,
   FixedAtomOptions,
   LabelOptions,
   SetStructureOptions,
@@ -9,8 +20,11 @@ import type {
   StructureDisplayOptions,
   StructureFrame,
   TrajectoryStore,
+  ViewerContextMenuEvent,
   ViewerOptions,
-  ViewerStyle
+  ViewerStyle,
+  ViewerStyleMode,
+  WrapMode
 } from './types'
 
 type Vec3 = [number, number, number]
@@ -79,13 +93,18 @@ const DEFAULT_FIXED: Required<FixedAtomOptions> = {
   color: '#26323f'
 }
 
-const DEFAULT_DISPLAY_OPTIONS = {
+const DEFAULT_DISPLAY_OPTIONS: {
+  supercell: { x: number; y: number; z: number }
+  wrap: boolean
+  wrapMode: WrapMode
+} = {
   supercell: {
     x: 1,
     y: 1,
     z: 1
   },
-  wrap: false
+  wrap: false,
+  wrapMode: 'off'
 }
 
 
@@ -95,6 +114,7 @@ const LABEL_GRID_WIDTH = 54
 const LABEL_GRID_HEIGHT = 18
 const LABEL_GRID_MARGIN = 48
 const LABEL_SCAN_TARGET_ATOMS = 120000
+const MAX_WEBGL_RENDER_PIXELS = 2_600_000
 
 
 export class ChemSSHStructureViewer {
@@ -137,6 +157,23 @@ export class ChemSSHStructureViewer {
   private selectionEnd: ScreenPoint | null = null
   private selectedAtomOrder: number[] = []
   private projectedAtomsDirty = true
+  private overlayHasContent = false
+  private onContextMenu?: (event: ViewerContextMenuEvent) => void
+  private onSelectionChange?: (selectedSourceAtoms: number[]) => void
+  private onDisplayModeChange?: (uniformMode: ViewerStyleMode | null, hasHidden: boolean) => void
+  private onAtomDoubleClick?: (sourceAtomIndex: number) => void
+  private sourceAtomModes: Uint8Array | null = null
+  private displayAtomModes: Uint8Array | null = null
+  private followSelection = false
+  private moleculeWrappedFrameIndex: number | null = null
+  private moleculeWrappedPositions: Float32Array | null = null
+  private pendingMoleculeWrapBounds = false
+  private isRightButtonDown = false
+  private rightDragStarted = false
+  private rightDownClientX = 0
+  private rightDownClientY = 0
+  private lastLeftClickTime = 0
+  private lastLeftClickAtom: number | null = null
 
   constructor(container: HTMLElement, options: ViewerOptions = {}) {
     this.container = container
@@ -144,6 +181,10 @@ export class ChemSSHStructureViewer {
     this.labelOptions = { ...DEFAULT_LABELS, ...options.labelOptions }
     this.fixedOptions = { ...DEFAULT_FIXED, ...options.fixedAtomOptions }
     this.displayOptions = normalizeDisplayOptions(options.displayOptions)
+    this.onContextMenu = options.onContextMenu
+    this.onSelectionChange = options.onSelectionChange
+    this.onDisplayModeChange = options.onDisplayModeChange
+    this.onAtomDoubleClick = options.onAtomDoubleClick
 
     this.root = document.createElement('div')
     this.root.className = 'chemssh-viewer-root'
@@ -210,11 +251,248 @@ export class ChemSSHStructureViewer {
     this.style = { ...this.style, ...style }
     if (this.frame && style.bondScale !== undefined && style.bondScale !== previousBondScale) {
       this.bonds = estimateBonds(this.frame, this.style.bondScale)
-      this.renderer.setStructure(this.frame, this.bonds, this.center)
+      this.renderer.setStructure(this.frame, this.bonds, this.center, this.displayAtomModes, this.selectedAtomOrder)
     }
     this.root.style.background = this.style.backgroundColor
     this.renderer.setStyle(this.style)
     if (previous.mode !== this.style.mode || previous.atomScale !== this.style.atomScale) this.invalidateProjectedAtoms()
+    this.requestRender()
+  }
+
+  setAllAtomsDisplayMode(mode: ViewerStyleMode) {
+    this.style = { ...this.style, mode }
+    this.sourceAtomModes = null
+    this.displayAtomModes = null
+    this.renderer.setStyle(this.style)
+    this.renderer.setAtomModes(null)
+    this.invalidateProjectedAtoms()
+    this.emitDisplayModeChange()
+    this.requestRender()
+  }
+
+  setAtomDisplayMode(sourceIndices: readonly number[], mode: AtomDisplayMode) {
+    const source = this.sourceFrame
+    if (!source?.nAtoms || !sourceIndices.length) return
+    const modes = this.ensureSourceAtomModes(source.nAtoms)
+    const code = atomDisplayModeToCode(mode)
+    let changed = false
+    for (const rawIndex of sourceIndices) {
+      const idx = this.toSourceAtomIndex(rawIndex)
+      if (idx < 0 || idx >= source.nAtoms) continue
+      if (modes[idx] !== code) {
+        modes[idx] = code
+        changed = true
+      }
+    }
+    if (!changed) return
+    this.normalizeAndApplyAtomModes()
+  }
+
+  showOnlyAtoms(sourceIndices: readonly number[]) {
+    const source = this.sourceFrame
+    if (!source?.nAtoms || !sourceIndices.length) return
+    const keepSet = new Set<number>()
+    for (const rawIndex of sourceIndices) {
+      const idx = this.toSourceAtomIndex(rawIndex)
+      if (idx >= 0 && idx < source.nAtoms) keepSet.add(idx)
+    }
+    if (!keepSet.size) return
+    const modes = this.ensureSourceAtomModes(source.nAtoms)
+    const defaultCode = styleModeToCode(this.style.mode)
+    for (let i = 0; i < source.nAtoms; i += 1) {
+      if (keepSet.has(i)) {
+        if (modes[i] === ATOM_MODE_HIDDEN) modes[i] = defaultCode
+      } else {
+        modes[i] = ATOM_MODE_HIDDEN
+      }
+    }
+    this.normalizeAndApplyAtomModes()
+  }
+
+  showAllAtoms() {
+    const source = this.sourceFrame
+    if (!source?.nAtoms || !this.sourceAtomModes) return
+    const defaultCode = styleModeToCode(this.style.mode)
+    let changed = false
+    for (let i = 0; i < this.sourceAtomModes.length; i += 1) {
+      if (this.sourceAtomModes[i] === ATOM_MODE_HIDDEN) {
+        this.sourceAtomModes[i] = defaultCode
+        changed = true
+      }
+    }
+    if (!changed) return
+    this.normalizeAndApplyAtomModes()
+  }
+
+  applyAtomModeCodes(codes: Uint8Array | readonly number[] | null) {
+    const source = this.sourceFrame
+    if (!source?.nAtoms) return
+    if (!codes || codes.length === 0) {
+      this.sourceAtomModes = null
+      this.displayAtomModes = null
+      this.renderer.setAtomModes(null)
+      this.invalidateProjectedAtoms()
+      this.emitDisplayModeChange()
+      this.requestRender()
+      return
+    }
+    const next = new Uint8Array(source.nAtoms)
+    const defaultCode = styleModeToCode(this.style.mode)
+    next.fill(defaultCode)
+    const copyLen = Math.min(source.nAtoms, codes.length)
+    for (let i = 0; i < copyLen; i += 1) {
+      const code = codes[i]
+      if (code >= ATOM_MODE_STICK && code <= ATOM_MODE_HIDDEN) {
+        next[i] = code
+      }
+    }
+    this.sourceAtomModes = next
+    this.normalizeAndApplyAtomModes()
+  }
+
+  getUniformDisplayMode(): ViewerStyleMode | null {
+    if (!this.sourceAtomModes || this.sourceAtomModes.length === 0) return this.style.mode
+    const first = this.sourceAtomModes[0]
+    const uniform = codeToStyleMode(first)
+    if (!uniform) return null
+    for (let i = 1; i < this.sourceAtomModes.length; i += 1) {
+      if (this.sourceAtomModes[i] !== first) return null
+    }
+    return uniform
+  }
+
+  hasHiddenAtoms(): boolean {
+    if (!this.sourceAtomModes) return false
+    for (let i = 0; i < this.sourceAtomModes.length; i += 1) {
+      if (this.sourceAtomModes[i] === ATOM_MODE_HIDDEN) return true
+    }
+    return false
+  }
+
+  getSelectedSourceAtomIndices(): number[] {
+    if (!this.sourceFrame?.nAtoms || !this.selectedAtomOrder.length) return []
+    const seen = new Set<number>()
+    const output: number[] = []
+    for (const index of this.selectedAtomOrder) {
+      const sourceIndex = this.toSourceAtomIndex(index)
+      if (sourceIndex < 0 || sourceIndex >= this.sourceFrame.nAtoms || seen.has(sourceIndex)) continue
+      seen.add(sourceIndex)
+      output.push(sourceIndex)
+    }
+    return output
+  }
+
+  setSelectedSourceAtoms(sourceIndices: readonly number[]) {
+    if (!this.frame?.nAtoms || !this.sourceFrame?.nAtoms) return
+    const valid: number[] = []
+    const seen = new Set<number>()
+    for (const raw of sourceIndices) {
+      const idx = this.toSourceAtomIndex(raw)
+      if (idx < 0 || idx >= this.sourceFrame.nAtoms || seen.has(idx)) continue
+      if (this.isDisplayAtomHidden(idx)) continue
+      seen.add(idx)
+      valid.push(idx)
+    }
+    this.replaceSelection(valid)
+    this.requestRender()
+  }
+
+  selectAllAtoms() {
+    const source = this.sourceFrame
+    if (!source?.nAtoms) return
+    const all: number[] = []
+    for (let i = 0; i < source.nAtoms; i += 1) {
+      if (!this.isSourceAtomHidden(i)) all.push(i)
+    }
+    this.replaceSelection(all)
+    this.requestRender()
+  }
+
+  invertSelection() {
+    const source = this.sourceFrame
+    if (!source?.nAtoms) return
+    const selectedSet = new Set(this.getSelectedSourceAtomIndices())
+    const inverted: number[] = []
+    for (let i = 0; i < source.nAtoms; i += 1) {
+      if (!selectedSet.has(i) && !this.isSourceAtomHidden(i)) inverted.push(i)
+    }
+    this.replaceSelection(inverted)
+    this.requestRender()
+  }
+
+  selectSameElement() {
+    const source = this.sourceFrame
+    if (!source?.nAtoms) return
+    const selected = this.getSelectedSourceAtomIndices()
+    if (!selected.length) return
+    const targetSymbols = new Set<string>()
+    for (const idx of selected) {
+      const sym = source.symbols[idx] ?? elementFromNumber(source.numbers[idx]) ?? 'X'
+      targetSymbols.add(sym)
+    }
+    const matched: number[] = []
+    for (let i = 0; i < source.nAtoms; i += 1) {
+      if (this.isSourceAtomHidden(i)) continue
+      const sym = source.symbols[i] ?? elementFromNumber(source.numbers[i]) ?? 'X'
+      if (targetSymbols.has(sym)) matched.push(i)
+    }
+    this.replaceSelection(matched)
+    this.requestRender()
+  }
+
+  focusOnSelection() {
+    const frame = this.frame
+    if (!frame?.nAtoms || !this.selectedAtomOrder.length) return
+    const bounds = this.selectionWorldBounds(frame, this.selectedAtomOrder)
+    if (!bounds) return
+    this.center = bounds.center
+    this.panX = 0
+    this.panY = 0
+    const targetRadius = Math.max(1.8, bounds.radius + 1.2)
+    const desiredScale = Math.min(this.width, this.height) / Math.max(1, targetRadius * 2.45)
+    this.zoom = clamp(desiredScale / Math.max(1e-6, this.baseScale), 0.25, 25)
+    this.renderer.setStructure(this.frame, this.bonds, this.center, this.displayAtomModes, this.selectedAtomOrder)
+    this.invalidateProjectedAtoms()
+    this.requestRender()
+  }
+
+  setFollowSelection(enabled: boolean) {
+    this.followSelection = enabled
+    if (enabled && this.frame && this.selectedAtomOrder.length) {
+      this.recenterOnSelection(this.frame)
+    }
+  }
+
+  setMoleculeWrappedPositions(frameIndex: number, positions: Float32Array | number[][] | null) {
+    if (!positions) {
+      this.moleculeWrappedFrameIndex = null
+      this.moleculeWrappedPositions = null
+    } else if (this.sourceFrame && frameIndex === this.sourceFrame.frameIndex) {
+      this.moleculeWrappedFrameIndex = frameIndex
+      this.moleculeWrappedPositions = normalizePositions(positions, this.sourceFrame.nAtoms)
+    } else {
+      return
+    }
+    if (this.sourceFrame && this.displayOptions.wrapMode === 'molecule') {
+      const shouldUpdateBounds = this.pendingMoleculeWrapBounds && !this.followSelection
+      this.pendingMoleculeWrapBounds = false
+      this.rebuildDisplayFrameFromSource(shouldUpdateBounds)
+    }
+  }
+
+  resetAtomStates() {
+    this.sourceAtomModes = null
+    this.displayAtomModes = null
+    this.followSelection = false
+    this.moleculeWrappedFrameIndex = null
+    this.moleculeWrappedPositions = null
+    this.pendingMoleculeWrapBounds = false
+    this.selectedAtomOrder = []
+    this.hoveredAtom = null
+    this.renderer.setAtomModes(null)
+    this.renderer.setSelectedAtoms(this.selectedAtomOrder)
+    this.emitDisplayModeChange()
+    this.emitSelectionChange()
     this.requestRender()
   }
 
@@ -230,37 +508,49 @@ export class ChemSSHStructureViewer {
   }
 
   setDisplayOptions(options: StructureDisplayOptions) {
+    const mergedWrapMode = options.wrapMode ?? (options.wrap !== undefined ? (options.wrap ? 'atom' : 'off') : this.displayOptions.wrapMode)
     const nextOptions = normalizeDisplayOptions({
       ...this.displayOptions,
       ...options,
+      wrapMode: mergedWrapMode,
+      wrap: mergedWrapMode !== 'off',
       supercell: {
         ...this.displayOptions.supercell,
         ...options.supercell
       }
     })
     if (displayOptionsEqual(this.displayOptions, nextOptions)) return
+    const enteredMoleculeWrap = nextOptions.wrapMode === 'molecule' && this.displayOptions.wrapMode !== 'molecule'
     this.displayOptions = nextOptions
-    if (!this.sourceFrame) return
-    this.frame = buildDisplayFrame(this.sourceFrame, this.displayOptions)
-    this.bonds = estimateBonds(this.frame, this.style.bondScale)
-    this.updateBounds()
-    this.renderer.setStructure(this.frame, this.bonds, this.center)
-    this.syncSelectionForFrame(true)
-    this.invalidateProjectedAtoms()
-    this.requestRender()
+    if (!this.sourceFrame) {
+      if (enteredMoleculeWrap) this.pendingMoleculeWrapBounds = true
+      return
+    }
+    const hasReadyMoleculeWrap =
+      this.moleculeWrappedFrameIndex === this.sourceFrame.frameIndex &&
+      this.moleculeWrappedPositions !== null
+    if (enteredMoleculeWrap && !hasReadyMoleculeWrap) {
+      this.pendingMoleculeWrapBounds = true
+      return
+    }
+    this.pendingMoleculeWrapBounds = false
+    this.rebuildDisplayFrameFromSource(true)
   }
 
   resize() {
     const rect = this.container.getBoundingClientRect()
     const nextWidth = Math.max(1, Math.round(rect.width))
     const nextHeight = Math.max(1, Math.round(rect.height))
-    const nextDpr = Math.min(window.devicePixelRatio || 1, 2)
+    const rawDpr = Math.min(window.devicePixelRatio || 1, 2)
+    const cssPixels = nextWidth * nextHeight
+    const budgetDpr = cssPixels > 0 ? Math.sqrt(MAX_WEBGL_RENDER_PIXELS / cssPixels) : rawDpr
+    const nextDpr = Math.max(0.75, Math.min(rawDpr, budgetDpr))
     const pixelWidth = Math.max(1, Math.floor(nextWidth * nextDpr))
     const pixelHeight = Math.max(1, Math.floor(nextHeight * nextDpr))
     if (
       this.width === nextWidth &&
       this.height === nextHeight &&
-      this.dpr === nextDpr &&
+      Math.abs(this.dpr - nextDpr) < 1e-3 &&
       this.overlayCanvas.width === pixelWidth &&
       this.overlayCanvas.height === pixelHeight
     ) {
@@ -271,13 +561,18 @@ export class ChemSSHStructureViewer {
     this.dpr = nextDpr
     if (this.overlayCanvas.width !== pixelWidth) this.overlayCanvas.width = pixelWidth
     if (this.overlayCanvas.height !== pixelHeight) this.overlayCanvas.height = pixelHeight
+    this.overlayHasContent = true
     this.updateFitScale()
     this.invalidateProjectedAtoms()
     this.requestRender()
   }
 
   resetView() {
+    this.updateBounds()
     this.resetCamera()
+    if (this.frame) {
+      this.renderer.setStructure(this.frame, this.bonds, this.center, this.displayAtomModes, this.selectedAtomOrder)
+    }
     this.requestRender()
   }
 
@@ -287,6 +582,7 @@ export class ChemSSHStructureViewer {
     this.hoveredAtom = null
     this.selectedAtomOrder = []
     this.renderer.setSelectedAtoms(this.selectedAtomOrder)
+    this.emitSelectionChange()
     this.requestRender()
   }
 
@@ -301,6 +597,8 @@ export class ChemSSHStructureViewer {
     this.projectedAtoms = []
     this.clearProjectedPickBuckets()
     this.selectedAtomOrder = []
+    this.sourceAtomModes = null
+    this.displayAtomModes = null
     this.renderer.dispose()
   }
 
@@ -318,13 +616,182 @@ export class ChemSSHStructureViewer {
 
   private useSourceFrame(frame: InternalFrame, options: { keepView: boolean; updateBounds: boolean }) {
     this.sourceFrame = frame
-    this.frame = buildDisplayFrame(frame, this.displayOptions)
+    if (this.moleculeWrappedFrameIndex !== frame.frameIndex) {
+      this.moleculeWrappedFrameIndex = null
+      this.moleculeWrappedPositions = null
+    }
+    this.syncAtomModesForFrame(frame.nAtoms)
+    this.frame = this.buildEffectiveDisplayFrame(frame)
+    this.displayAtomModes = this.expandAtomModesForDisplay(frame.nAtoms, this.frame.nAtoms)
     this.bonds = estimateBonds(this.frame, this.style.bondScale)
     if (options.updateBounds) this.updateBounds()
     if (!options.keepView) this.resetCamera()
-    this.renderer.setStructure(this.frame, this.bonds, this.center)
-    this.renderer.setSelectedAtoms(this.selectedAtomOrder)
-    this.syncSelectionForFrame(options.keepView)
+    this.syncSelectionForFrame(options.keepView, false)
+    if (this.followSelection && this.selectedAtomOrder.length && this.frame) {
+      const bounds = this.selectionWorldBounds(this.frame, this.selectedAtomOrder)
+      if (bounds) this.center = bounds.center
+    }
+    this.renderer.setStructure(this.frame, this.bonds, this.center, this.displayAtomModes, this.selectedAtomOrder)
+    this.invalidateProjectedAtoms()
+    this.requestRender()
+  }
+
+  private rebuildDisplayFrameFromSource(updateBounds: boolean) {
+    if (!this.sourceFrame) return
+    this.frame = this.buildEffectiveDisplayFrame(this.sourceFrame)
+    this.displayAtomModes = this.expandAtomModesForDisplay(this.sourceFrame.nAtoms, this.frame.nAtoms)
+    this.bonds = estimateBonds(this.frame, this.style.bondScale)
+    if (updateBounds) this.updateBounds()
+    this.syncSelectionForFrame(true, false)
+    this.renderer.setStructure(this.frame, this.bonds, this.center, this.displayAtomModes, this.selectedAtomOrder)
+    this.invalidateProjectedAtoms()
+    this.requestRender()
+  }
+
+  private buildEffectiveDisplayFrame(source: InternalFrame): InternalFrame {
+    if (
+      this.displayOptions.wrapMode === 'molecule' &&
+      this.moleculeWrappedFrameIndex === source.frameIndex &&
+      this.moleculeWrappedPositions &&
+      this.moleculeWrappedPositions.length === source.nAtoms * 3
+    ) {
+      const replacedSource: InternalFrame = {
+        ...source,
+        positions: this.moleculeWrappedPositions
+      }
+      return buildDisplayFrame(replacedSource, {
+        ...this.displayOptions,
+        wrap: false,
+        wrapMode: 'off'
+      })
+    }
+    return buildDisplayFrame(source, this.displayOptions)
+  }
+
+  private ensureSourceAtomModes(nAtoms: number): Uint8Array {
+    if (this.sourceAtomModes && this.sourceAtomModes.length === nAtoms) {
+      return this.sourceAtomModes
+    }
+    const next = new Uint8Array(nAtoms)
+    next.fill(styleModeToCode(this.style.mode))
+    if (this.sourceAtomModes) {
+      const copyCount = Math.min(this.sourceAtomModes.length, nAtoms)
+      next.set(this.sourceAtomModes.subarray(0, copyCount))
+    }
+    this.sourceAtomModes = next
+    return next
+  }
+
+  private syncAtomModesForFrame(nAtoms: number) {
+    if (!this.sourceAtomModes) return
+    if (this.sourceAtomModes.length === nAtoms) return
+    const next = new Uint8Array(nAtoms)
+    next.fill(styleModeToCode(this.style.mode))
+    const copyCount = Math.min(this.sourceAtomModes.length, nAtoms)
+    next.set(this.sourceAtomModes.subarray(0, copyCount))
+    this.sourceAtomModes = next
+  }
+
+  private expandAtomModesForDisplay(sourceAtoms: number, displayAtoms: number): Uint8Array | null {
+    if (!this.sourceAtomModes || sourceAtoms <= 0) return null
+    if (displayAtoms === sourceAtoms) return this.sourceAtomModes
+    const expanded = new Uint8Array(displayAtoms)
+    for (let i = 0; i < displayAtoms; i += 1) {
+      expanded[i] = this.sourceAtomModes[i % sourceAtoms] ?? ATOM_MODE_STICK
+    }
+    return expanded
+  }
+
+  private normalizeAndApplyAtomModes() {
+    if (!this.sourceFrame || !this.frame) return
+    const uniform = this.getUniformDisplayMode()
+    if (uniform) {
+      this.style = { ...this.style, mode: uniform }
+      this.sourceAtomModes = null
+      this.displayAtomModes = null
+      this.renderer.setStyle(this.style)
+      this.renderer.setAtomModes(null)
+    } else {
+      this.displayAtomModes = this.expandAtomModesForDisplay(this.sourceFrame.nAtoms, this.frame.nAtoms)
+      this.renderer.setAtomModes(this.displayAtomModes)
+    }
+    // Remove hidden atoms from active selection
+    const filteredSelection = this.selectedAtomOrder.filter(idx => !this.isDisplayAtomHidden(idx))
+    if (filteredSelection.length !== this.selectedAtomOrder.length) {
+      this.selectedAtomOrder = filteredSelection
+      this.renderer.setSelectedAtoms(this.selectedAtomOrder)
+      this.emitSelectionChange()
+    }
+    if (this.hoveredAtom !== null && this.isDisplayAtomHidden(this.hoveredAtom)) {
+      this.hoveredAtom = null
+    }
+    this.invalidateProjectedAtoms()
+    this.emitDisplayModeChange()
+    this.requestRender()
+  }
+
+  private emitDisplayModeChange() {
+    this.onDisplayModeChange?.(this.getUniformDisplayMode(), this.hasHiddenAtoms())
+  }
+
+  private emitSelectionChange() {
+    this.onSelectionChange?.(this.getSelectedSourceAtomIndices())
+  }
+
+  private toSourceAtomIndex(displayIndex: number): number {
+    const sourceCount = this.sourceFrame?.nAtoms ?? 0
+    if (sourceCount <= 0 || !Number.isInteger(displayIndex) || displayIndex < 0) return -1
+    return displayIndex % sourceCount
+  }
+
+  private isSourceAtomHidden(sourceIndex: number): boolean {
+    return this.sourceAtomModes ? this.sourceAtomModes[sourceIndex] === ATOM_MODE_HIDDEN : false
+  }
+
+  private isDisplayAtomHidden(displayIndex: number): boolean {
+    return this.displayAtomModes ? this.displayAtomModes[displayIndex] === ATOM_MODE_HIDDEN : false
+  }
+
+  private modeCodeForDisplayAtom(displayIndex: number): number {
+    if (this.displayAtomModes && displayIndex >= 0 && displayIndex < this.displayAtomModes.length) {
+      return this.displayAtomModes[displayIndex] ?? ATOM_MODE_STICK
+    }
+    return styleModeToCode(this.style.mode)
+  }
+
+  private selectionWorldBounds(frame: InternalFrame, indices: readonly number[]) {
+    let minX = Number.POSITIVE_INFINITY
+    let minY = Number.POSITIVE_INFINITY
+    let minZ = Number.POSITIVE_INFINITY
+    let maxX = Number.NEGATIVE_INFINITY
+    let maxY = Number.NEGATIVE_INFINITY
+    let maxZ = Number.NEGATIVE_INFINITY
+    let count = 0
+    for (const idx of indices) {
+      if (idx < 0 || idx >= frame.nAtoms || this.isDisplayAtomHidden(idx)) continue
+      const offset = idx * 3
+      const x = frame.positions[offset] ?? 0
+      const y = frame.positions[offset + 1] ?? 0
+      const z = frame.positions[offset + 2] ?? 0
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      minZ = Math.min(minZ, z)
+      maxX = Math.max(maxX, x)
+      maxY = Math.max(maxY, y)
+      maxZ = Math.max(maxZ, z)
+      count += 1
+    }
+    if (!count) return null
+    const center: Vec3 = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2]
+    const radius = Math.sqrt((maxX - minX) ** 2 + (maxY - minY) ** 2 + (maxZ - minZ) ** 2) / 2
+    return { center, radius }
+  }
+
+  private recenterOnSelection(frame: InternalFrame) {
+    const bounds = this.selectionWorldBounds(frame, this.selectedAtomOrder)
+    if (!bounds) return
+    this.center = bounds.center
+    this.renderer.setStructure(this.frame, this.bonds, this.center, this.displayAtomModes, this.selectedAtomOrder)
     this.invalidateProjectedAtoms()
     this.requestRender()
   }
@@ -366,16 +833,34 @@ export class ChemSSHStructureViewer {
     this.dragMode = this.dragModeForPointer(event, point)
     this.lastPointerX = event.clientX
     this.lastPointerY = event.clientY
+    if (event.button === 2) {
+      this.isRightButtonDown = true
+      this.rightDragStarted = false
+      this.rightDownClientX = event.clientX
+      this.rightDownClientY = event.clientY
+    } else {
+      this.isRightButtonDown = false
+      this.rightDragStarted = false
+    }
     this.selectionStart = this.dragMode === 'select' ? point : null
     this.selectionEnd = this.dragMode === 'select' ? point : null
     this.sceneCanvas.setPointerCapture(event.pointerId)
-    this.sceneCanvas.style.cursor = this.cursorForDragMode(this.dragMode)
+    this.sceneCanvas.style.cursor = event.button === 2 ? 'crosshair' : this.cursorForDragMode(this.dragMode)
     this.requestRender()
   }
 
   private handlePointerMove = (event: PointerEvent) => {
     if (this.isDragging) {
       event.preventDefault()
+      if (this.isRightButtonDown && !this.rightDragStarted) {
+        const moved = Math.hypot(event.clientX - this.rightDownClientX, event.clientY - this.rightDownClientY)
+        if (moved <= 4) return
+        this.rightDragStarted = true
+        this.lastPointerX = event.clientX
+        this.lastPointerY = event.clientY
+        this.sceneCanvas.style.cursor = this.cursorForDragMode(this.dragMode)
+        return
+      }
       const previousX = this.lastPointerX
       const previousY = this.lastPointerY
       const dx = event.clientX - previousX
@@ -410,10 +895,13 @@ export class ChemSSHStructureViewer {
 
   private handlePointerUp = (event: PointerEvent) => {
     const point = this.pointerPoint(event)
+    const wasRightClick = event.button === 2 && this.isRightButtonDown && !this.rightDragStarted
     if (this.dragMode === 'select') {
       this.completeAtomSelection(event, point)
     }
     this.isDragging = false
+    this.isRightButtonDown = false
+    this.rightDragStarted = false
     if (this.sceneCanvas.hasPointerCapture(event.pointerId)) {
       this.sceneCanvas.releasePointerCapture(event.pointerId)
     }
@@ -421,6 +909,16 @@ export class ChemSSHStructureViewer {
     this.selectionEnd = null
     this.sceneCanvas.style.cursor = 'crosshair'
     this.requestRender()
+
+    if (wasRightClick) {
+      const picked = this.pickAtomAt(point.x, point.y)
+      this.onContextMenu?.({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        atomIndex: picked === null ? null : this.toSourceAtomIndex(picked),
+        selectedAtoms: this.getSelectedSourceAtomIndices()
+      })
+    }
   }
 
   private handlePointerLeave = () => {
@@ -548,15 +1046,34 @@ export class ChemSSHStructureViewer {
     if (width <= 4 && height <= 4) {
       const picked = this.pickAtomAt(point.x, point.y)
       if (picked === null) {
+        this.lastLeftClickTime = 0
+        this.lastLeftClickAtom = null
         if (!additive) this.replaceSelection([])
         return
       }
-      if (additive) this.toggleAtomSelection(picked)
-      else this.replaceSelection([picked])
+      const now = performance.now()
+      const isDoubleClick = !additive && this.lastLeftClickAtom === picked && now - this.lastLeftClickTime <= 350
+      if (additive) {
+        this.lastLeftClickTime = 0
+        this.lastLeftClickAtom = null
+        this.toggleAtomSelection(picked)
+      } else {
+        this.replaceSelection([picked])
+        if (isDoubleClick) {
+          this.lastLeftClickTime = 0
+          this.lastLeftClickAtom = null
+          this.onAtomDoubleClick?.(this.toSourceAtomIndex(picked))
+        } else {
+          this.lastLeftClickTime = now
+          this.lastLeftClickAtom = picked
+        }
+      }
       this.hoveredAtom = picked
       return
     }
 
+    this.lastLeftClickTime = 0
+    this.lastLeftClickAtom = null
     const indices = this.atomIndicesInSelectionRect(start, end)
     if (!indices.length) {
       if (!additive) this.replaceSelection([])
@@ -580,6 +1097,7 @@ export class ChemSSHStructureViewer {
   private replaceSelection(indices: number[]) {
     this.selectedAtomOrder = this.uniqueValidAtomIndices(indices)
     this.renderer.setSelectedAtoms(this.selectedAtomOrder)
+    this.emitSelectionChange()
   }
 
   private appendSelection(indices: number[]) {
@@ -592,12 +1110,14 @@ export class ChemSSHStructureViewer {
     }
     this.selectedAtomOrder = this.uniqueValidAtomIndices(next)
     this.renderer.setSelectedAtoms(this.selectedAtomOrder)
+    this.emitSelectionChange()
   }
 
   private toggleAtomSelection(index: number) {
     if (this.selectedAtomOrder.includes(index)) {
       this.selectedAtomOrder = this.selectedAtomOrder.filter(selected => selected !== index)
       this.renderer.setSelectedAtoms(this.selectedAtomOrder)
+      this.emitSelectionChange()
       return
     }
     this.appendSelection([index])
@@ -608,7 +1128,7 @@ export class ChemSSHStructureViewer {
     const seen = new Set<number>()
     const output: number[] = []
     for (const index of indices) {
-      if (!Number.isInteger(index) || index < 0 || index >= nAtoms || seen.has(index)) continue
+      if (!Number.isInteger(index) || index < 0 || index >= nAtoms || seen.has(index) || this.isDisplayAtomHidden(index)) continue
       seen.add(index)
       output.push(index)
     }
@@ -628,9 +1148,6 @@ export class ChemSSHStructureViewer {
   }
 
   private render() {
-    const overlay = this.overlayContext
-    overlay.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
-    overlay.clearRect(0, 0, this.width, this.height)
     this.renderer.setView({
       width: this.width,
       height: this.height,
@@ -648,17 +1165,44 @@ export class ChemSSHStructureViewer {
       this.projectedAtoms = []
       this.clearProjectedPickBuckets()
       this.projectedAtomsDirty = false
+      if (this.overlayHasContent) {
+        const overlay = this.overlayContext
+        overlay.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
+        overlay.clearRect(0, 0, this.width, this.height)
+        this.overlayHasContent = false
+      }
       this.renderer.clear()
       return
     }
 
-    const atoms = this.labelsVisible() ? this.projectLabelAtoms() : []
-    const hoveredAtom = this.hoveredAtom === null ? null : this.projectAtom(this.hoveredAtom)
+    this.renderer.render()
+
+    const showLabels = this.labelsVisible()
+    const hasHover = this.hoveredAtom !== null
+    const hasSelection = this.selectedAtomOrder.length > 0
+    const hasSelectionBox = Boolean(this.selectionStart && this.selectionEnd)
+    const needsOverlay = showLabels || hasHover || hasSelection || hasSelectionBox
+
+    if (!needsOverlay) {
+      if (this.overlayHasContent) {
+        const overlay = this.overlayContext
+        overlay.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
+        overlay.clearRect(0, 0, this.width, this.height)
+        this.overlayHasContent = false
+      }
+      return
+    }
+
+    const overlay = this.overlayContext
+    overlay.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
+    overlay.clearRect(0, 0, this.width, this.height)
+    const atoms = showLabels ? this.projectLabelAtoms() : []
+    const hoveredAtom = hasHover && this.hoveredAtom !== null ? this.projectAtom(this.hoveredAtom) : null
     const selectedAtoms = this.selectedAtomOrder.length <= 4
       ? this.selectedAtomOrder.map(index => this.projectAtom(index)).filter((atom): atom is ProjectedAtom => Boolean(atom))
       : []
-    this.renderer.render()
     this.drawOverlay(overlay, atoms, hoveredAtom, selectedAtoms)
+    this.overlayHasContent = true
   }
 
   private projectAtoms() {
@@ -670,6 +1214,7 @@ export class ChemSSHStructureViewer {
     }
     const atoms: ProjectedAtom[] = []
     for (let index = 0; index < this.frame.nAtoms; index += 1) {
+      if (this.isDisplayAtomHidden(index)) continue
       const atom = this.projectAtom(index)
       if (atom) atoms.push(atom)
     }
@@ -749,6 +1294,7 @@ export class ChemSSHStructureViewer {
     const screenCenterY = this.height / 2 + this.panY
 
     for (let index = 0; index < frame.nAtoms; index += stride) {
+      if (this.isDisplayAtomHidden(index)) continue
       const offset = index * 3
       const x = (frame.positions[offset] ?? 0) - this.center[0]
       const y = (frame.positions[offset + 1] ?? 0) - this.center[1]
@@ -776,7 +1322,7 @@ export class ChemSSHStructureViewer {
   private projectedAtomFromScreen(index: number, world: Vec3, x: number, y: number, depth: number): ProjectedAtom | null {
     if (!this.frame || index < 0 || index >= this.frame.nAtoms) return null
     const symbol = this.frame.symbols[index] ?? elementFromNumber(this.frame.numbers[index]) ?? 'X'
-    const radius = atomScreenRadius(symbol, this.style, this.baseScale * this.zoom)
+    const radius = atomScreenRadiusForMode(symbol, this.modeCodeForDisplayAtom(index), this.style, this.baseScale * this.zoom)
     return {
       index,
       x,
@@ -1191,10 +1737,16 @@ export class ChemSSHStructureViewer {
     context.fillText(text, x, y)
   }
 
-  private syncSelectionForFrame(keepSelection: boolean) {
+  private syncSelectionForFrame(keepSelection: boolean, pushToRenderer = true) {
+    const prevLength = this.selectedAtomOrder.length
     this.selectedAtomOrder = keepSelection ? this.uniqueValidAtomIndices(this.selectedAtomOrder) : []
-    this.renderer.setSelectedAtoms(this.selectedAtomOrder)
-    if (this.hoveredAtom !== null && (this.hoveredAtom < 0 || this.hoveredAtom >= (this.frame?.nAtoms ?? 0))) this.hoveredAtom = null
+    if (pushToRenderer) this.renderer.setSelectedAtoms(this.selectedAtomOrder)
+    if (this.hoveredAtom !== null && (this.hoveredAtom < 0 || this.hoveredAtom >= (this.frame?.nAtoms ?? 0) || this.isDisplayAtomHidden(this.hoveredAtom))) {
+      this.hoveredAtom = null
+    }
+    if (this.selectedAtomOrder.length !== prevLength) {
+      this.emitSelectionChange()
+    }
   }
 
   private updateBounds() {
@@ -1346,18 +1898,26 @@ function normalizeFrame(frame: StructureFrame): InternalFrame {
 function cloneDisplayOptions(options: typeof DEFAULT_DISPLAY_OPTIONS) {
   return {
     supercell: { ...options.supercell },
-    wrap: options.wrap
+    wrap: options.wrap,
+    wrapMode: options.wrapMode
   }
 }
 
 function normalizeDisplayOptions(options?: StructureDisplayOptions) {
+  const wrapMode: WrapMode =
+    options?.wrapMode === 'atom' || options?.wrapMode === 'molecule' || options?.wrapMode === 'off'
+      ? options.wrapMode
+      : options?.wrap
+        ? 'atom'
+        : DEFAULT_DISPLAY_OPTIONS.wrapMode
   return {
     supercell: {
       x: normalizeSupercellMultiplier(options?.supercell?.x ?? DEFAULT_DISPLAY_OPTIONS.supercell.x),
       y: normalizeSupercellMultiplier(options?.supercell?.y ?? DEFAULT_DISPLAY_OPTIONS.supercell.y),
       z: normalizeSupercellMultiplier(options?.supercell?.z ?? DEFAULT_DISPLAY_OPTIONS.supercell.z)
     },
-    wrap: Boolean(options?.wrap ?? DEFAULT_DISPLAY_OPTIONS.wrap)
+    wrap: wrapMode !== 'off',
+    wrapMode
   }
 }
 
@@ -1370,6 +1930,7 @@ function normalizeSupercellMultiplier(value: number | undefined) {
 function displayOptionsEqual(left: ReturnType<typeof normalizeDisplayOptions>, right: ReturnType<typeof normalizeDisplayOptions>) {
   return (
     left.wrap === right.wrap &&
+    left.wrapMode === right.wrapMode &&
     left.supercell.x === right.supercell.x &&
     left.supercell.y === right.supercell.y &&
     left.supercell.z === right.supercell.z
@@ -1379,7 +1940,7 @@ function displayOptionsEqual(left: ReturnType<typeof normalizeDisplayOptions>, r
 function buildDisplayFrame(source: InternalFrame, options: ReturnType<typeof normalizeDisplayOptions>): InternalFrame {
   const cell = source.cell && hasCell(source.cell) ? source.cell : undefined
   const inverse = cell ? invertCell(cell) : null
-  const wrap = options.wrap && Boolean(cell && inverse)
+  const wrap = options.wrapMode === 'atom' && Boolean(cell && inverse)
   const { x: copiesX, y: copiesY, z: copiesZ } = displaySupercellCopies(source, options)
   const copyCount = copiesX * copiesY * copiesZ
   const cellCopies = cell ? { x: copiesX, y: copiesY, z: copiesZ } : undefined
@@ -1595,53 +2156,84 @@ function estimateBonds(frame: InternalFrame, bondScale: number) {
   const nAtoms = frame.nAtoms
   if (nAtoms < 2 || nAtoms > 50000) return bonds
 
-  const cellSize = 2.4
-  const buckets = new Map<string, number[]>()
-  const bucketKeys: Array<[number, number, number]> = []
-  for (let index = 0; index < nAtoms; index += 1) {
-    const offset = index * 3
-    const ix = Math.floor((frame.positions[offset] ?? 0) / cellSize)
-    const iy = Math.floor((frame.positions[offset + 1] ?? 0) / cellSize)
-    const iz = Math.floor((frame.positions[offset + 2] ?? 0) / cellSize)
-    bucketKeys[index] = [ix, iy, iz]
-    const key = bucketKey(ix, iy, iz)
-    const bucket = buckets.get(key)
-    if (bucket) bucket.push(index)
-    else buckets.set(key, [index])
+  const positions = frame.positions
+  const radii = new Float32Array(nAtoms)
+  let maxRadius = 0
+  for (let i = 0; i < nAtoms; i += 1) {
+    const r = covalentRadius(frame.symbols[i])
+    radii[i] = r
+    if (r > maxRadius) maxRadius = r
+  }
+
+  const cellSize = Math.max(2.4, maxRadius * 2 * bondScale + 0.2)
+  const invCellSize = 1 / cellSize
+  let tableSize = 64
+  while (tableSize < nAtoms * 2) tableSize <<= 1
+  const mask = tableSize - 1
+
+  const head = new Int32Array(tableSize)
+  head.fill(-1)
+  const next = new Int32Array(nAtoms)
+  const cellX = new Int32Array(nAtoms)
+  const cellY = new Int32Array(nAtoms)
+  const cellZ = new Int32Array(nAtoms)
+
+  for (let i = 0; i < nAtoms; i += 1) {
+    const off = i * 3
+    const ix = Math.floor((positions[off] ?? 0) * invCellSize)
+    const iy = Math.floor((positions[off + 1] ?? 0) * invCellSize)
+    const iz = Math.floor((positions[off + 2] ?? 0) * invCellSize)
+    cellX[i] = ix
+    cellY[i] = iy
+    cellZ[i] = iz
+    const slot = (Math.imul(ix, 73856093) ^ Math.imul(iy, 19349663) ^ Math.imul(iz, 83492791)) & mask
+    next[i] = head[slot]
+    head[slot] = i
   }
 
   const maxBonds = nAtoms * 8
-  for (let index = 0; index < nAtoms && bonds.length < maxBonds; index += 1) {
-    const [ix, iy, iz] = bucketKeys[index]
+  for (let i = 0; i < nAtoms && bonds.length < maxBonds; i += 1) {
+    const ix = cellX[i]
+    const iy = cellY[i]
+    const iz = cellZ[i]
+    const offI = i * 3
+    const xi = positions[offI] ?? 0
+    const yi = positions[offI + 1] ?? 0
+    const zi = positions[offI + 2] ?? 0
+    const ri = radii[i]
+
     for (let dx = -1; dx <= 1 && bonds.length < maxBonds; dx += 1) {
+      const nx = ix + dx
+      const hx = Math.imul(nx, 73856093)
       for (let dy = -1; dy <= 1 && bonds.length < maxBonds; dy += 1) {
+        const ny = iy + dy
+        const hxy = hx ^ Math.imul(ny, 19349663)
         for (let dz = -1; dz <= 1 && bonds.length < maxBonds; dz += 1) {
-          const bucket = buckets.get(bucketKey(ix + dx, iy + dy, iz + dz))
-          if (!bucket) continue
-          for (const other of bucket) {
-            if (other <= index) continue
-            if (isBonded(frame, index, other, bondScale)) bonds.push({ a: index, b: other })
-            if (bonds.length >= maxBonds) break
+          const nz = iz + dz
+          const slot = (hxy ^ Math.imul(nz, 83492791)) & mask
+          let other = head[slot]
+          while (other !== -1) {
+            if (other > i && cellX[other] === nx && cellY[other] === ny && cellZ[other] === nz) {
+              const offJ = other * 3
+              const ddx = xi - (positions[offJ] ?? 0)
+              const ddy = yi - (positions[offJ + 1] ?? 0)
+              const ddz = zi - (positions[offJ + 2] ?? 0)
+              const distSq = ddx * ddx + ddy * ddy + ddz * ddz
+              if (distSq >= 0.16) {
+                const cutoff = Math.max(0.45, (ri + radii[other]) * bondScale + 0.18)
+                if (distSq <= cutoff * cutoff) {
+                  bonds.push({ a: i, b: other })
+                  if (bonds.length >= maxBonds) break
+                }
+              }
+            }
+            other = next[other]
           }
         }
       }
     }
   }
   return bonds
-}
-
-function isBonded(frame: InternalFrame, left: number, right: number, bondScale: number) {
-  const leftOffset = left * 3
-  const rightOffset = right * 3
-  const dx = (frame.positions[leftOffset] ?? 0) - (frame.positions[rightOffset] ?? 0)
-  const dy = (frame.positions[leftOffset + 1] ?? 0) - (frame.positions[rightOffset + 1] ?? 0)
-  const dz = (frame.positions[leftOffset + 2] ?? 0) - (frame.positions[rightOffset + 2] ?? 0)
-  const distanceSquared = dx * dx + dy * dy + dz * dz
-  if (distanceSquared < 0.16) return false
-  const leftRadius = covalentRadius(frame.symbols[left])
-  const rightRadius = covalentRadius(frame.symbols[right])
-  const cutoff = Math.max(0.45, (leftRadius + rightRadius) * bondScale + 0.18)
-  return distanceSquared <= cutoff * cutoff
 }
 
 function distance(left: Vec3, right: Vec3) {
@@ -1721,19 +2313,15 @@ function normalizeVec(vector: Vec3): Vec3 {
   return [vector[0] / length, vector[1] / length, vector[2] / length]
 }
 
-function atomScreenRadius(symbol: string, style: Required<ViewerStyle>, scale: number) {
-  if (style.mode === 'line') return 2.2
-  const modeScale = style.mode === 'sphere' ? 1.62 : 1
+function atomScreenRadiusForMode(symbol: string, modeCode: number, style: Required<ViewerStyle>, scale: number) {
+  if (modeCode === ATOM_MODE_LINE || modeCode === ATOM_MODE_DIM) return 2.2
+  const modeScale = modeCode === ATOM_MODE_SPHERE ? 1.62 : 1
   return clamp(covalentRadius(symbol) * style.atomScale * modeScale * scale, 2.8, 34)
 }
 
 function labelProjectionStride(atomCount: number) {
   if (atomCount <= LABEL_SCAN_TARGET_ATOMS) return 1
   return Math.ceil(atomCount / LABEL_SCAN_TARGET_ATOMS)
-}
-
-function bucketKey(ix: number, iy: number, iz: number) {
-  return `${ix},${iy},${iz}`
 }
 
 function hasCell(cell: Float32Array) {

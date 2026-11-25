@@ -130,6 +130,21 @@ echo "Step 5: Generating checksums..."
 )
 
 echo ""
+echo "Step 6: Writing latest.json (used by chemssh-launcher one-click install/update)..."
+PYTHON_BIN=""
+for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" --version >/dev/null 2>&1; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+if [ -z "$PYTHON_BIN" ]; then
+    echo "Error: python3 or python is required to generate latest.json"
+    exit 1
+fi
+"$PYTHON_BIN" packaging/make_latest_json.py "$VERSION" "$OUTPUT_DIR_ABS"
+
+echo ""
 echo "=== Release Archive Created! ==="
 echo ""
 echo "Files:"
@@ -152,4 +167,5 @@ echo "  gh release create v${VERSION} \\"
 echo "    ${OUTPUT_DIR}/${RELEASE_NAME}.tar.gz \\"
 echo "    ${OUTPUT_DIR}/${RELEASE_NAME}.tar.gz.sha256 \\"
 echo "    ${OUTPUT_DIR}/${RELEASE_NAME}.zip \\"
-echo "    ${OUTPUT_DIR}/${RELEASE_NAME}.zip.sha256"
+echo "    ${OUTPUT_DIR}/${RELEASE_NAME}.zip.sha256 \\"
+echo "    ${OUTPUT_DIR}/latest.json"

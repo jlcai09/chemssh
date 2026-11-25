@@ -151,7 +151,7 @@ import {
 } from '../api/queue'
 import { apiErrorMessage, localizeBackendMessage } from '../api/apiMessages'
 import { getClientPreferences, saveClientPreferencesPatch } from '../api/clientPreferences'
-import { readCachedQueueSearch, writeCachedQueueSearch } from '../api/queueSearchCache'
+import { publishQueueJobs } from '../stores/queueJobs'
 import { t } from '../i18n'
 import JobTable from './JobTable.vue'
 
@@ -160,13 +160,11 @@ const props = withDefaults(
     compact?: boolean
     initialInterval?: number
     workspaceRoot?: string | null
-    cacheKey?: string
   }>(),
   {
     compact: false,
     initialInterval: 60,
-    workspaceRoot: null,
-    cacheKey: ''
+    workspaceRoot: null
   }
 )
 
@@ -188,7 +186,7 @@ const VASP_BATCH_SIZE = 10
 
 const response = ref<QueueResponse | null>(null)
 const loading = ref(false)
-const search = ref(readCachedQueueSearch(props.cacheKey))
+const search = ref(getClientPreferences().queue?.search ?? '')
 const stateFilters = ref<string[]>([...STATE_FILTERS])
 const MIN_REFRESH_SECONDS = 1
 const MAX_REFRESH_SECONDS = 3600
@@ -257,6 +255,7 @@ async function refresh() {
   loading.value = true
   try {
     response.value = await listQueue({ currentUserOnly: currentUserFilterEnabled.value })
+    publishQueueJobs(response.value.items, response.value.scheduler)
     syncSelectionWithVisibleJobs()
     if (queueMode.value === 'vasp') void loadVaspStats()
   } catch (error) {
@@ -464,7 +463,9 @@ watch(queueMode, value => {
   if (value === 'vasp') void loadVaspStats()
   else vaspGeneration += 1
 })
-watch(search, value => writeCachedQueueSearch(props.cacheKey, value))
+watch(search, value => {
+  void saveClientPreferencesPatch({ queue: { search: value } })
+})
 watch(currentUserFilterEnabled, () => {
   void refresh()
 })

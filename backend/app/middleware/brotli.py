@@ -67,8 +67,7 @@ class _BrotliResponder:
         self.compressor_factory = compressor_factory
         self.quality = quality
         self.initial_message: Message | None = None
-        self.body_parts: list[bytes] = []
-        self.streaming = False
+        self.passthrough = False
         self.stream_compressor: Any | None = None
 
     async def __call__(self, scope: Scope, receive: Receive) -> None:
@@ -76,35 +75,49 @@ class _BrotliResponder:
 
     async def send_with_brotli(self, message: Message) -> None:
         if message["type"] == "http.response.start":
-            self.initial_message = message
             headers = MutableHeaders(raw=list(message["headers"]))
-            if _should_stream_compress(message["status"], headers):
-                self.streaming = True
-                self.stream_compressor = self.compressor_factory(quality=self.quality)
-                headers["Content-Encoding"] = "br"
-                if "Content-Length" in headers:
-                    del headers["Content-Length"]
-                _set_vary_accept_encoding(headers)
-                message["headers"] = headers.raw
+            self.passthrough = not _should_compress(message["status"], headers)
+            if self.passthrough:
                 await self.send(message)
+            elif _should_stream_compress(message["status"], headers):
+                await self.start_streaming_response(message)
+            else:
+                self.initial_message = message
             return
 
-        if message["type"] != "http.response.body":
+        if self.passthrough or message["type"] != "http.response.body":
+            if self.initial_message is not None:
+                await self.send(self.initial_message)
+                self.initial_message = None
+                self.passthrough = True
             await self.send(message)
             return
 
-        if self.streaming:
+        if self.stream_compressor is not None:
             await self.send_streaming_body(message)
             return
 
-        body = message.get("body", b"")
-        if body:
-            self.body_parts.append(body)
-
-        if message.get("more_body", False):
+        if self.initial_message is None:
+            await self.send(message)
             return
 
-        await self.send_final_body()
+        if message.get("more_body", False):
+            await self.start_streaming_response(self.initial_message)
+            await self.send_streaming_body(message)
+            return
+
+        await self.send_final_body(message)
+
+    async def start_streaming_response(self, start: Message) -> None:
+        self.stream_compressor = self.compressor_factory(quality=self.quality)
+        self.initial_message = None
+        headers = MutableHeaders(raw=list(start["headers"]))
+        headers["Content-Encoding"] = "br"
+        if "Content-Length" in headers:
+            del headers["Content-Length"]
+        _set_vary_accept_encoding(headers)
+        start["headers"] = headers.raw
+        await self.send(start)
 
     async def send_streaming_body(self, message: Message) -> None:
         compressor = self.stream_compressor
@@ -120,26 +133,23 @@ class _BrotliResponder:
         if not message.get("more_body", False):
             compressed += compressor.finish()
 
-        await self.send({
-            "type": "http.response.body",
-            "body": compressed,
-            "more_body": message.get("more_body", False),
-        })
+        await self.send({**message, "body": compressed})
 
-    async def send_final_body(self) -> None:
-        body = b"".join(self.body_parts)
+    async def send_final_body(self, message: Message) -> None:
+        body = message.get("body", b"")
         start = self.initial_message
+        self.initial_message = None
 
         if start is None:
-            await self.send({"type": "http.response.body", "body": body, "more_body": False})
+            await self.send(message)
+            return
+
+        if not body:
+            await self.send(start)
+            await self.send(message)
             return
 
         headers = MutableHeaders(raw=list(start["headers"]))
-        if not _should_compress(start["status"], headers, body):
-            await self.send(start)
-            await self.send({"type": "http.response.body", "body": body, "more_body": False})
-            return
-
         compressed = self.compress(body, quality=self.quality)
         headers["Content-Encoding"] = "br"
         headers["Content-Length"] = str(len(compressed))
@@ -147,7 +157,7 @@ class _BrotliResponder:
         start["headers"] = headers.raw
 
         await self.send(start)
-        await self.send({"type": "http.response.body", "body": compressed, "more_body": False})
+        await self.send({**message, "body": compressed})
 
 
 def _accepts_brotli(header_value: str) -> bool:
@@ -179,16 +189,14 @@ def _accepts_brotli(header_value: str) -> bool:
     return wildcard_q is not None and wildcard_q > 0
 
 
-def _should_compress(status_code: int, headers: MutableHeaders, body: bytes) -> bool:
-    if not body or status_code < 200 or status_code in {204, 206, 304}:
+def _should_compress(status_code: int, headers: MutableHeaders) -> bool:
+    if status_code < 200 or status_code in {204, 206, 304}:
         return False
-    if headers.get("Content-Encoding"):
+    if "Content-Encoding" in headers:
         return False
 
     content_type = headers.get("Content-Type", "").split(";", 1)[0].lower()
     if not content_type:
-        return False
-    if content_type in STREAMING_TYPES:
         return False
 
     return (
@@ -202,7 +210,7 @@ def _should_compress(status_code: int, headers: MutableHeaders, body: bytes) -> 
 def _should_stream_compress(status_code: int, headers: MutableHeaders) -> bool:
     if status_code < 200 or status_code in {204, 206, 304}:
         return False
-    if headers.get("Content-Encoding"):
+    if "Content-Encoding" in headers:
         return False
     content_type = headers.get("Content-Type", "").split(";", 1)[0].lower()
     return content_type in STREAMING_TYPES

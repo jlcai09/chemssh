@@ -47,13 +47,15 @@ export function closeTerminalSession(sessionId: string) {
   })
 }
 
-export function terminalWebSocketUrl(sessionId: string) {
+export function terminalWebSocketUrl(sessionId: string, options: { binary?: boolean } = {}) {
   const path = `/api/terminal/ws/${encodeURIComponent(sessionId)}`
   const clientId = getClientId()
+  const useBinary = options.binary !== false
   if (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) {
     const url = new URL(path, API_BASE)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
     url.searchParams.set('client_id', clientId)
+    if (useBinary) url.searchParams.set('binary', '1')
     applyAuthQuery(url.searchParams)
     return url.toString()
   }
@@ -61,6 +63,7 @@ export function terminalWebSocketUrl(sessionId: string) {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const url = new URL(`${API_BASE}${path}`, `${protocol}://${window.location.host}`)
   url.searchParams.set('client_id', clientId)
+  if (useBinary) url.searchParams.set('binary', '1')
   applyAuthQuery(url.searchParams)
   return url.toString()
 }

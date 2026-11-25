@@ -69,11 +69,11 @@
   --radius-xl: 24px;
   --radius-pill: 9999px;
 
-  /* 动画 */
-  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-base: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-slow: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-bounce: 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* 动画：控件一次性过渡统一控制在 0.5s 以内 */
+  --transition-fast: 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-bounce: 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* Focus Ring */
   --ring: 0 0 0 3px rgba(23, 107, 135, 0.2);
@@ -306,11 +306,11 @@ button {
     transparent
   );
   transform: translateX(-100%) translateY(-100%) rotate(45deg);
-  transition: transform 0.6s;
+  transition: transform 0.3s;
 }
 
 .glass-shimmer:hover::before {
-  animation: shimmer 1.5s ease-in-out;
+  animation: shimmer 0.45s ease-in-out;
 }
 
 /* 按钮样式 */

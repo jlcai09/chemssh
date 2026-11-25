@@ -405,8 +405,22 @@ async function initializeCanvasBoard() {
   }, 5 * 60 * 1000)
 }
 
+let pointerActive = false
+let lastSavedSignature = ''
+
+function handleGlobalPointerDown() {
+  pointerActive = true
+}
+
+function handleGlobalPointerUp() {
+  pointerActive = false
+}
+
 onMounted(() => {
   mounted = true
+  window.addEventListener('pointerdown', handleGlobalPointerDown, true)
+  window.addEventListener('pointerup', handleGlobalPointerUp, true)
+  window.addEventListener('pointercancel', handleGlobalPointerUp, true)
   void initializeCanvasBoard()
 })
 
@@ -418,6 +432,9 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', handleGlobalPointerDown, true)
+  window.removeEventListener('pointerup', handleGlobalPointerUp, true)
+  window.removeEventListener('pointercancel', handleGlobalPointerUp, true)
   if (saveTimer) window.clearTimeout(saveTimer)
   if (heartbeatTimer) window.clearInterval(heartbeatTimer)
 })
@@ -450,6 +467,7 @@ async function hydrate() {
     boardState.value = normalizeBoardState(cache.boards)
     setClientPreferencesState(cache.preferences)
     preferences.value = normalizeClientPreferences(getClientPreferences())
+    lastSavedSignature = boardPersistenceSignature(boardState.value)
     saveLocalBoards()
     saveStatus.value = 'saved'
   } catch {
@@ -589,20 +607,30 @@ function activateWindow(windowId: string) {
   const target = board?.windows.find(item => item.id === windowId)
   if (!board || !target) return
   activeWindowId.value = windowId
+  const alreadyOnTop = board.windows.every(item => item.id === target.id || item.zIndex < target.zIndex)
+  if (alreadyOnTop) return
   target.zIndex = nextZIndex(board)
 }
 
 function moveWindow(windowId: string, x: number, y: number) {
+  const nextX = Math.round(x)
+  const nextY = Math.round(y)
+  const current = activeBoard.value?.windows.find(item => item.id === windowId)
+  if (!current || (current.x === nextX && current.y === nextY)) return
   updateWindow(windowId, windowState => {
-    windowState.x = Math.round(x)
-    windowState.y = Math.round(y)
+    windowState.x = nextX
+    windowState.y = nextY
   })
 }
 
 function resizeWindow(windowId: string, width: number, height: number) {
+  const nextW = Math.round(width)
+  const nextH = Math.round(height)
+  const current = activeBoard.value?.windows.find(item => item.id === windowId)
+  if (!current || (current.width === nextW && current.height === nextH)) return
   updateWindow(windowId, windowState => {
-    windowState.width = Math.round(width)
-    windowState.height = Math.round(height)
+    windowState.width = nextW
+    windowState.height = nextH
   })
   terminalLayoutVersion.value += 1
 }
@@ -622,16 +650,22 @@ function toggleMinimize(windowId: string) {
 }
 
 function updateTailPath(windowId: string, path: string) {
+  const current = activeBoard.value?.windows.find(item => item.id === windowId)
+  const nextTitle = path ? path.split(/[\\/]/).pop() || t('canvas.window.tail') : t('canvas.window.tail')
+  if (current && current.payload?.path === path && current.title === nextTitle) return
   updateWindow(windowId, windowState => {
     windowState.payload = { ...(windowState.payload ?? {}), path }
-    windowState.title = path ? path.split(/[\\/]/).pop() || t('canvas.window.tail') : t('canvas.window.tail')
+    windowState.title = nextTitle
   })
 }
 
 function updateFileManagerPath(windowId: string, path: string) {
+  const current = activeBoard.value?.windows.find(item => item.id === windowId)
+  const nextTitle = fileManagerDirectoryName(path) || t('canvas.window.fileManager')
+  if (current && current.payload?.path === path && current.title === nextTitle) return
   updateWindow(windowId, windowState => {
     windowState.payload = { ...(windowState.payload ?? {}), path }
-    windowState.title = fileManagerDirectoryName(path) || t('canvas.window.fileManager')
+    windowState.title = nextTitle
   })
 }
 
@@ -1029,22 +1063,52 @@ function updateWindow(windowId: string, updater: (windowState: CanvasWindowState
   board.updatedAt = new Date().toISOString()
 }
 
+function boardPersistenceSignature(state: CanvasBoardState): string {
+  return JSON.stringify({
+    version: state.version,
+    activeBoardId: state.activeBoardId,
+    boards: state.boards.map(board => ({
+      id: board.id,
+      name: board.name,
+      viewport: board.viewport,
+      windows: board.windows
+    }))
+  })
+}
+
 function markDirty() {
+  const signature = boardPersistenceSignature(boardState.value)
+  if (signature === lastSavedSignature) return
   saveStatus.value = 'dirty'
-  saveLocalBoards()
+  if (saveTimer) window.clearTimeout(saveTimer)
+  schedulePersistBoardState(1200)
+}
+
+function schedulePersistBoardState(delayMs: number) {
   if (saveTimer) window.clearTimeout(saveTimer)
   saveTimer = window.setTimeout(() => {
+    if (pointerActive) {
+      schedulePersistBoardState(500)
+      return
+    }
     void persistBoardState()
-  }, 900)
+  }, delayMs)
 }
 
 async function persistBoardState() {
   if (!hydrated) return
   if (saveTimer) window.clearTimeout(saveTimer)
+  const signature = boardPersistenceSignature(boardState.value)
+  if (signature === lastSavedSignature) {
+    saveStatus.value = 'saved'
+    return
+  }
   saveStatus.value = 'saving'
   try {
+    saveLocalBoards()
     await saveCanvasBoards(boardState.value)
     await saveClientPreferencesPatch(preferences.value, { immediate: true })
+    lastSavedSignature = signature
     saveStatus.value = 'saved'
   } catch (error) {
     saveStatus.value = 'error'

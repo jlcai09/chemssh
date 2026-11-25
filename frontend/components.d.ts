@@ -12,6 +12,7 @@ declare module 'vue' {
     CanvasPluginWindow: typeof import('./src/components/canvas/CanvasPluginWindow.vue')['default']
     CanvasPreviewWindow: typeof import('./src/components/canvas/CanvasPreviewWindow.vue')['default']
     CanvasWindow: typeof import('./src/components/canvas/CanvasWindow.vue')['default']
+    DynamicDisplayPanel: typeof import('./src/components/DynamicDisplayPanel.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
@@ -19,6 +20,7 @@ declare module 'vue' {
     ElConfigProvider: typeof import('element-plus/es')['ElConfigProvider']
     ElDescriptions: typeof import('element-plus/es')['ElDescriptions']
     ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
+    ElDialog: typeof import('element-plus/es')['ElDialog']
     ElDrawer: typeof import('element-plus/es')['ElDrawer']
     ElDropdown: typeof import('element-plus/es')['ElDropdown']
     ElDropdownItem: typeof import('element-plus/es')['ElDropdownItem']
@@ -29,6 +31,7 @@ declare module 'vue' {
     ElInputNumber: typeof import('element-plus/es')['ElInputNumber']
     ElOption: typeof import('element-plus/es')['ElOption']
     ElPopover: typeof import('element-plus/es')['ElPopover']
+    ElRadio: typeof import('element-plus/es')['ElRadio']
     ElRadioButton: typeof import('element-plus/es')['ElRadioButton']
     ElRadioGroup: typeof import('element-plus/es')['ElRadioGroup']
     ElSegmented: typeof import('element-plus/es')['ElSegmented']
@@ -47,6 +50,7 @@ declare module 'vue' {
     MonacoTextEditor: typeof import('./src/components/MonacoTextEditor.vue')['default']
     PreviewAutoOpenSettingsPopover: typeof import('./src/components/PreviewAutoOpenSettingsPopover.vue')['default']
     QueueStatus: typeof import('./src/components/QueueStatus.vue')['default']
+    StructureContextMenu: typeof import('./src/components/StructureContextMenu.vue')['default']
     TerminalPanel: typeof import('./src/components/terminal/TerminalPanel.vue')['default']
   }
   export interface GlobalDirectives {

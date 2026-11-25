@@ -1,16 +1,28 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import struct
 import time
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
 
 import anyio
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response, StreamingResponse
 
+from backend.app.core.errors import AppError
 from backend.app.dependencies import get_structure_service
-from backend.app.models.structure import AseFrame, AseFrameChunkResponse, AsePreviewResponse
+from backend.app.models.structure import (
+    AseDynamicDisplayRequest,
+    AseDynamicDisplayResponse,
+    AseFragmentRequest,
+    AseFragmentResponse,
+    AseFrame,
+    AseFrameChunkResponse,
+    AsePreviewResponse,
+)
 from backend.app.services.structure_types import STRUCTURE_BINARY_MEDIA_TYPE, StructureCancellationToken
 
 if TYPE_CHECKING:
@@ -86,6 +98,30 @@ def read_ase_frame(
     return service.read_frame(path, index, format, force=force)
 
 
+@router.post("/ase/fragments", response_model=AseFragmentResponse)
+async def query_ase_fragments(
+    request: Request,
+    payload: AseFragmentRequest,
+    service: StructureService = Depends(get_structure_service),
+) -> AseFragmentResponse:
+    return await run_with_disconnect_cancellation(
+        request,
+        lambda cancellation: service.query_fragments(payload, cancellation=cancellation),
+    )
+
+
+@router.post("/ase/dynamic-display", response_model=AseDynamicDisplayResponse)
+async def evaluate_ase_dynamic_display(
+    request: Request,
+    payload: AseDynamicDisplayRequest,
+    service: StructureService = Depends(get_structure_service),
+) -> AseDynamicDisplayResponse:
+    return await run_with_disconnect_cancellation(
+        request,
+        lambda cancellation: service.evaluate_dynamic_display(payload, cancellation=cancellation),
+    )
+
+
 @router.get("/ase/frames", response_model=AseFrameChunkResponse)
 def read_ase_frame_chunk_json(
     path: str,
@@ -150,9 +186,7 @@ async def stream_ase_frames(
                     return
                 await anyio.sleep(0.1)
 
-        import asyncio
-
-        watch_task = asyncio.ensure_future(watch_disconnect())
+        watch_task = asyncio.create_task(watch_disconnect())
 
         try:
             # Resolve and scan before emitting chunks so the client receives total frame metadata first.
@@ -177,13 +211,17 @@ async def stream_ase_frames(
                         allow_incomplete=allow_incomplete,
                     ),
                 )
+                if not summary.scan_completed and service.stream_requires_complete_summary(resolved, format, summary):
+                    summary = await anyio.to_thread.run_sync(
+                        lambda: service._get_structure_summary(resolved, format, cancellation, allow_incomplete=False),
+                    )
             except Exception as exc:
                 yield _sse_event("error", json.dumps({"code": "SCAN_FAILED", "message": str(exc)}))
                 return
             t_scan_ms = (time.perf_counter() - t_scan_0) * 1000.0 if debug_timings else 0.0
 
             n_frames = summary.n_frames
-            chunk_size = chunk
+            chunk_size = service.frame_chunk_count(summary, chunk)
 
             # Initial metadata: backend timing + frame count. Client pairs
             # server_emit_ms with EPOCH_OFFSET_AT_LOAD to compute drift.
@@ -196,35 +234,45 @@ async def stream_ase_frames(
                     "server_emit_ms": time.time() * 1000.0,
                 }))
 
-            for start in range(0, n_frames, chunk_size):
+            start = 0
+            while start < n_frames:
                 if cancellation._event.is_set() or await request.is_disconnected():
-                    break
+                    return
 
                 safe_count = min(chunk_size, n_frames - start)
                 profile = {} if debug_timings else None
-                t_pack_0 = time.perf_counter() if debug_timings else 0.0
-                try:
-                    payload = await anyio.to_thread.run_sync(
-                        lambda s=start, c=safe_count, p=profile: service.stream_frame_chunk_binary(
-                            resolved, s, c, format, summary, profile=p,
-                        ),
+
+                def pack_chunk() -> tuple[int, str, float, float]:
+                    cancellation.check()
+                    t_pack_0 = time.perf_counter() if debug_timings else 0.0
+                    payload = service.stream_frame_chunk_binary(
+                        resolved, start, safe_count, format, summary, profile=profile,
                     )
+                    cancellation.check()
+                    header_size = struct.unpack_from("<I", payload, 4)[0]
+                    header = json.loads(payload[8:8 + header_size])
+                    actual_count = header["count"]
+                    if header["start"] != start or not 0 < actual_count <= safe_count:
+                        raise AppError("INVALID_FRAME_RANGE", "Stream chunk does not cover the requested frame range", 500)
+                    t_pack_ms = (time.perf_counter() - t_pack_0) * 1000.0 if debug_timings else 0.0
+                    t_b64_0 = time.perf_counter() if debug_timings else 0.0
+                    encoded = base64.b64encode(payload).decode("ascii")
+                    t_b64_ms = (time.perf_counter() - t_b64_0) * 1000.0 if debug_timings else 0.0
+                    return actual_count, encoded, t_pack_ms, t_b64_ms
+
+                try:
+                    actual_count, encoded, t_pack_ms, t_b64_ms = await anyio.to_thread.run_sync(pack_chunk)
                 except Exception as exc:
-                    yield _sse_event("error", json.dumps({"code": "CHUNK_FAILED", "message": str(exc)}))
-                    break
-                t_pack_ms = (time.perf_counter() - t_pack_0) * 1000.0 if debug_timings else 0.0
+                    if not cancellation._event.is_set() and not await request.is_disconnected():
+                        yield _sse_event("error", json.dumps({"code": "CHUNK_FAILED", "message": str(exc)}))
+                    return
 
-                t_b64_0 = time.perf_counter() if debug_timings else 0.0
-                encoded = base64.b64encode(payload).decode("ascii")
-                t_b64_ms = (time.perf_counter() - t_b64_0) * 1000.0 if debug_timings else 0.0
-
-                # Per-chunk meta precedes the chunk so the client can compute
-                # t_pack/t_b64 from meta and parse/write latency from the gap
-                # between meta and chunk onmessage.
+                if cancellation._event.is_set() or await request.is_disconnected():
+                    return
                 if debug_timings:
                     yield _sse_event("meta", json.dumps({
                         "start": start,
-                        "count": safe_count,
+                        "count": actual_count,
                         "t_pack_ms": t_pack_ms,
                         "t_b64_ms": t_b64_ms,
                         "server_emit_ms": time.time() * 1000.0,
@@ -232,11 +280,16 @@ async def stream_ase_frames(
                         "profile": profile,
                     }))
                 yield _sse_event("chunk", encoded)
+                del encoded
+                start += actual_count
 
             if not cancellation._event.is_set() and not await request.is_disconnected():
                 yield _sse_event("done", json.dumps({"n_frames": n_frames}))
         finally:
+            cancellation.cancel()
             watch_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await watch_task
 
     return StreamingResponse(
         event_generator(),

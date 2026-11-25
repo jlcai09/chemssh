@@ -76,6 +76,7 @@
           class="text-editor"
           :path="file?.path"
           :readonly="!editingEnabled"
+          @save="handleSaveClick"
         />
         <div class="editor-status-badge" :class="editorStatusClass" aria-live="polite">
           {{ editorStatusLabel }}

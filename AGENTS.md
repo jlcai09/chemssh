@@ -56,6 +56,12 @@ Run a narrower test file when the change is focused. Use the full test suite for
 - Global styles: `frontend/src/styles.css`.
 - i18n strings: `frontend/src/i18n.ts`.
 
+### Motion And Animation Budget
+
+- Every one-shot transition or animation on an interactive control must finish within 0.5s. Prefer the shared tokens in `frontend/src/styles-liquid-glass.css`: `--transition-fast` (0.12s), `--transition-base` (0.16s), `--transition-slow` (0.22s), `--transition-bounce` (0.28s); avoid new hardcoded durations.
+- Element Plus motion is capped globally in `frontend/src/styles.css` with `--el-transition-duration: 0.18s` and `--el-transition-duration-fast: 0.12s`. Do not raise these tokens, and override any Element Plus rule that hardcodes a longer control transition (the existing progress-bar and list enter/leave overrides are examples).
+- Continuous feedback or decorative loops (loading spinners, skeleton shimmer, animated backdrop, pulsing status dots) are exempt from the 0.5s cap; keep them slow enough to read and never use them as a substitute for an immediate state change.
+
 ### File Type And Preview Standards
 
 - Backend file type detection is the source of truth. Use `FileItem.preview_type` and `FileItem.format` returned by `listFiles()` / drag payloads before falling back to names or extensions.

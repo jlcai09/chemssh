@@ -121,14 +121,22 @@ export function renamePath(oldPath: string, newPath: string) {
 export function movePaths(paths: string[], targetDirectory: string, entries?: MovePathEntry[]) {
   return clearRequestCacheAfter(request<FileOperationResponse>('/api/files/move', {
     method: 'POST',
-    body: JSON.stringify({ paths, target_directory: targetDirectory, items: entries ?? [] })
+    body: JSON.stringify({ paths, target_directory: targetDirectory, items: entries?.map(entry => ({
+      path: entry.path,
+      target_name: entry.targetName,
+      overwrite: entry.overwrite
+    })) ?? [] })
   }))
 }
 
 export function copyPaths(paths: string[], targetDirectory: string, entries?: MovePathEntry[]) {
   return clearRequestCacheAfter(request<FileOperationResponse>('/api/files/copy', {
     method: 'POST',
-    body: JSON.stringify({ paths, target_directory: targetDirectory, items: entries ?? [] })
+    body: JSON.stringify({ paths, target_directory: targetDirectory, items: entries?.map(entry => ({
+      path: entry.path,
+      target_name: entry.targetName,
+      overwrite: entry.overwrite
+    })) ?? [] })
   }))
 }
 
@@ -228,14 +236,17 @@ export function downloadArchive(paths: string[]) {
   })
 }
 
-export type ArchiveFormat = 'tar.zst' | 'tar.gz' | 'tar.xz' | 'tar'
-export type ArchiveToolName = 'tar' | 'zstd' | 'gzip' | 'xz'
+export type ArchiveFormat = 'tar.zst' | 'tar.gz' | 'tar.xz' | 'tar' | 'zip' | '7z'
+export type ArchiveToolName = 'tar' | 'zstd' | 'gzip' | 'xz' | 'unzip' | 'seven_zip'
 
 export interface ArchiveTools {
   tar: boolean
   zstd: boolean
   gzip: boolean
   xz: boolean
+  zip: boolean
+  unzip: boolean
+  seven_zip: boolean
   formats: ArchiveFormat[]
 }
 
@@ -250,7 +261,9 @@ const EXTRACT_SUFFIXES: [suffix: string, tools: ArchiveToolName[]][] = [
   ['.tar', ['tar']],
   ['.zst', ['zstd']],
   ['.gz', ['gzip']],
-  ['.xz', ['xz']]
+  ['.xz', ['xz']],
+  ['.zip', ['unzip']],
+  ['.7z', ['seven_zip']]
 ]
 
 export function getArchiveTools() {

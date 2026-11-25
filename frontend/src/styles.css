@@ -9,6 +9,16 @@
   --radius-panel: 16px;
   --radius-control: 12px;
   --ring: 0 0 0 3px rgba(23, 107, 135, 0.2);
+  /* 控件动效预算：Element Plus 默认 0.3s 过渡统一提速，一次性过渡不得超过 0.5s。 */
+  --el-transition-duration: 0.18s;
+  --el-transition-duration-fast: 0.12s;
+}
+
+/* Element Plus 内联写死且超过 0.5s 的两处过渡，收敛回动效预算内。 */
+.el-progress-bar__inner,
+.el-list-enter-active,
+.el-list-leave-active {
+  transition-duration: 0.3s;
 }
 
 /* Theme performance defaults: enable these effects only when the body class is present. */
@@ -1258,6 +1268,21 @@ p {
 .file-row.is-move-drop-target .file-kind-icon,
 .file-row.is-move-drop-target .file-name-cell {
   color: var(--success);
+}
+
+/* External upload hover: teal so it reads differently from an internal move. */
+.file-row.is-upload-drop-target {
+  color: #0d3f52;
+  background: linear-gradient(90deg, #dceffa 0%, #f3fbfe 100%);
+  box-shadow:
+    inset 0 0 0 2px rgba(23, 107, 135, 0.4),
+    inset 4px 0 0 var(--accent-2),
+    0 6px 16px rgba(23, 107, 135, 0.12);
+}
+
+.file-row.is-upload-drop-target .file-kind-icon,
+.file-row.is-upload-drop-target .file-name-cell {
+  color: var(--accent-2);
 }
 
 .file-drag-image {
@@ -3680,6 +3705,119 @@ button.context-menu-item {
   z-index: 1;
 }
 
+.terminal-jobs-badge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 4;
+  max-width: calc(100% - 20px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: rgba(14, 21, 28, 0.62);
+  color: #d7e1ea;
+  font-family: "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 4px 14px rgba(2, 6, 12, 0.32);
+}
+
+.terminal-jobs-badge-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #7bd88f;
+  box-shadow: 0 0 6px rgba(123, 216, 143, 0.8);
+}
+
+.terminal-jobs-badge-label {
+  flex: 0 0 auto;
+  color: #9fb0c0;
+}
+
+.terminal-jobs-badge-ids {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.terminal-jobs-badge .el-dropdown {
+  display: inline-flex;
+  align-items: center;
+  pointer-events: auto;
+}
+
+.terminal-jobs-badge-toggle {
+  width: 18px;
+  height: 18px;
+  margin-right: -4px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #9fb0c0;
+  cursor: pointer;
+}
+
+.terminal-jobs-badge-toggle .el-icon {
+  font-size: 12px;
+}
+
+.terminal-jobs-badge-toggle:hover,
+.terminal-jobs-badge-toggle:focus-visible {
+  color: #ffffff;
+  background: rgba(148, 163, 184, 0.22);
+  outline: 0;
+}
+
+.terminal-jobs-dropdown {
+  z-index: 3300 !important;
+}
+
+.terminal-jobs-dropdown.el-zoom-in-top-enter-active,
+.terminal-jobs-dropdown.el-zoom-in-top-leave-active {
+  transition-duration: 0.12s;
+}
+
+.terminal-jobs-dropdown .el-dropdown-menu {
+  padding: 4px;
+}
+
+.terminal-jobs-dropdown .el-dropdown-menu__item {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+}
+
+.terminal-jobs-dropdown .el-dropdown-menu__item.is-danger {
+  color: #d92d20;
+}
+
+.terminal-jobs-dropdown .el-dropdown-menu__item.is-danger:hover,
+.terminal-jobs-dropdown .el-dropdown-menu__item.is-danger:focus {
+  color: #b42318;
+  background: rgba(217, 45, 32, 0.08);
+}
+
+.chemssh-terminal-overlay,
+.chemssh-terminal-toast {
+  z-index: 3300 !important;
+}
+
 .terminal-shell .xterm {
   flex: 1 1 auto;
   height: 100%;
@@ -4649,6 +4787,8 @@ button.context-menu-item {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7);
   backdrop-filter: none;
   font-size: 14px;
+  /* Only a hint: directory rows underneath must stay valid drop targets. */
+  pointer-events: none;
 }
 
 .canvas-file-drop-overlay.is-upload-overlay .el-icon {

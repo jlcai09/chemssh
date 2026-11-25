@@ -59,6 +59,8 @@
           @context-menu="openFileContextMenu"
           @blank-context-menu="openBlankContextMenu"
           @move-items="handleMoveItems"
+          @upload-drop="handleExternalUploadDrop"
+          @upload-target-change="externalDropTargetPath = $event"
           @open="openItem"
           @delete="confirmDelete"
         />
@@ -170,7 +172,6 @@
             v-if="activeWorkPanel?.kind === 'queue'"
             class="side-queue"
             :initial-interval="60"
-            :cache-key="activeWorkPanel?.id"
             :workspace-root="systemInfo?.workspace_root"
             @open-workdir="openQueueWorkdir"
           />
@@ -206,7 +207,7 @@
       />
     </aside>
 
-    <div v-if="dragUploadActive" class="workspace-drop-overlay" aria-live="polite">
+    <div v-if="dragUploadActive && !externalDropTargetPath" class="workspace-drop-overlay" aria-live="polite">
       <el-icon><UploadFilled /></el-icon>
       <span>{{ t('file.dropUpload') }}</span>
     </div>
@@ -495,7 +496,7 @@ import {
   type FilePreviewProvider,
   type PreviewProbeResponse
 } from '../api/filePreviewProviders'
-import { isStructurePreviewItem } from '../api/fileTypes'
+import { isBinaryStructureFile, isStructurePreviewItem } from '../api/fileTypes'
 import {
   defaultPreviewAutoOpenSettings,
   findAutoOpenCandidate,
@@ -585,6 +586,7 @@ let autoOpenRequestSerial = 0
 const loadingFiles = ref(false)
 const previewLoading = ref(false)
 const dragUploadDepth = ref(0)
+const externalDropTargetPath = ref<string | null>(null)
 const directoryHistory = ref<string[]>([])
 const forcedLargeTextPreviews = new Set<string>()
 const forcedLargeStructurePreviews = new Set<string>()
@@ -1294,7 +1296,14 @@ async function previewFile(itemOrPath: FileItem | string, options: { auto?: bool
         }
         return
       } catch (error) {
-        if (!isCurrentRequest()) return
+        if (!isCurrentRequest() || isAbortError(error)) return
+        if (isBinaryStructureFile(path, item.format)) {
+          if (!options.auto) {
+            previewError.value = previewApiErrorMessage(error)
+            ElMessage.error(previewError.value)
+          }
+          return
+        }
         if (!options.auto) {
           previewError.value = previewApiErrorMessage(error)
           previewMode.value = 'text'
@@ -1817,6 +1826,7 @@ function handleWorkspaceDragEnter(event: DragEvent) {
   if (!hasFileDrag(event)) return
   event.preventDefault()
   closeContextMenu()
+  externalDropTargetPath.value = null
   dragUploadDepth.value = 1
   setUploadDropEffect(event)
 }
@@ -1835,15 +1845,26 @@ function handleWorkspaceDragLeave(event: DragEvent) {
   const related = event.relatedTarget instanceof Node ? event.relatedTarget : null
   if (root && related && root.contains(related)) return
   dragUploadDepth.value = 0
+  externalDropTargetPath.value = null
 }
 
 function handleWorkspaceDrop(event: DragEvent) {
   if (!hasFileDrag(event)) return
   event.preventDefault()
   dragUploadDepth.value = 0
+  externalDropTargetPath.value = null
   void collectDropUploadEntries(event).then(entries => {
     if (entries.length > 0) void handleUploadEntries(entries)
   })
+}
+
+// External files dropped on a directory row land in that folder, mirroring the
+// internal move gesture instead of always using the current listing path.
+async function handleExternalUploadDrop(target: FileItem, event: DragEvent) {
+  dragUploadDepth.value = 0
+  externalDropTargetPath.value = null
+  const entries = await collectDropUploadEntries(event)
+  if (entries.length > 0) await handleUploadEntries(entries, target.path)
 }
 
 function handlePreviewDragOver(event: DragEvent) {

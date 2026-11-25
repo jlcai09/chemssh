@@ -1,6 +1,10 @@
 import { applyAuthQuery, authHeaders, fetchWithAuthRetry, request } from './http'
 import { API_BASE, ApiError } from './http'
 import type {
+  AseDynamicDisplayRequest,
+  AseDynamicDisplayResponse,
+  AseFragmentRequest,
+  AseFragmentResponse,
   AseFrame,
   AseFrameChunk,
   AseFrameJsonChunk,
@@ -9,6 +13,7 @@ import type {
   StructureSource
 } from '../types/structure'
 import { elementFromNumber } from '../viewer/elements'
+import type { CompactAseFrame } from '../viewer/trajectoryCacheBudget'
 
 export const ASE_STRUCTURE_SOURCE: StructureSource = {
   id: 'ase',
@@ -35,16 +40,16 @@ export function readAsePreview(path: string, format?: string | null, force = fal
   return readStructurePreview(ASE_STRUCTURE_SOURCE, path, format, force, options)
 }
 
-export function readAseFrame(path: string, index: number, format?: string | null, force = false) {
-  return readStructureFrame(ASE_STRUCTURE_SOURCE, path, index, format, force)
+export function readAseFrame(path: string, index: number, format?: string | null, force = false, options: StructureRequestOptions = {}) {
+  return readStructureFrame(ASE_STRUCTURE_SOURCE, path, index, format, force, options)
 }
 
-export function readAseFrameJsonChunk(path: string, start: number, count: number, format?: string | null, force = false) {
-  return readStructureFrameJsonChunk(ASE_STRUCTURE_SOURCE, path, start, count, format, force)
+export function readAseFrameJsonChunk(path: string, start: number, count: number, format?: string | null, force = false, options: StructureRequestOptions = {}) {
+  return readStructureFrameJsonChunk(ASE_STRUCTURE_SOURCE, path, start, count, format, force, options)
 }
 
-export function readAseFrameChunk(path: string, start: number, count: number, format?: string | null, force = false): Promise<AseFrameChunk> {
-  return readStructureFrameChunk(ASE_STRUCTURE_SOURCE, path, start, count, format, force)
+export function readAseFrameChunk(path: string, start: number, count: number, format?: string | null, force = false, options: StructureRequestOptions = {}): Promise<AseFrameChunk> {
+  return readStructureFrameChunk(ASE_STRUCTURE_SOURCE, path, start, count, format, force, options)
 }
 
 export function readStructurePreview(
@@ -61,26 +66,53 @@ export function readStructurePreview(
     .then(preview => ({ ...preview, source: activeSource }))
 }
 
-export function readStructureFrame(source: StructureSource | null | undefined, path: string, index: number, format?: string | null, force = false) {
+export function readStructureFrame(source: StructureSource | null | undefined, path: string, index: number, format?: string | null, force = false, options: StructureRequestOptions = {}) {
   const params = aseQuery(path, format, force)
   params.set('index', String(index))
-  return request<AseFrame>(`${sourceBase(source)}/frame?${params.toString()}`)
+  return request<AseFrame>(`${sourceBase(source)}/frame?${params.toString()}`, { signal: options.signal })
 }
 
-export function readStructureFrameJsonChunk(source: StructureSource | null | undefined, path: string, start: number, count: number, format?: string | null, force = false) {
+export function readStructureFrameJsonChunk(source: StructureSource | null | undefined, path: string, start: number, count: number, format?: string | null, force = false, options: StructureRequestOptions = {}) {
   const params = aseQuery(path, format, force)
   params.set('start', String(start))
   params.set('count', String(count))
-  return request<AseFrameJsonChunk>(`${sourceBase(source)}/frames?${params.toString()}`)
+  return request<AseFrameJsonChunk>(`${sourceBase(source)}/frames?${params.toString()}`, { signal: options.signal })
 }
 
-export async function readStructureFrameChunk(source: StructureSource | null | undefined, path: string, start: number, count: number, format?: string | null, force = false): Promise<AseFrameChunk> {
+export function queryStructureFragments(
+  source: StructureSource | null | undefined,
+  payload: AseFragmentRequest,
+  options: StructureRequestOptions = {}
+) {
+  return request<AseFragmentResponse>(`${sourceBase(source)}/fragments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: options.signal
+  })
+}
+
+export function evaluateStructureDynamicDisplay(
+  source: StructureSource | null | undefined,
+  payload: AseDynamicDisplayRequest,
+  options: StructureRequestOptions = {}
+) {
+  return request<AseDynamicDisplayResponse>(`${sourceBase(source)}/dynamic-display`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: options.signal
+  })
+}
+
+export async function readStructureFrameChunk(source: StructureSource | null | undefined, path: string, start: number, count: number, format?: string | null, force = false, options: StructureRequestOptions = {}): Promise<AseFrameChunk> {
   const params = aseQuery(path, format, force)
   params.set('start', String(start))
   params.set('count', String(count))
 
   const response = await fetchWithAuthRetry(`${API_BASE}${sourceBase(source)}/frames.bin?${params.toString()}`, {
     credentials: 'include',
+    signal: options.signal,
     headers: authHeaders({ Accept: 'application/vnd.chemssh.structure+bin' })
   }, replaceAuth => authHeaders({ Accept: 'application/vnd.chemssh.structure+bin' }, { replaceAuth }))
 
@@ -397,5 +429,106 @@ export function frameFromVariableStructureChunk(chunk: AseFrameChunk, localIndex
     fmax: fmax === undefined || Number.isNaN(fmax) ? null : fmax,
     symbols: numbers.map(n => elementFromNumber(n) ?? 'X'),
     numbers
+  }
+}
+
+export function compactFrameFromStructureChunk(
+  chunk: AseFrameChunk,
+  localIndex: number,
+  sharedSymbols?: string[] | null,
+  sharedNumbers?: number[] | null
+): CompactAseFrame | null {
+  if (chunk.header.frame_encoding === 'variable-atoms-v1') {
+    return compactFrameFromVariableStructureChunk(chunk, localIndex)
+  }
+  const nAtoms = chunk.header.n_atoms
+  if (localIndex < 0 || localIndex >= chunk.header.count) return null
+
+  const atomOffset = localIndex * nAtoms
+  const atomEnd = atomOffset + nAtoms
+  const positionOffset = atomOffset * 3
+  const cellOffset = localIndex * 9
+
+  // Use .slice() so each cached frame owns its own compact TypedArray buffer
+  // and does not pin the entire 32-frame chunk ArrayBuffer in memory.
+  const positions = chunk.positions.slice(positionOffset, positionOffset + nAtoms * 3)
+  const cell = chunk.cells.length >= cellOffset + 9
+    ? chunk.cells.slice(cellOffset, cellOffset + 9)
+    : new Float32Array(9)
+  const tags = chunk.tags && chunk.tags.length >= atomEnd
+    ? chunk.tags.slice(atomOffset, atomEnd)
+    : undefined
+  const fixedMask = chunk.fixedMask && chunk.fixedMask.length >= atomEnd
+    ? chunk.fixedMask.slice(atomOffset, atomEnd)
+    : undefined
+
+  const energy = chunk.energy?.[localIndex]
+  const fmax = chunk.fmax?.[localIndex]
+
+  return {
+    compact: true,
+    frame_index: chunk.header.start + localIndex,
+    n_atoms: nAtoms,
+    positions,
+    cell,
+    pbc: chunk.header.pbc,
+    tags,
+    fixed_mask: fixedMask,
+    energy: energy === undefined || Number.isNaN(energy) ? null : energy,
+    fmax: fmax === undefined || Number.isNaN(fmax) ? null : fmax,
+    symbols: sharedSymbols ?? chunk.header.symbols,
+    numbers: sharedNumbers ?? chunk.header.numbers,
+    shared_topology: true
+  }
+}
+
+export function compactFrameFromVariableStructureChunk(
+  chunk: AseFrameChunk,
+  localIndex: number
+): CompactAseFrame | null {
+  if (chunk.header.frame_encoding !== 'variable-atoms-v1') return null
+  if (!chunk.frameAtomCounts || !chunk.numbers) return null
+  if (localIndex < 0 || localIndex >= chunk.header.count) return null
+
+  let atomOffset = 0
+  for (let index = 0; index < localIndex; index += 1) atomOffset += chunk.frameAtomCounts[index] ?? 0
+  const nAtoms = chunk.frameAtomCounts[localIndex] ?? 0
+  if (nAtoms <= 0) return null
+  const atomEnd = atomOffset + nAtoms
+  const positionOffset = atomOffset * 3
+  const cellOffset = localIndex * 9
+
+  const positions = chunk.positions.slice(positionOffset, positionOffset + nAtoms * 3)
+  const cell = chunk.cells.length >= cellOffset + 9
+    ? chunk.cells.slice(cellOffset, cellOffset + 9)
+    : new Float32Array(9)
+  const tags = chunk.tags && chunk.tags.length >= atomEnd
+    ? chunk.tags.slice(atomOffset, atomEnd)
+    : undefined
+  const fixedMask = chunk.fixedMask && chunk.fixedMask.length >= atomEnd
+    ? chunk.fixedMask.slice(atomOffset, atomEnd)
+    : undefined
+  const numbers = Array.from(chunk.numbers.subarray(atomOffset, atomEnd))
+  const pbcOffset = localIndex * 3
+  const pbc = chunk.pbc
+    ? [Boolean(chunk.pbc[pbcOffset]), Boolean(chunk.pbc[pbcOffset + 1]), Boolean(chunk.pbc[pbcOffset + 2])]
+    : chunk.header.pbc
+  const energy = chunk.energy?.[localIndex]
+  const fmax = chunk.fmax?.[localIndex]
+
+  return {
+    compact: true,
+    frame_index: chunk.header.start + localIndex,
+    n_atoms: nAtoms,
+    positions,
+    cell,
+    pbc,
+    tags,
+    fixed_mask: fixedMask,
+    energy: energy === undefined || Number.isNaN(energy) ? null : energy,
+    fmax: fmax === undefined || Number.isNaN(fmax) ? null : fmax,
+    symbols: numbers.map(n => elementFromNumber(n) ?? 'X'),
+    numbers,
+    shared_topology: false
   }
 }

@@ -4,7 +4,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-# Archive created next to the selected entries; `_new` keeps being appended so
+# Archive created next to the selected entries. A single entry keeps its own
+# name; several entries share this placeholder. `_new` keeps being appended so
 # an existing file is never overwritten.
 ARCHIVE_PREFIX = "archive"
 ARCHIVE_NEW_STEM = "_new"
@@ -14,18 +15,22 @@ FORMAT_SUFFIXES: dict[str, str] = {
     "tar.gz": ".tar.gz",
     "tar.xz": ".tar.xz",
     "tar": ".tar",
+    "zip": ".zip",
+    "7z": ".7z",
 }
 
-# Every format needs tar to bundle files and folders together; the compressor
-# is what actually shrinks the tarball.
+# Every tar format needs tar to bundle files and folders together; the
+# compressor is what actually shrinks the tarball. zip and 7z pack on their own.
 FORMAT_TOOLS: dict[str, tuple[str, ...]] = {
     "tar.zst": ("tar", "zstd"),
     "tar.gz": ("tar", "gzip"),
     "tar.xz": ("tar", "xz"),
     "tar": ("tar",),
+    "zip": ("zip",),
+    "7z": ("7z",),
 }
 
-PROBE_TOOLS = ("tar", "zstd", "gzip", "xz")
+PROBE_TOOLS = ("tar", "zstd", "gzip", "xz", "zip", "unzip", "7z")
 
 # Longest suffixes first: `.tar.gz` must win over `.gz`.
 EXTRACT_SUFFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -39,6 +44,8 @@ EXTRACT_SUFFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (".zst", ("zstd",)),
     (".gz", ("gzip",)),
     (".xz", ("xz",)),
+    (".zip", ("unzip",)),
+    (".7z", ("7z",)),
 )
 
 ZSTD_LEVEL = "-1"
@@ -68,11 +75,22 @@ def available_formats(tools: dict[str, bool]) -> list[str]:
     return [fmt for fmt, needed in FORMAT_TOOLS.items() if all(tools.get(tool) for tool in needed)]
 
 
-def archive_name(directory: Path, fmt: str) -> str:
+def archive_stem(names: list[str]) -> str:
+    """Base name for a generated archive.
+
+    Compressing a single entry keeps its original name so the result is
+    recognizable; bundling several entries falls back to the placeholder.
+    """
+    if len(names) == 1 and names[0]:
+        return names[0]
+    return ARCHIVE_PREFIX
+
+
+def archive_name(directory: Path, fmt: str, names: list[str]) -> str:
     suffix = FORMAT_SUFFIXES.get(fmt)
     if suffix is None:
         raise KeyError(fmt)
-    stem = ARCHIVE_PREFIX
+    stem = archive_stem(names)
     while (directory / f"{stem}{suffix}").exists():
         stem += ARCHIVE_NEW_STEM
     return f"{stem}{suffix}"
@@ -100,6 +118,10 @@ def compress_plan(fmt: str, archive: str, names: list[str], token: str) -> Archi
         return ArchivePlan([ArchiveStep(["tar", "-cJf", archive, "--", *names])])
     if fmt == "tar":
         return ArchivePlan([ArchiveStep(["tar", "-cf", archive, "--", *names])])
+    if fmt == "zip":
+        return ArchivePlan([ArchiveStep(["zip", "-r", archive, "--", *names])])
+    if fmt == "7z":
+        return ArchivePlan([ArchiveStep(["7z", "a", "-y", archive, "--", *names])])
     raise KeyError(fmt)
 
 
@@ -142,6 +164,10 @@ def extract_plan(
             return ArchivePlan([ArchiveStep(["gzip", "-d", "-f", argument])])
         if suffix == ".xz":
             return ArchivePlan([ArchiveStep(["xz", "-d", "-f", argument])])
+        if suffix == ".zip":
+            return ArchivePlan([ArchiveStep(["unzip", "-o", argument])])
+        if suffix == ".7z":
+            return ArchivePlan([ArchiveStep(["7z", "x", "-y", argument])])
     return None
 
 

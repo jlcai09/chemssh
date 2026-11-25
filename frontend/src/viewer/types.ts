@@ -1,5 +1,14 @@
 export type ViewerStyleMode = 'stick' | 'sphere' | 'line'
+export type AtomDisplayMode = ViewerStyleMode | 'dim' | 'hidden'
+export type WrapMode = 'off' | 'atom' | 'molecule'
 export type AtomIndexBase = 0 | 1
+
+export interface ViewerContextMenuEvent {
+  clientX: number
+  clientY: number
+  atomIndex: number | null
+  selectedAtoms: number[]
+}
 
 export interface ViewerStyle {
   mode?: ViewerStyleMode
@@ -31,6 +40,7 @@ export interface SupercellOptions {
 export interface StructureDisplayOptions {
   supercell?: SupercellOptions
   wrap?: boolean
+  wrapMode?: WrapMode
 }
 
 export interface ViewerOptions {
@@ -39,6 +49,10 @@ export interface ViewerOptions {
   labelOptions?: LabelOptions
   fixedAtomOptions?: FixedAtomOptions
   displayOptions?: StructureDisplayOptions
+  onContextMenu?: (event: ViewerContextMenuEvent) => void
+  onSelectionChange?: (selectedSourceAtoms: number[]) => void
+  onDisplayModeChange?: (uniformMode: ViewerStyleMode | null, hasHidden: boolean) => void
+  onAtomDoubleClick?: (sourceAtomIndex: number) => void
 }
 
 export interface SetStructureOptions {

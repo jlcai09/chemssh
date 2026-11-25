@@ -182,6 +182,28 @@
           :class="{ 'is-active': tab.localId === activeTabId }"
         />
         <div v-if="activeTab?.awaitingVisibleShellOutput" class="terminal-overlay">{{ t('terminal.starting') }}</div>
+        <div v-if="directoryJobIds.length > 0" class="terminal-jobs-badge">
+          <span class="terminal-jobs-badge-dot" />
+          <span class="terminal-jobs-badge-label">{{ t('terminal.jobsHere') }}</span>
+          <span class="terminal-jobs-badge-ids">{{ directoryJobIds.join(' · ') }}</span>
+          <el-dropdown
+            trigger="click"
+            placement="bottom-end"
+            popper-class="terminal-jobs-dropdown"
+            @command="handleDirectoryJobAction"
+          >
+            <button class="terminal-jobs-badge-toggle" type="button" :aria-label="t('terminal.jobsActions')">
+              <el-icon><ArrowDown /></el-icon>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="hold">{{ queueActionLabels.hold }}</el-dropdown-item>
+                <el-dropdown-item command="release">{{ queueActionLabels.release }}</el-dropdown-item>
+                <el-dropdown-item command="cancel" class="is-danger">{{ queueActionLabels.cancel }}</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
       </div>
     </div>
     <!-- 搜索面板独立于终端，可拖动到当前页面（工作台/画板）的任意位置 -->
@@ -245,9 +267,11 @@
 
 <script setup lang="ts">
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
-import { Close, FullScreen, Link, MoreFilled, Plus, Search as SearchIcon, Setting } from '@element-plus/icons-vue'
+import { ArrowDown, Close, FullScreen, Link, MoreFilled, Plus, Search as SearchIcon, Setting } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { BrowserClipboardProvider, ClipboardAddon, type ClipboardSelectionType } from '@xterm/addon-clipboard'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal, type IDisposable } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import {
@@ -260,11 +284,14 @@ import {
 import { formatFileDragTerminalInput, hasChemSSHFileDrag, readChemSSHFileDrag } from '../../api/fileDrag'
 import { isPathInsideWorkspace, workspacePathOrRoot } from '../../api/workspaceScope'
 import { t } from '../../i18n'
+import { apiErrorMessage } from '../../api/apiMessages'
+import { ensureQueueJobsSnapshot, queueJobsSnapshot, queueSchedulerSnapshot, refreshQueueJobs } from '../../stores/queueJobs'
+import { runQueueAction, type QueueJobAction } from '../../api/queue'
 import type { CanvasFileManagerBindingTarget, CanvasTerminalTabBinding } from '../../types/canvasBoard'
 import { useTerminalSettings } from '../../composables/useTerminalSettings'
 import { useTerminalTransfer } from '../../composables/useTerminalTransfer'
 import { useTerminalSearch, type SearchableTab } from '../../composables/useTerminalSearch'
-import { writePreservingTerminalHistory } from '../../utils/terminalHistory'
+import { writePreservingTerminalHistory, type TerminalHistoryState } from '../../utils/terminalHistory'
 
 type TerminalMessage =
   | { type: 'output'; data: string }
@@ -303,6 +330,10 @@ type TerminalTab = {
   terminal: Terminal | null
   clipboardAddon: ClipboardAddon | null
   fitAddon: FitAddon | null
+  webglAddon: WebglAddon | null
+  webglUnavailable: boolean
+  historyState: TerminalHistoryState
+  binaryDecoder: TextDecoder
   searchMatches: SearchMatch[]
   searchCurrentIndex: number
   socket: WebSocket | null
@@ -310,6 +341,8 @@ type TerminalTab = {
   selectionDisposable: IDisposable | null
   renderDisposable: IDisposable | null
   scrollDisposable: IDisposable | null
+  bufferChangeDisposable: IDisposable | null
+  altScreenWheelCleanup: (() => void) | null
   middleClickCleanup: (() => void) | null
   latestSelection: string
   lastAutoCopiedSelection: string
@@ -395,6 +428,10 @@ const searchPanelStyle = computed(() => {
 })
 const terminalHosts = new Map<string, HTMLElement>()
 const clipboardProvider = new BrowserClipboardProvider()
+const textEncoder = new TextEncoder()
+let hardwareWebglChecked: boolean | null = null
+const QUEUE_SNAPSHOT_REFRESH_MS = 60_000
+let queueSnapshotTimer: number | undefined
 let tabsResizeObserver: ResizeObserver | null = null
 let tabSerial = 0
 const TERMINAL_TAB_DRAG_MIME = 'application/x-chemssh-terminal-tab'
@@ -402,6 +439,57 @@ const TERMINAL_TAB_DRAG_MIME = 'application/x-chemssh-terminal-tab'
 const preferredCwd = computed(() => usableWorkspacePath(props.currentFileManagerPath || props.initialCwd || props.workspaceRoot))
 const fileManagerOptions = computed(() => props.fileManagers ?? [])
 const activeTab = computed(() => tabs.value.find(tab => tab.localId === activeTabId.value) ?? null)
+const directoryJobs = computed(() => {
+  const cwd = normalizeDirectoryPath(activeTab.value?.cwd ?? '')
+  if (!cwd) return []
+  return queueJobsSnapshot.value.filter(job => normalizeDirectoryPath(job.workdir ?? '') === cwd)
+})
+const directoryJobIds = computed(() => directoryJobs.value.map(job => job.job_id))
+const queueActionLabels = computed<Record<QueueJobAction, string>>(() => {
+  const scheduler = queueSchedulerSnapshot.value.toLowerCase()
+  if (scheduler.includes('pbs')) return { hold: 'qhold', release: 'qrls', cancel: 'qdel' }
+  return { hold: 'hold', release: 'release', cancel: 'scancel' }
+})
+
+async function runDirectoryJobAction(action: QueueJobAction) {
+  const targets = directoryJobs.value
+  if (targets.length === 0) return
+  const label = queueActionLabels.value[action]
+  try {
+    await ElMessageBox.confirm(
+      t('queue.actionConfirm', { action: label, count: targets.length }),
+      t('queue.actionConfirmTitle', { action: label }),
+      {
+        type: action === 'cancel' ? 'warning' : 'info',
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+        modalClass: 'chemssh-terminal-overlay'
+      }
+    )
+  } catch {
+    return
+  }
+
+  const results = await Promise.allSettled(targets.map(job => runQueueAction(job.job_id, action)))
+  const failed = results.filter(result => result.status === 'rejected')
+  if (failed.length === 0) {
+    ElMessage.success({ message: t('queue.actionRequested', { action: label, count: targets.length }), customClass: 'chemssh-terminal-toast' })
+  } else {
+    const firstError = failed[0]
+    const message = firstError.status === 'rejected' ? apiErrorMessage(firstError.reason, 'queue.actionFailed') : t('queue.actionFailed')
+    ElMessage.error({
+      message: t('queue.actionPartialFailed', { action: label, failed: failed.length, message }),
+      customClass: 'chemssh-terminal-toast'
+    })
+  }
+  await refreshQueueJobs()
+}
+
+function handleDirectoryJobAction(command: string | number | object) {
+  if (command === 'hold' || command === 'release' || command === 'cancel') {
+    void runDirectoryJobAction(command)
+  }
+}
 
 const {
   searchOpen,
@@ -441,10 +529,15 @@ onMounted(async () => {
     await ensureInitialTab()
   }
   measureTabsOverflow()
+  queueSnapshotTimer = window.setInterval(() => {
+    if (activeTab.value?.cwd) void ensureQueueJobsSnapshot()
+  }, QUEUE_SNAPSHOT_REFRESH_MS)
 })
 
 onBeforeUnmount(() => {
   stopSearchPanelDrag()
+  if (queueSnapshotTimer) window.clearInterval(queueSnapshotTimer)
+  queueSnapshotTimer = undefined
   window.removeEventListener('resize', handleLayoutChange)
   window.removeEventListener('chemssh:terminal-fit', handleLayoutChange)
   tabsResizeObserver?.disconnect()
@@ -500,6 +593,14 @@ watch(activeTabId, () => {
   syncSearchWithActiveTab()
   emitTerminalBindingSummary()
 })
+
+watch(
+  () => activeTab.value?.cwd ?? '',
+  cwd => {
+    if (cwd) void ensureQueueJobsSnapshot()
+  },
+  { immediate: true }
+)
 
 watch(largeOpen, () => {
   window.setTimeout(handleLayoutChange, 0)
@@ -557,6 +658,10 @@ function createEmptyTab(cwd?: string): TerminalTab {
     terminal: null,
     clipboardAddon: null,
     fitAddon: null,
+    webglAddon: null,
+    webglUnavailable: false,
+    historyState: { altScreen: false },
+    binaryDecoder: markRaw(new TextDecoder('utf-8')),
     searchMatches: [],
     searchCurrentIndex: -1,
     socket: null,
@@ -564,6 +669,8 @@ function createEmptyTab(cwd?: string): TerminalTab {
     selectionDisposable: null,
     renderDisposable: null,
     scrollDisposable: null,
+    bufferChangeDisposable: null,
+    altScreenWheelCleanup: null,
     middleClickCleanup: null,
     latestSelection: '',
     lastAutoCopiedSelection: '',
@@ -639,7 +746,126 @@ async function ensureInitialTab(cwd?: string) {
 
 function activateTab(tabId: string) {
   activeTabId.value = tabId
+  const tab = tabs.value.find(item => item.localId === tabId)
+  if (tab) attachWebglRenderer(tab)
   emitTerminalBindingSummary()
+}
+
+function isHardwareWebglAvailable(): boolean {
+  if (hardwareWebglChecked !== null) return hardwareWebglChecked
+  if (typeof document === 'undefined') {
+    hardwareWebglChecked = false
+    return false
+  }
+  try {
+    const canvas = document.createElement('canvas')
+    const gl = canvas.getContext('webgl2') as WebGL2RenderingContext | null
+    if (!gl) {
+      hardwareWebglChecked = false
+      return false
+    }
+    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info')
+    const renderer = String(
+      debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)
+    ).toLowerCase()
+    const isSoftware =
+      renderer.includes('swiftshader') ||
+      renderer.includes('microsoft basic render') ||
+      renderer.includes('llvmpipe') ||
+      renderer.includes('software')
+    hardwareWebglChecked = !isSoftware
+  } catch {
+    hardwareWebglChecked = false
+  }
+  return hardwareWebglChecked
+}
+
+function attachWebglRenderer(tab: TerminalTab) {
+  if (!tab.terminal || tab.webglAddon || tab.webglUnavailable) return
+  if (!isHardwareWebglAvailable()) {
+    tab.webglUnavailable = true
+    return
+  }
+  try {
+    const addon = markRaw(new WebglAddon())
+    addon.onContextLoss(() => {
+      try {
+        addon.dispose()
+      } catch {
+        // ignore context-loss disposal errors
+      }
+      if (tab.webglAddon === addon) tab.webglAddon = null
+    })
+    tab.terminal.loadAddon(addon)
+    tab.webglAddon = addon
+    window.requestAnimationFrame(() => void requestTabFit(tab))
+  } catch {
+    tab.webglUnavailable = true
+  }
+}
+
+// xterm 6 smooth-scrolls its own scrollbar on wheel input, which fights the
+// alternate screen (vim, less): turn wheel ticks into cursor keys instead.
+function installAltScreenWheel(term: Terminal, host: HTMLElement) {
+  let accum = 0
+  const handler = (event: WheelEvent) => {
+    if (term.buffer.active.type !== 'alternate') return
+    if (host.querySelector('.xterm.enable-mouse-events')) return
+    event.preventDefault()
+    event.stopPropagation()
+    const unit = event.deltaMode === 1 ? 1 : event.deltaMode === 2 ? term.rows : 40
+    accum += event.deltaY / unit
+    const steps = Math.trunc(accum)
+    if (steps === 0) return
+    accum -= steps
+    const app = term.modes.applicationCursorKeysMode
+    const key = steps < 0 ? (app ? '\x1bOA' : '\x1b[A') : (app ? '\x1bOB' : '\x1b[B')
+    term.input(key.repeat(Math.min(Math.abs(steps), 10)), true)
+  }
+  host.addEventListener('wheel', handler, { capture: true, passive: false })
+  return () => host.removeEventListener('wheel', handler, { capture: true })
+}
+
+async function copyTextToClipboard(text: string) {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    return
+  } catch {
+    // Fall back to legacy execCommand below when async clipboard API is denied.
+  }
+  const area = document.createElement('textarea')
+  area.value = text
+  area.style.position = 'fixed'
+  area.style.opacity = '0'
+  document.body.appendChild(area)
+  area.select()
+  try {
+    document.execCommand('copy')
+  } finally {
+    area.remove()
+  }
+}
+
+function handleTerminalClipboardKey(term: Terminal, event: KeyboardEvent): boolean {
+  if (event.type !== 'keydown') return true
+  if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey) return true
+  const key = event.key.toLowerCase()
+  if (key === 'c' || event.code === 'KeyC') {
+    event.preventDefault()
+    event.stopPropagation()
+    void copyTextToClipboard(term.getSelection() || String(window.getSelection() || ''))
+    return false
+  }
+  if (key === 'v' || event.code === 'KeyV') {
+    event.preventDefault()
+    event.stopPropagation()
+    navigator.clipboard.readText().then(text => {
+      if (text) term.paste(text)
+    }).catch(() => undefined)
+    return false
+  }
+  return true
 }
 
 function handleTabDragStart(tabId: string, event: DragEvent) {
@@ -688,6 +914,7 @@ async function initializeTabTerminal(tab: TerminalTab) {
   if (!host) return
 
   const terminal = markRaw(new Terminal({
+    allowProposedApi: true,
     cursorBlink: true,
     fontFamily: '"JetBrains Mono", Consolas, "Liberation Mono", monospace',
     fontSize: terminalFontSize.value,
@@ -706,32 +933,41 @@ async function initializeTabTerminal(tab: TerminalTab) {
   terminal.loadAddon(clipboardAddon)
   terminal.open(host)
   terminal.attachCustomKeyEventHandler(event => {
+    if (!handleTerminalClipboardKey(terminal, event)) return false
     if (event.type === 'keydown' && event.key === 'Backspace') {
-      sendTabSocketMessage(tab, { type: 'input', data: '\x7f' })
+      sendTabInput(tab, '\x7f')
       return false
     }
     return true
   })
   tab.middleClickCleanup = bindTerminalMiddleClickPaste(tab, host)
+  tab.altScreenWheelCleanup = installAltScreenWheel(terminal, host)
 
   tab.terminal = terminal
   tab.fitAddon = fitAddon
   tab.clipboardAddon = clipboardAddon
+  attachWebglRenderer(tab)
+  tab.bufferChangeDisposable = terminal.buffer.onBufferChange(buffer => {
+    const alt = buffer.type === 'alternate'
+    tab.historyState.altScreen = alt
+    host.classList.toggle('is-alt-screen', alt)
+    if (!alt) terminal.scrollToBottom()
+  })
   tab.selectionDisposable = terminal.onSelectionChange(() => {
     const selection = terminal.getSelection()
     if (selection || !tab.preservingMiddleClickSelection) tab.latestSelection = selection
     queueAutoCopySelection(tab, selection)
   })
   tab.renderDisposable = terminal.onRender(() => {
-    scheduleSearchHighlightRefresh(tab)
+    if (searchOpen.value && searchTerm.value) scheduleSearchHighlightRefresh(tab)
   })
   tab.scrollDisposable = terminal.onScroll(() => {
-    scheduleSearchHighlightRefresh(tab)
+    if (searchOpen.value && searchTerm.value) scheduleSearchHighlightRefresh(tab)
   })
 
-  // 监听终端数据变化
+  // 监听终端数据变化，直接通过二进制帧零序列化直发后端 PTY
   tab.inputDisposable = terminal.onData(data => {
-    sendTabSocketMessage(tab, { type: 'input', data })
+    sendTabInput(tab, data)
   })
 
   tab.resizeObserver = new ResizeObserver(() => scheduleTabFit(tab))
@@ -832,7 +1068,8 @@ function connectTabSocket(tab: TerminalTab, id: string) {
   const openGen = tab.disposalGen
   let ws: WebSocket
   try {
-    ws = markRaw(new WebSocket(terminalWebSocketUrl(id)))
+    ws = markRaw(new WebSocket(terminalWebSocketUrl(id, { binary: true })))
+    ws.binaryType = 'arraybuffer'
   } catch (error) {
     tab.sessionId = null
     tab.cwd = ''
@@ -881,8 +1118,19 @@ function connectTabSocket(tab: TerminalTab, id: string) {
   }
 }
 
-function handleTabSocketMessage(tab: TerminalTab, raw: string) {
+function handleTabSocketMessage(tab: TerminalTab, raw: string | ArrayBuffer) {
   if (!tab.terminal) return
+
+  if (raw instanceof ArrayBuffer) {
+    const data = tab.binaryDecoder.decode(new Uint8Array(raw), { stream: true })
+    if (!data) return
+    writePreservingTerminalHistory(tab.terminal, data, tab.historyState)
+    if (!tab.interactiveReady && hasVisibleTerminalContent(data)) markTabInteractive(tab)
+    if (tab.localId === activeTabId.value && searchOpen.value && searchTerm.value) {
+      scheduleSearchHighlightRefresh(tab, 50)
+    }
+    return
+  }
 
   let message: TerminalMessage
   try {
@@ -893,9 +1141,11 @@ function handleTabSocketMessage(tab: TerminalTab, raw: string) {
 
   if (message.type === 'output') {
     // Screen-wiping programs must not take the tab's scrollback with them.
-    writePreservingTerminalHistory(tab.terminal, message.data)
+    writePreservingTerminalHistory(tab.terminal, message.data, tab.historyState)
     if (!tab.interactiveReady && hasVisibleTerminalContent(message.data)) markTabInteractive(tab)
-    if (tab.localId === activeTabId.value) scheduleSearchHighlightRefresh(tab, 50)
+    if (tab.localId === activeTabId.value && searchOpen.value && searchTerm.value) {
+      scheduleSearchHighlightRefresh(tab, 50)
+    }
   } else if (message.type === 'cwd') {
     applyTabCwd(tab, message.path)
   } else if (message.type === 'command_done') {
@@ -960,7 +1210,14 @@ async function disposeTab(tab: TerminalTab, closeSession: boolean) {
   tab.selectionDisposable?.dispose()
   tab.renderDisposable?.dispose()
   tab.scrollDisposable?.dispose()
+  tab.bufferChangeDisposable?.dispose()
+  tab.altScreenWheelCleanup?.()
   tab.middleClickCleanup?.()
+  try {
+    tab.webglAddon?.dispose()
+  } catch {
+    // ignore WebGL disposal errors on torn-down view
+  }
   tab.clipboardAddon?.dispose()
   tab.terminal?.dispose()
   if (tab.fitFrame) window.cancelAnimationFrame(tab.fitFrame)
@@ -975,12 +1232,16 @@ async function disposeTab(tab: TerminalTab, closeSession: boolean) {
   tab.terminal = null
   tab.clipboardAddon = null
   tab.fitAddon = null
+  tab.webglAddon = null
+  tab.historyState.altScreen = false
   tab.searchMatches = []
   tab.searchCurrentIndex = -1
   tab.inputDisposable = null
   tab.selectionDisposable = null
   tab.renderDisposable = null
   tab.scrollDisposable = null
+  tab.bufferChangeDisposable = null
+  tab.altScreenWheelCleanup = null
   tab.middleClickCleanup = null
   tab.latestSelection = ''
   tab.lastAutoCopiedSelection = ''
@@ -1155,6 +1416,11 @@ function hasVisibleTerminalContent(data: string) {
 function sendTabSocketMessage(tab: TerminalTab, payload: Record<string, unknown>) {
   if (!tab.socket || tab.socket.readyState !== WebSocket.OPEN) return
   tab.socket.send(JSON.stringify(payload))
+}
+
+function sendTabInput(tab: TerminalTab, data: string) {
+  if (!data || !tab.socket || tab.socket.readyState !== WebSocket.OPEN) return
+  tab.socket.send(textEncoder.encode(data))
 }
 
 function sendTabSyncCwd(tab: TerminalTab, path: string) {
@@ -1448,5 +1714,10 @@ function pathBaseName(path: string) {
   const parts = normalized.split(/[\\/]/).filter(Boolean)
   if (parts.length > 0) return parts[parts.length - 1]
   return normalized
+}
+
+function normalizeDirectoryPath(path: string) {
+  const normalized = path.trim().replace(/\/{2,}/g, '/')
+  return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized
 }
 </script>

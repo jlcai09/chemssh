@@ -81,6 +81,7 @@ export interface ClientPreferences {
   queue?: {
     refreshSeconds?: number
     mode?: 'default' | 'vasp'
+    search?: string
   }
   workspace?: {
     fileTreeWidth?: number | null

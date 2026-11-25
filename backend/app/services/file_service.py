@@ -339,6 +339,9 @@ class FileService:
             zstd=tools["zstd"],
             gzip=tools["gzip"],
             xz=tools["xz"],
+            zip=tools["zip"],
+            unzip=tools["unzip"],
+            seven_zip=tools["7z"],
             formats=available_formats(tools),
         )
 
@@ -366,7 +369,7 @@ class FileService:
             seen.add(path)
             names.append(path.name)
 
-        archive = archive_name(target_directory, fmt)
+        archive = archive_name(target_directory, fmt, names)
         plan = compress_plan(fmt, archive, names, uuid.uuid4().hex[:12])
         self._run_archive_plan(plan, target_directory)
         return FileOperationResponse(path=str(target_directory / archive), message="Archive created")

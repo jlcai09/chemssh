@@ -26,6 +26,22 @@ const STRUCTURE_FALLBACK_EXTENSIONS = new Set([
 
 const STRUCTURE_FALLBACK_NAMES = new Set(['vasp.xml', 'vasprun.xml'])
 const VASP_STRUCTURE_NAME_TOKENS = ['POSCAR', 'CONTCAR', 'XDATCAR', 'OUTCAR']
+const BINARY_STRUCTURE_EXTENSIONS = new Set([
+  '.traj',
+  '.db',
+  '.sqlite',
+  '.sqlite3',
+  '.dcd',
+  '.xtc',
+  '.trr',
+  '.h5',
+  '.hdf5',
+  '.nc',
+  '.netcdf',
+  '.npy',
+  '.npz'
+])
+const BINARY_STRUCTURE_FORMATS = new Set(['traj', 'db', 'sqlite', 'dcd', 'xtc', 'trr', 'h5', 'hdf5'])
 
 export function pathBaseName(path: string) {
   return path.split(/[\\/]/).pop() ?? path
@@ -53,4 +69,9 @@ export function isStructurePreviewPath(path: string, previewType?: PreviewType |
     STRUCTURE_FALLBACK_NAMES.has(name) ||
     STRUCTURE_FALLBACK_EXTENSIONS.has(extensionFromName(name))
   )
+}
+
+export function isBinaryStructureFile(path: string, format?: string | null) {
+  if (format && BINARY_STRUCTURE_FORMATS.has(format.toLowerCase())) return true
+  return BINARY_STRUCTURE_EXTENSIONS.has(extensionFromName(pathBaseName(path)))
 }

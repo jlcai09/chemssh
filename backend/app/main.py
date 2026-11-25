@@ -24,6 +24,7 @@ from backend.app.core.errors import (
 from backend.app.middleware.brotli import BrotliMiddleware
 from backend.app.middleware.idle_shutdown import IdleShutdownManager, IdleShutdownMiddleware, ShutdownCallback
 from backend.app.middleware.token_auth import TokenAuthMiddleware
+from backend.app.middleware.structure_concurrency import StructureConcurrencyMiddleware
 from backend.app.services.client_cache_service import ClientCacheService
 from backend.app.services.plugin_service import PluginService
 
@@ -88,6 +89,7 @@ def create_app(settings: Settings | None = None, *, idle_shutdown_callback: Shut
         enabled=active_settings.compression.brotli.enabled,
         quality=active_settings.compression.brotli.level,
     )
+    app.add_middleware(StructureConcurrencyMiddleware)
 
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(HTTPException, http_error_handler)

@@ -280,7 +280,13 @@ def test_plugin_get_routes_take_precedence_over_spa_fallback(tmp_path: Path) -> 
 
     route_paths = [getattr(route, "path", None) for route in client.app.router.routes]
     if "/{full_path:path}" in route_paths:
-        assert route_paths.index("/api/plugins/dummy-get/api/hello") < route_paths.index("/{full_path:path}")
+        probe_scope = {"type": "http", "path": "/api/plugins/dummy-get/api/hello", "method": "GET"}
+        plugin_route_index = next(
+            idx
+            for idx, route in enumerate(client.app.router.routes)
+            if route.matches(probe_scope)[0].name == "FULL"
+        )
+        assert plugin_route_index < route_paths.index("/{full_path:path}")
 
 
 def test_files_api_blocks_path_traversal(tmp_path: Path) -> None:
@@ -654,6 +660,54 @@ def test_copy_paths_can_overwrite_merge_and_suffix_conflicts(tmp_path: Path) -> 
     assert (target_dir / "keep.out").read_text(encoding="utf-8") == "keep\n"
     assert (target / "beta.txt").read_text(encoding="utf-8") == "existing beta\n"
     assert (target / "beta.txt.new").read_text(encoding="utf-8") == "beta\n"
+
+
+def test_copy_paths_in_same_directory_with_new_suffix(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    source_file = tmp_path / "vasp.script"
+    source_file.write_text("#!/bin/sh\n", encoding="utf-8")
+    existing_copy = tmp_path / "vasp.script.new"
+    existing_copy.write_text("existing copy\n", encoding="utf-8")
+    source_dir = tmp_path / "case"
+    source_dir.mkdir()
+    (source_dir / "input.inp").write_text("input\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/files/copy",
+        json={
+            "paths": [str(source_file), str(source_dir)],
+            "target_directory": str(tmp_path),
+            "items": [
+                {"path": str(source_file), "target_name": "vasp.script.new.new", "overwrite": False},
+                {"path": str(source_dir), "target_name": "case.new", "overwrite": False},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert source_file.read_text(encoding="utf-8") == "#!/bin/sh\n"
+    assert existing_copy.read_text(encoding="utf-8") == "existing copy\n"
+    assert (tmp_path / "vasp.script.new.new").read_text(encoding="utf-8") == "#!/bin/sh\n"
+    assert (source_dir / "input.inp").read_text(encoding="utf-8") == "input\n"
+    assert (tmp_path / "case.new" / "input.inp").read_text(encoding="utf-8") == "input\n"
+
+
+def test_copy_paths_rejects_overwriting_same_path(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    source = tmp_path / "sample.txt"
+    source.write_text("sample\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/files/copy",
+        json={
+            "target_directory": str(tmp_path),
+            "items": [{"path": str(source), "overwrite": True}],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "COPY_SAME_PATH"
+    assert source.read_text(encoding="utf-8") == "sample\n"
 
 
 def test_copy_paths_blocks_self_descendant_and_existing_targets(tmp_path: Path) -> None:

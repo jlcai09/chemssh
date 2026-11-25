@@ -6,7 +6,7 @@ import logging
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -42,6 +42,7 @@ class PluginRuntime:
     instance: Any
     router_loaded: bool = False
     active: bool = True
+    registered_routes: list[Any] = field(default_factory=list)
 
 
 class PluginService:
@@ -441,10 +442,14 @@ class PluginService:
     def _remove_plugin_routes(self, plugin_id: str) -> None:
         """Remove all routes registered under /api/plugins/{plugin_id}/api."""
         prefix = f"/api/plugins/{plugin_id}/api"
+        runtime = self._runtimes.get(plugin_id)
+        registered_ids = {id(route) for route in (runtime.registered_routes if runtime else ())}
         self.app.router.routes[:] = [
             route for route in self.app.router.routes
-            if not getattr(route, "path", "").startswith(prefix)
+            if id(route) not in registered_ids and not getattr(route, "path", "").startswith(prefix)
         ]
+        if runtime is not None:
+            runtime.registered_routes.clear()
 
     def _include_plugin_router(self, plugin_id: str, runtime: PluginRuntime) -> None:
         if runtime.router_loaded:
@@ -459,6 +464,7 @@ class PluginService:
                 insert_at = self._spa_fallback_route_index()
                 for offset, route in enumerate(new_routes):
                     self.app.router.routes.insert(insert_at + offset, route)
+                runtime.registered_routes = list(new_routes)
             runtime.router_loaded = True
 
     def _spa_fallback_route_index(self) -> int:
